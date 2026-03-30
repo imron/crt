@@ -151,6 +151,13 @@ async fn test_init_resolves_context() {
     assert!(result["head_ref"].as_str().is_some());
     assert_eq!(result["base_ref"], "HEAD");
     assert!(result["repo_root"].as_str().is_some_and(|s| !s.is_empty()));
+    // merge_base should be a 40-char hex hash
+    let mb = result["merge_base"].as_str().unwrap_or("");
+    assert_eq!(
+        mb.len(),
+        40,
+        "merge_base should be a full commit hash: {mb}"
+    );
 }
 
 #[tokio::test]

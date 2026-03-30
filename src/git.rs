@@ -168,6 +168,37 @@ impl Repo {
         Ok(commit.id().to_string())
     }
 
+    /// Compute the merge-base (common ancestor) of two refs.
+    ///
+    /// This is the "true" fork point — the commit where the branch diverged
+    /// from the base. Used as the stable scope key for reviews, because it
+    /// doesn't change when the base ref advances (only when the branch is
+    /// rebased).
+    pub fn merge_base(&self, ref_a: &str, ref_b: &str) -> Result<String> {
+        let oid_a = self
+            .inner
+            .revparse_single(ref_a)
+            .with_context(|| format!("Could not resolve ref '{ref_a}'"))?
+            .peel_to_commit()
+            .with_context(|| format!("Ref '{ref_a}' does not point to a commit"))?
+            .id();
+
+        let oid_b = self
+            .inner
+            .revparse_single(ref_b)
+            .with_context(|| format!("Could not resolve ref '{ref_b}'"))?
+            .peel_to_commit()
+            .with_context(|| format!("Ref '{ref_b}' does not point to a commit"))?
+            .id();
+
+        let mb = self
+            .inner
+            .merge_base(oid_a, oid_b)
+            .with_context(|| format!("No common ancestor between '{ref_a}' and '{ref_b}'"))?;
+
+        Ok(mb.to_string())
+    }
+
     /// List all files changed between `base_ref` and `head_ref`.
     pub fn list_changed_files(&self, base_ref: &str, head_ref: &str) -> Result<Vec<FileChange>> {
         let base_tree = self.resolve_tree(base_ref)?;
@@ -590,6 +621,60 @@ mod tests {
 
         let err = repo.resolve_commit("nonexistent");
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_merge_base() {
+        let (_dir, repo) = setup_test_repo();
+
+        // merge-base of "base" tag and HEAD should be the "base" commit
+        let mb = repo.merge_base("base", "HEAD").unwrap();
+        let base_oid = repo.resolve_commit("base").unwrap();
+        assert_eq!(mb, base_oid);
+
+        // merge-base of HEAD with itself should be HEAD
+        let mb_self = repo.merge_base("HEAD", "HEAD").unwrap();
+        let head_oid = repo.resolve_commit("HEAD").unwrap();
+        assert_eq!(mb_self, head_oid);
+    }
+
+    #[test]
+    fn test_merge_base_stable_after_base_advances() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+
+        run_git(path, &["init"]);
+        run_git(path, &["config", "user.email", "test@test.com"]);
+        run_git(path, &["config", "user.name", "Test"]);
+
+        // Create initial commit on main
+        std::fs::write(path.join("file.txt"), "initial\n").unwrap();
+        run_git(path, &["add", "-A"]);
+        run_git(path, &["commit", "-m", "M1"]);
+
+        // Create feature branch
+        run_git(path, &["checkout", "-b", "feature"]);
+        std::fs::write(path.join("feature.txt"), "feature work\n").unwrap();
+        run_git(path, &["add", "-A"]);
+        run_git(path, &["commit", "-m", "F1"]);
+
+        // Record merge-base before main advances
+        let repo = Repo::open(path).unwrap();
+        let mb_before = repo.merge_base("main", "feature").unwrap();
+
+        // Switch to main and advance it
+        run_git(path, &["checkout", "main"]);
+        std::fs::write(path.join("main_new.txt"), "main work\n").unwrap();
+        run_git(path, &["add", "-A"]);
+        run_git(path, &["commit", "-m", "M2"]);
+
+        // merge-base should be the same (M1) — main advancing doesn't change it
+        let repo = Repo::open(path).unwrap();
+        let mb_after = repo.merge_base("main", "feature").unwrap();
+        assert_eq!(
+            mb_before, mb_after,
+            "merge-base should be stable when main advances"
+        );
     }
 
     #[test]

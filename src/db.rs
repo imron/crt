@@ -1,7 +1,8 @@
 //! SQLite operations: schema init, review CRUD, comment CRUD.
 //!
 //! The database lives at `<repo_root>/.crt/reviews.db` and is scoped by
-//! `(base_ref, head_ref)` pairs.
+//! `(merge_base, head_ref)` pairs, where `merge_base` is the commit hash
+//! of the common ancestor between the base ref and HEAD.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -18,7 +19,7 @@ use rusqlite::{Connection, params};
 #[derive(Debug, Clone)]
 pub struct StoredReview {
     pub file_path: String,
-    pub base_ref: String,
+    pub merge_base: String,
     pub head_ref: String,
     pub diff_hash: String,
     pub reviewed_at: String,
@@ -27,7 +28,7 @@ pub struct StoredReview {
 /// Parameters for creating a new comment.
 #[derive(Debug, Clone)]
 pub struct NewComment {
-    pub base_ref: String,
+    pub merge_base: String,
     pub head_ref: String,
     pub file_path: String,
     pub line_start: i64,
@@ -44,7 +45,7 @@ pub struct NewComment {
 #[derive(Debug, Clone)]
 pub struct StoredComment {
     pub id: i64,
-    pub base_ref: String,
+    pub merge_base: String,
     pub head_ref: String,
     pub file_path: String,
     pub line_start: i64,
@@ -91,16 +92,16 @@ impl Database {
                 "
             CREATE TABLE IF NOT EXISTS file_reviews (
                 file_path   TEXT NOT NULL,
-                base_ref    TEXT NOT NULL,
+                merge_base  TEXT NOT NULL,
                 head_ref    TEXT NOT NULL,
                 diff_hash   TEXT NOT NULL,
                 reviewed_at TEXT NOT NULL,
-                PRIMARY KEY (base_ref, head_ref, file_path)
+                PRIMARY KEY (merge_base, head_ref, file_path)
             );
 
             CREATE TABLE IF NOT EXISTS comments (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                base_ref        TEXT NOT NULL,
+                merge_base      TEXT NOT NULL,
                 head_ref        TEXT NOT NULL,
                 file_path       TEXT NOT NULL,
                 line_start      INTEGER NOT NULL,
@@ -117,7 +118,7 @@ impl Database {
             );
 
             CREATE INDEX IF NOT EXISTS idx_comments_scope
-                ON comments (base_ref, head_ref, file_path);
+                ON comments (merge_base, head_ref, file_path);
             ",
             )
             .context("Failed to initialize database schema")?;
@@ -132,7 +133,7 @@ impl Database {
     /// Store (upsert) a file review.
     pub fn store_review(
         &self,
-        base_ref: &str,
+        merge_base: &str,
         head_ref: &str,
         file_path: &str,
         diff_hash: &str,
@@ -140,44 +141,44 @@ impl Database {
         let now = now_iso8601();
         self.conn
             .execute(
-                "INSERT INTO file_reviews (base_ref, head_ref, file_path, diff_hash, reviewed_at)
+                "INSERT INTO file_reviews (merge_base, head_ref, file_path, diff_hash, reviewed_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT (base_ref, head_ref, file_path)
+                 ON CONFLICT (merge_base, head_ref, file_path)
                  DO UPDATE SET diff_hash = ?4, reviewed_at = ?5",
-                params![base_ref, head_ref, file_path, diff_hash, now],
+                params![merge_base, head_ref, file_path, diff_hash, now],
             )
             .context("Failed to store review")?;
 
         Ok(StoredReview {
             file_path: file_path.to_string(),
-            base_ref: base_ref.to_string(),
+            merge_base: merge_base.to_string(),
             head_ref: head_ref.to_string(),
             diff_hash: diff_hash.to_string(),
             reviewed_at: now,
         })
     }
 
-    /// Load all reviews for a `(base_ref, head_ref)` pair.
+    /// Load all reviews for a `(merge_base, head_ref)` pair.
     /// Returns a map of `file_path -> StoredReview`.
     pub fn load_reviews(
         &self,
-        base_ref: &str,
+        merge_base: &str,
         head_ref: &str,
     ) -> Result<HashMap<String, StoredReview>> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT file_path, base_ref, head_ref, diff_hash, reviewed_at
+                "SELECT file_path, merge_base, head_ref, diff_hash, reviewed_at
                  FROM file_reviews
-                 WHERE base_ref = ?1 AND head_ref = ?2",
+                 WHERE merge_base = ?1 AND head_ref = ?2",
             )
             .context("Failed to prepare review query")?;
 
         let rows = stmt
-            .query_map(params![base_ref, head_ref], |row| {
+            .query_map(params![merge_base, head_ref], |row| {
                 Ok(StoredReview {
                     file_path: row.get(0)?,
-                    base_ref: row.get(1)?,
+                    merge_base: row.get(1)?,
                     head_ref: row.get(2)?,
                     diff_hash: row.get(3)?,
                     reviewed_at: row.get(4)?,
@@ -194,24 +195,24 @@ impl Database {
     }
 
     /// Remove a single file's review.
-    pub fn remove_review(&self, base_ref: &str, head_ref: &str, file_path: &str) -> Result<()> {
+    pub fn remove_review(&self, merge_base: &str, head_ref: &str, file_path: &str) -> Result<()> {
         self.conn
             .execute(
                 "DELETE FROM file_reviews
-                 WHERE base_ref = ?1 AND head_ref = ?2 AND file_path = ?3",
-                params![base_ref, head_ref, file_path],
+                 WHERE merge_base = ?1 AND head_ref = ?2 AND file_path = ?3",
+                params![merge_base, head_ref, file_path],
             )
             .context("Failed to remove review")?;
         Ok(())
     }
 
-    /// Clear all reviews for a `(base_ref, head_ref)` pair.
-    pub fn clear_reviews(&self, base_ref: &str, head_ref: &str) -> Result<u64> {
+    /// Clear all reviews for a `(merge_base, head_ref)` pair.
+    pub fn clear_reviews(&self, merge_base: &str, head_ref: &str) -> Result<u64> {
         let count = self
             .conn
             .execute(
-                "DELETE FROM file_reviews WHERE base_ref = ?1 AND head_ref = ?2",
-                params![base_ref, head_ref],
+                "DELETE FROM file_reviews WHERE merge_base = ?1 AND head_ref = ?2",
+                params![merge_base, head_ref],
             )
             .context("Failed to clear reviews")?;
         Ok(count as u64)
@@ -227,12 +228,12 @@ impl Database {
         self.conn
             .execute(
                 "INSERT INTO comments
-                    (base_ref, head_ref, file_path, line_start, line_end,
+                    (merge_base, head_ref, file_path, line_start, line_end,
                      char_start, char_end, anchor_text, context_before,
                      context_after, body, resolved, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?12)",
                 params![
-                    new.base_ref,
+                    new.merge_base,
                     new.head_ref,
                     new.file_path,
                     new.line_start,
@@ -252,7 +253,7 @@ impl Database {
 
         Ok(StoredComment {
             id,
-            base_ref: new.base_ref.clone(),
+            merge_base: new.merge_base.clone(),
             head_ref: new.head_ref.clone(),
             file_path: new.file_path.clone(),
             line_start: new.line_start,
@@ -269,10 +270,10 @@ impl Database {
         })
     }
 
-    /// List comments for a `(base_ref, head_ref)` pair.
+    /// List comments for a `(merge_base, head_ref)` pair.
     pub fn list_comments(
         &self,
-        base_ref: &str,
+        merge_base: &str,
         head_ref: &str,
         file_path: Option<&str>,
         include_resolved: bool,
@@ -280,56 +281,56 @@ impl Database {
         let (sql, param_values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
             match (file_path, include_resolved) {
                 (None, true) => (
-                    "SELECT id, base_ref, head_ref, file_path, line_start, line_end,
+                    "SELECT id, merge_base, head_ref, file_path, line_start, line_end,
                             char_start, char_end, anchor_text, context_before,
                             context_after, body, resolved, created_at, updated_at
                      FROM comments
-                     WHERE base_ref = ?1 AND head_ref = ?2
+                     WHERE merge_base = ?1 AND head_ref = ?2
                      ORDER BY file_path, line_start"
                         .to_string(),
                     vec![
-                        Box::new(base_ref.to_string()),
+                        Box::new(merge_base.to_string()),
                         Box::new(head_ref.to_string()),
                     ],
                 ),
                 (None, false) => (
-                    "SELECT id, base_ref, head_ref, file_path, line_start, line_end,
+                    "SELECT id, merge_base, head_ref, file_path, line_start, line_end,
                             char_start, char_end, anchor_text, context_before,
                             context_after, body, resolved, created_at, updated_at
                      FROM comments
-                     WHERE base_ref = ?1 AND head_ref = ?2 AND resolved = 0
+                     WHERE merge_base = ?1 AND head_ref = ?2 AND resolved = 0
                      ORDER BY file_path, line_start"
                         .to_string(),
                     vec![
-                        Box::new(base_ref.to_string()),
+                        Box::new(merge_base.to_string()),
                         Box::new(head_ref.to_string()),
                     ],
                 ),
                 (Some(fp), true) => (
-                    "SELECT id, base_ref, head_ref, file_path, line_start, line_end,
+                    "SELECT id, merge_base, head_ref, file_path, line_start, line_end,
                             char_start, char_end, anchor_text, context_before,
                             context_after, body, resolved, created_at, updated_at
                      FROM comments
-                     WHERE base_ref = ?1 AND head_ref = ?2 AND file_path = ?3
+                     WHERE merge_base = ?1 AND head_ref = ?2 AND file_path = ?3
                      ORDER BY line_start"
                         .to_string(),
                     vec![
-                        Box::new(base_ref.to_string()),
+                        Box::new(merge_base.to_string()),
                         Box::new(head_ref.to_string()),
                         Box::new(fp.to_string()),
                     ],
                 ),
                 (Some(fp), false) => (
-                    "SELECT id, base_ref, head_ref, file_path, line_start, line_end,
+                    "SELECT id, merge_base, head_ref, file_path, line_start, line_end,
                             char_start, char_end, anchor_text, context_before,
                             context_after, body, resolved, created_at, updated_at
                      FROM comments
-                     WHERE base_ref = ?1 AND head_ref = ?2 AND file_path = ?3
+                     WHERE merge_base = ?1 AND head_ref = ?2 AND file_path = ?3
                        AND resolved = 0
                      ORDER BY line_start"
                         .to_string(),
                     vec![
-                        Box::new(base_ref.to_string()),
+                        Box::new(merge_base.to_string()),
                         Box::new(head_ref.to_string()),
                         Box::new(fp.to_string()),
                     ],
@@ -359,7 +360,7 @@ impl Database {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, base_ref, head_ref, file_path, line_start, line_end,
+                "SELECT id, merge_base, head_ref, file_path, line_start, line_end,
                         char_start, char_end, anchor_text, context_before,
                         context_after, body, resolved, created_at, updated_at
                  FROM comments WHERE id = ?1",
@@ -436,7 +437,7 @@ fn now_iso8601() -> String {
 fn read_comment_row(row: &rusqlite::Row) -> rusqlite::Result<StoredComment> {
     Ok(StoredComment {
         id: row.get(0)?,
-        base_ref: row.get(1)?,
+        merge_base: row.get(1)?,
         head_ref: row.get(2)?,
         file_path: row.get(3)?,
         line_start: row.get(4)?,
@@ -471,7 +472,7 @@ mod tests {
     /// Simple comment for tests that only care about scope + file + body.
     fn simple_comment(file: &str, line: i64, anchor: &str, body: &str) -> NewComment {
         NewComment {
-            base_ref: "main".to_string(),
+            merge_base: "main".to_string(),
             head_ref: "feat".to_string(),
             file_path: file.to_string(),
             line_start: line,
@@ -580,7 +581,7 @@ mod tests {
 
         let comment = db
             .create_comment(&NewComment {
-                base_ref: "main".to_string(),
+                merge_base: "main".to_string(),
                 head_ref: "feat".to_string(),
                 file_path: "src/lib.rs".to_string(),
                 line_start: 10,

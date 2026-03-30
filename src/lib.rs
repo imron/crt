@@ -126,7 +126,8 @@ fn cmd_review(base: Option<String>, reset: bool, _standalone: bool) -> Result<()
         );
     }
 
-    let base_commit_id = repo.resolve_commit(&base)?;
+    repo.resolve_commit(&base)?; // validate base ref
+    let merge_base = repo.merge_base(&base, "HEAD")?;
 
     // Ensure .crt/ directory exists
     let crt_dir = ctx.repo_root.join(".crt");
@@ -139,24 +140,26 @@ fn cmd_review(base: Option<String>, reset: bool, _standalone: bool) -> Result<()
 
     if reset {
         println!(
-            "Reset review state for ({}, {}) — not yet implemented (stage 9)",
-            base, ctx.head_ref
+            "Reset review state for (merge_base: {}, head: {})",
+            &merge_base[..12],
+            ctx.head_ref
         );
+        println!("Not yet implemented (stage 9).");
         return Ok(());
     }
 
     println!("crt — Code Review Tool\n");
-    println!("  repo root:  {}", ctx.repo_root.display());
-    println!("  worktree:   {}", ctx.worktree.display());
-    println!("  base ref:   {}", base);
-    println!("  head ref:   {}", ctx.head_ref);
-    println!("  base commit: {}", &base_commit_id[..12]);
-    println!("  db path:    {}", crt_dir.join("reviews.db").display());
+    println!("  repo root:   {}", ctx.repo_root.display());
+    println!("  worktree:    {}", ctx.worktree.display());
+    println!("  base ref:    {}", base);
+    println!("  merge base:  {}", &merge_base[..12]);
+    println!("  head ref:    {}", ctx.head_ref);
+    println!("  db path:     {}", crt_dir.join("reviews.db").display());
 
-    let changes = repo.list_changed_files(&base, "HEAD")?;
+    let changes = repo.list_changed_files(&merge_base, "HEAD")?;
 
     if changes.is_empty() {
-        println!("\n  No changes between {} and HEAD.", base);
+        println!("\n  No changes between {} and HEAD.", &merge_base[..12]);
     } else {
         println!("\n  Changed files ({}):", changes.len());
         for change in &changes {
