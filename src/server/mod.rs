@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, broadcast};
+use tokio_util::sync::CancellationToken;
 
 use crate::db::Database;
 
@@ -112,7 +113,8 @@ impl Default for ServerState {
 
 impl ServerState {
     pub fn new() -> Self {
-        let (notify_tx, _) = broadcast::channel(64);
+        const NOTIFY_CHANNEL_CAPACITY: usize = 64;
+        let (notify_tx, _) = broadcast::channel(NOTIFY_CHANNEL_CAPACITY);
         Self {
             databases: Mutex::new(HashMap::new()),
             notify_tx,
@@ -125,7 +127,6 @@ impl ServerState {
         if let Some(db) = dbs.get(db_path) {
             return Ok(Arc::clone(db));
         }
-        // Database::open is sync, run on blocking thread
         let path_owned = db_path.to_path_buf();
         let db = tokio::task::spawn_blocking(move || Database::open(&path_owned))
             .await
@@ -137,26 +138,79 @@ impl ServerState {
 }
 
 // ---------------------------------------------------------------------------
-// Persistent server
+// Persistent server (foreground, logs to stderr, SIGINT to stop)
 // ---------------------------------------------------------------------------
 
 /// Start the persistent server, listening on the given socket path.
 pub async fn run_persistent(socket_path: &Path) -> Result<()> {
-    // Handle stale socket
+    let listener = bind_socket(socket_path, true).await?;
+    eprintln!("crt server listening on {}", socket_path.display());
+
+    let state = Arc::new(ServerState::new());
+    let cancel = CancellationToken::new();
+
+    // Shut down on SIGINT
+    let cancel_clone = cancel.clone();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        eprintln!("\nShutting down...");
+        cancel_clone.cancel();
+    });
+
+    accept_loop(listener, state, cancel, true).await;
+
+    let _ = std::fs::remove_file(socket_path);
+    eprintln!("Server stopped.");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Embedded server (background task, silent, socket-based)
+// ---------------------------------------------------------------------------
+
+/// Start an embedded server as a background task. Returns a cancellation
+/// token that stops the server when dropped/cancelled.
+///
+/// The server binds to `socket_path` and accepts connections. It produces
+/// no stderr output. Other clients can connect to the same socket.
+pub async fn start_embedded(socket_path: &Path) -> Result<CancellationToken> {
+    let listener = bind_socket(socket_path, false).await?;
+    let state = Arc::new(ServerState::new());
+    let cancel = CancellationToken::new();
+    let socket_path_owned = socket_path.to_path_buf();
+
+    let cancel_clone = cancel.clone();
+    tokio::spawn(async move {
+        accept_loop(listener, state, cancel_clone, false).await;
+        let _ = std::fs::remove_file(&socket_path_owned);
+    });
+
+    Ok(cancel)
+}
+
+// ---------------------------------------------------------------------------
+// Shared infrastructure
+// ---------------------------------------------------------------------------
+
+/// Bind to a Unix socket, handling stale sockets.
+async fn bind_socket(socket_path: &Path, verbose: bool) -> Result<UnixListener> {
     if socket_path.exists() {
-        match UnixStream::connect(socket_path).await {
-            Ok(_) => {
-                bail!(
-                    "Another server is already running on {}",
-                    socket_path.display()
-                );
-            }
-            Err(_) => {
-                std::fs::remove_file(socket_path).with_context(|| {
-                    format!("Failed to remove stale socket at {}", socket_path.display())
-                })?;
-                eprintln!("Removed stale socket at {}", socket_path.display());
-            }
+        // Try connecting to see if another server is running
+        let is_alive = UnixStream::connect(socket_path).await.is_ok();
+
+        if is_alive {
+            bail!(
+                "Another server is already running on {}",
+                socket_path.display()
+            );
+        }
+
+        // Stale socket — remove it
+        std::fs::remove_file(socket_path).with_context(|| {
+            format!("Failed to remove stale socket at {}", socket_path.display())
+        })?;
+        if verbose {
+            eprintln!("Removed stale socket at {}", socket_path.display());
         }
     }
 
@@ -166,46 +220,49 @@ pub async fn run_persistent(socket_path: &Path) -> Result<()> {
             .with_context(|| format!("Failed to create directory {}", parent.display()))?;
     }
 
-    let listener = UnixListener::bind(socket_path)
-        .with_context(|| format!("Failed to bind to {}", socket_path.display()))?;
+    UnixListener::bind(socket_path)
+        .with_context(|| format!("Failed to bind to {}", socket_path.display()))
+}
 
-    eprintln!("crt server listening on {}", socket_path.display());
-
-    let state = Arc::new(ServerState::new());
-    let socket_path_owned = socket_path.to_path_buf();
-
-    let shutdown = tokio::signal::ctrl_c();
-    tokio::pin!(shutdown);
-
+/// Core accept loop shared by persistent and embedded servers.
+async fn accept_loop(
+    listener: UnixListener,
+    state: Arc<ServerState>,
+    cancel: CancellationToken,
+    verbose: bool,
+) {
     loop {
         tokio::select! {
             accept = listener.accept() => {
                 match accept {
                     Ok((stream, _addr)) => {
-                        eprintln!("Client connected");
+                        if verbose {
+                            eprintln!("Client connected");
+                        }
                         let state = Arc::clone(&state);
+                        let v = verbose;
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, state).await {
-                                eprintln!("Connection error: {e}");
+                            let result = handle_connection(stream, state).await;
+                            if v {
+                                if let Err(e) = result {
+                                    eprintln!("Connection error: {e}");
+                                }
+                                eprintln!("Client disconnected");
                             }
-                            eprintln!("Client disconnected");
                         });
                     }
                     Err(e) => {
-                        eprintln!("Accept error: {e}");
+                        if verbose {
+                            eprintln!("Accept error: {e}");
+                        }
                     }
                 }
             }
-            _ = &mut shutdown => {
-                eprintln!("\nShutting down...");
+            _ = cancel.cancelled() => {
                 break;
             }
         }
     }
-
-    let _ = std::fs::remove_file(&socket_path_owned);
-    eprintln!("Server stopped.");
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -281,28 +338,59 @@ async fn send_response(
 // Dispatch
 // ---------------------------------------------------------------------------
 
-/// All known method names for stub registration.
-const STUB_METHODS: &[&str] = &[
-    "list_changed_files",
-    "get_file_diff",
-    "get_file_content",
-    "mark_reviewed",
-    "unmark_reviewed",
-    "reset_reviews",
-    "create_comment",
-    "list_comments",
-    "get_comment",
-    "update_comment",
-    "resolve_comment",
-    "unresolve_comment",
-    "delete_comment",
-    "apply_comments",
-    "clear_comments",
-    "search_codebase",
-    "find_definition",
-    "track_repo",
-    "list_repos",
-];
+/// All API methods the server supports. As methods are implemented,
+/// their dispatch arms move from returning `ERR_NOT_IMPLEMENTED` to
+/// calling real handlers. The compiler enforces exhaustive matching.
+enum Method {
+    Init,
+    ListChangedFiles,
+    GetFileDiff,
+    GetFileContent,
+    MarkReviewed,
+    UnmarkReviewed,
+    ResetReviews,
+    CreateComment,
+    ListComments,
+    GetComment,
+    UpdateComment,
+    ResolveComment,
+    UnresolveComment,
+    DeleteComment,
+    ApplyComments,
+    ClearComments,
+    SearchCodebase,
+    FindDefinition,
+    TrackRepo,
+    ListRepos,
+}
+
+impl Method {
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "init" => Some(Self::Init),
+            "list_changed_files" => Some(Self::ListChangedFiles),
+            "get_file_diff" => Some(Self::GetFileDiff),
+            "get_file_content" => Some(Self::GetFileContent),
+            "mark_reviewed" => Some(Self::MarkReviewed),
+            "unmark_reviewed" => Some(Self::UnmarkReviewed),
+            "reset_reviews" => Some(Self::ResetReviews),
+            "create_comment" => Some(Self::CreateComment),
+            "list_comments" => Some(Self::ListComments),
+            "get_comment" => Some(Self::GetComment),
+            "update_comment" => Some(Self::UpdateComment),
+            "resolve_comment" => Some(Self::ResolveComment),
+            "unresolve_comment" => Some(Self::UnresolveComment),
+            "delete_comment" => Some(Self::DeleteComment),
+            "apply_comments" => Some(Self::ApplyComments),
+            "clear_comments" => Some(Self::ClearComments),
+            "search_codebase" => Some(Self::SearchCodebase),
+            "find_definition" => Some(Self::FindDefinition),
+            "track_repo" => Some(Self::TrackRepo),
+            "list_repos" => Some(Self::ListRepos),
+            _ => None,
+        }
+    }
+}
 
 async fn dispatch(
     request: &JsonRpcRequest,
@@ -311,33 +399,48 @@ async fn dispatch(
     conn_ctx: &mut Option<ConnectionContext>,
     conn_db: &mut Option<Arc<Mutex<Database>>>,
 ) -> JsonRpcResponse {
-    // `init` doesn't require prior initialization
-    if request.method == "init" {
-        return api::handle_init(&request.params, id, state, conn_ctx, conn_db).await;
-    }
+    let method = match Method::from_str(&request.method) {
+        Some(m) => m,
+        None => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_METHOD_NOT_FOUND,
+                format!("Method '{}' not found", request.method),
+            );
+        }
+    };
 
-    // All other methods require initialization
-    if conn_ctx.is_none() || conn_db.is_none() {
-        return JsonRpcResponse::error(
+    // Dispatch — the compiler ensures every variant is handled.
+    // `init` is the only method that doesn't require prior initialization.
+    match method {
+        Method::Init => api::handle_init(&request.params, id, state, conn_ctx, conn_db).await,
+        _ if conn_ctx.is_none() || conn_db.is_none() => JsonRpcResponse::error(
             id.clone(),
             ERR_NOT_INITIALIZED,
             "Connection not initialized. Send 'init' first.".to_string(),
-        );
-    }
-
-    // Check if it's a known stub method
-    if STUB_METHODS.contains(&request.method.as_str()) {
-        return JsonRpcResponse::error(
+        ),
+        Method::ListChangedFiles
+        | Method::GetFileDiff
+        | Method::GetFileContent
+        | Method::MarkReviewed
+        | Method::UnmarkReviewed
+        | Method::ResetReviews
+        | Method::CreateComment
+        | Method::ListComments
+        | Method::GetComment
+        | Method::UpdateComment
+        | Method::ResolveComment
+        | Method::UnresolveComment
+        | Method::DeleteComment
+        | Method::ApplyComments
+        | Method::ClearComments
+        | Method::SearchCodebase
+        | Method::FindDefinition
+        | Method::TrackRepo
+        | Method::ListRepos => JsonRpcResponse::error(
             id.clone(),
             ERR_NOT_IMPLEMENTED,
             format!("Method '{}' is not yet implemented", request.method),
-        );
+        ),
     }
-
-    // Unknown method
-    JsonRpcResponse::error(
-        id.clone(),
-        ERR_METHOD_NOT_FOUND,
-        format!("Method '{}' not found", request.method),
-    )
 }

@@ -132,7 +132,8 @@ impl Repo {
                     (name, false)
                 } else {
                     let oid = head.target().context("HEAD has no target")?;
-                    (oid.to_string()[..8].to_string(), true)
+                    let hash = oid.to_string();
+                    (short_hash(&hash), true)
                 }
             }
             Err(e) => {
@@ -414,6 +415,12 @@ fn hash_bytes(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     format!("{:x}", hasher.finalize())
+}
+
+/// Truncate a hex hash to a short display form, safely.
+pub fn short_hash(hash: &str) -> String {
+    const SHORT_HASH_LEN: usize = 12;
+    hash.get(..SHORT_HASH_LEN).unwrap_or(hash).to_string()
 }
 
 // ---------------------------------------------------------------------------
