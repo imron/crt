@@ -16,7 +16,7 @@ pub mod search;
 pub mod server;
 pub mod ui;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -118,71 +118,40 @@ fn cmd_server() -> Result<()> {
 fn cmd_review(base: Option<String>, reset: bool, _standalone: bool) -> Result<()> {
     let base = base.context("A base ref is required.\n\nUsage: crt <BASE>\n\nExample: crt main")?;
 
-    // Temporary: direct git calls until client library is built (Stage 5b)
-    let cwd = std::env::current_dir().context("Failed to determine current directory")?;
-    let repo = git::Repo::open(&cwd)?;
-    let ctx = repo.context()?;
+    let socket_path = default_socket_path()?;
+    let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
 
-    if ctx.is_detached {
-        eprintln!(
-            "Warning: HEAD is detached at {}. Review state will be scoped to this commit hash.",
-            ctx.head_ref
-        );
-    }
+    rt.block_on(async {
+        let client = client::Client::connect(&socket_path).await?;
+        let cwd = std::env::current_dir().context("Failed to determine current directory")?;
+        let init = client.init(&cwd.to_string_lossy(), &base).await?;
 
-    repo.resolve_commit(&base)?; // validate base ref
-    let merge_base = repo.merge_base(&base, "HEAD")?;
-
-    // Ensure .crt/ directory exists
-    let crt_dir = ctx.repo_root.join(".crt");
-    if !crt_dir.exists() {
-        std::fs::create_dir_all(&crt_dir)
-            .with_context(|| format!("Failed to create {}", crt_dir.display()))?;
-    }
-
-    check_gitignore(&ctx.repo_root);
-
-    if reset {
-        println!(
-            "Reset review state for (merge_base: {}, head: {})",
-            &merge_base[..12],
-            ctx.head_ref
-        );
-        println!("Not yet implemented (stage 9).");
-        return Ok(());
-    }
-
-    println!("crt — Code Review Tool\n");
-    println!("  repo root:   {}", ctx.repo_root.display());
-    println!("  worktree:    {}", ctx.worktree.display());
-    println!("  base ref:    {}", base);
-    println!("  merge base:  {}", &merge_base[..12]);
-    println!("  head ref:    {}", ctx.head_ref);
-    println!("  db path:     {}", crt_dir.join("reviews.db").display());
-
-    let changes = repo.list_changed_files(&merge_base, "HEAD")?;
-
-    if changes.is_empty() {
-        println!("\n  No changes between {} and HEAD.", &merge_base[..12]);
-    } else {
-        println!("\n  Changed files ({}):", changes.len());
-        for change in &changes {
-            let marker = match change.kind {
-                git::ChangeKind::Added => "+",
-                git::ChangeKind::Deleted => "-",
-                git::ChangeKind::Modified => "~",
-                git::ChangeKind::Renamed => "→",
-            };
-            if let Some(old) = &change.old_path {
-                println!("    {} {} → {}", marker, old, change.path);
-            } else {
-                println!("    {} {}", marker, change.path);
-            }
+        if reset {
+            println!(
+                "Reset review state for (merge_base: {}, head: {})",
+                &init.merge_base[..12],
+                init.head_ref
+            );
+            println!("Not yet implemented (stage 9).");
+            return Ok(());
         }
-    }
 
-    println!("\nTUI not yet implemented (stage 6).");
-    Ok(())
+        println!("crt — Code Review Tool\n");
+        println!("  repo root:   {}", init.repo_root);
+        println!("  worktree:    {}", init.worktree);
+        println!("  base ref:    {}", init.base_ref);
+        println!("  merge base:  {}", &init.merge_base[..12]);
+        println!("  head ref:    {}", init.head_ref);
+
+        // list_changed_files is a stub for now — will error
+        match client.list_changed_files().await {
+            Ok(files) => println!("\n  Changed files: {files}"),
+            Err(_) => println!("\n  (file listing not yet implemented via server)"),
+        }
+
+        println!("\nTUI not yet implemented (stage 6).");
+        Ok(())
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -198,27 +167,4 @@ pub fn default_socket_path() -> Result<PathBuf> {
             .with_context(|| format!("Failed to create {}", crt_dir.display()))?;
     }
     Ok(crt_dir.join("server.sock"))
-}
-
-fn check_gitignore(repo_root: &Path) {
-    let gitignore_path = repo_root.join(".gitignore");
-    if gitignore_path.exists() {
-        if let Ok(contents) = std::fs::read_to_string(&gitignore_path) {
-            let has_crt = contents.lines().any(|line| {
-                let trimmed = line.trim();
-                trimmed == ".crt" || trimmed == ".crt/" || trimmed == "/.crt" || trimmed == "/.crt/"
-            });
-            if !has_crt {
-                eprintln!(
-                    "Warning: .crt/ is not in .gitignore. \
-                     Consider adding it to avoid committing review state."
-                );
-            }
-        }
-    } else {
-        eprintln!(
-            "Warning: No .gitignore found. \
-             Consider creating one and adding .crt/ to avoid committing review state."
-        );
-    }
 }
