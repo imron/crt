@@ -12,5 +12,5 @@ fn get_git_hash() -> Option<String> {
     let repo = git2::Repository::discover(".").ok()?;
     let head = repo.head().ok()?;
     let commit = head.peel_to_commit().ok()?;
-    Some(commit.id().to_string()[..12].to_string())
+    Some(commit.id().to_string())
 }
