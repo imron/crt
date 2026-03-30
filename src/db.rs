@@ -9,7 +9,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use chrono::Local;
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
 // ---------------------------------------------------------------------------
 // Public types

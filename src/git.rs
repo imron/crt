@@ -1,81 +1,18 @@
 //! Git operations via git2: changed files, diffs, blobs, worktree resolution.
 //!
 //! This module exposes a clean public API that hides git2 types from callers.
+//! Core data types (`FileChange`, `DiffContent`, etc.) are defined in
+//! [`crate::model`] and re-exported here for convenience.
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 
-// ---------------------------------------------------------------------------
-// Public types (no git2 types leak through these)
-// ---------------------------------------------------------------------------
-
-/// How a file changed between the base and head commits.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChangeKind {
-    Added,
-    Deleted,
-    Modified,
-    Renamed,
-}
-
-/// A file that changed between base and HEAD.
-#[derive(Debug, Clone)]
-pub struct FileChange {
-    /// Path in the new (HEAD) tree. For deletions this is the old path.
-    pub path: String,
-    /// For renames, the path in the old (base) tree.
-    pub old_path: Option<String>,
-    pub kind: ChangeKind,
-}
-
-/// A single line within a diff hunk.
-#[derive(Debug, Clone)]
-pub struct DiffLine {
-    pub kind: LineKind,
-    pub content: String,
-    /// Line number in the old file (None for additions).
-    pub old_lineno: Option<u32>,
-    /// Line number in the new file (None for deletions).
-    pub new_lineno: Option<u32>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LineKind {
-    Context,
-    Addition,
-    Deletion,
-}
-
-/// A single hunk within a diff.
-#[derive(Debug, Clone)]
-pub struct DiffHunk {
-    pub old_start: u32,
-    pub old_lines: u32,
-    pub new_start: u32,
-    pub new_lines: u32,
-    pub header: String,
-    pub lines: Vec<DiffLine>,
-}
-
-/// The complete diff for a single file.
-#[derive(Debug, Clone)]
-pub struct DiffContent {
-    pub hunks: Vec<DiffHunk>,
-    pub is_binary: bool,
-    /// Stable SHA-256 hash of the diff content.
-    pub diff_hash: String,
-}
-
-/// Which version of a file to read.
-#[derive(Debug, Clone, Copy)]
-pub enum FileVersion {
-    /// The version at the base commit.
-    Base,
-    /// The version at HEAD.
-    Head,
-}
+// Re-export model types so existing callers (e.g. `git::ChangeKind`) still work.
+pub use crate::model::{
+    ChangeKind, DiffContent, DiffHunk, DiffLine, FileChange, FileVersion, LineKind,
+};
 
 /// Resolved repository context from a working directory path.
 #[derive(Debug, Clone)]

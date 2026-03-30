@@ -419,9 +419,16 @@ async fn dispatch(
             ERR_NOT_INITIALIZED,
             "Connection not initialized. Send 'init' first.".to_string(),
         ),
-        Method::ListChangedFiles
-        | Method::GetFileDiff
-        | Method::GetFileContent
+        Method::ListChangedFiles => {
+            let ctx = conn_ctx.as_ref().unwrap();
+            let db = conn_db.as_ref().unwrap();
+            api::handle_list_changed_files(id, ctx, db).await
+        }
+        Method::GetFileDiff => {
+            let ctx = conn_ctx.as_ref().unwrap();
+            api::handle_get_file_diff(&request.params, id, ctx).await
+        }
+        Method::GetFileContent
         | Method::MarkReviewed
         | Method::UnmarkReviewed
         | Method::ResetReviews

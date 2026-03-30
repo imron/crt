@@ -216,8 +216,9 @@ async fn test_stub_method() {
     let server = TestServer::start().await;
     let mut conn = server.connect_and_init().await;
 
+    // Use a method that is still a stub (not yet implemented).
     let resp = conn
-        .request("list_changed_files", serde_json::json!({}))
+        .request("mark_reviewed", serde_json::json!({"file_path": "test.rs"}))
         .await;
 
     assert_eq!(resp["error"]["code"], -32001);
@@ -236,7 +237,8 @@ async fn test_multiple_clients() {
     let mut conn1 = server.connect_and_init().await;
     let mut conn2 = server.connect_and_init().await;
 
-    // Both should be able to send requests independently
+    // Both should be able to send requests independently.
+    // list_changed_files is now implemented and returns a result.
     let resp1 = conn1
         .request("list_changed_files", serde_json::json!({}))
         .await;
@@ -244,8 +246,11 @@ async fn test_multiple_clients() {
         .request("list_changed_files", serde_json::json!({}))
         .await;
 
-    assert_eq!(resp1["error"]["code"], -32001);
-    assert_eq!(resp2["error"]["code"], -32001);
+    // Both should succeed (result is present, no error).
+    assert!(resp1.get("result").is_some(), "client 1 should get result");
+    assert!(resp2.get("result").is_some(), "client 2 should get result");
+    assert!(resp1.get("error").is_none(), "client 1 should have no error");
+    assert!(resp2.get("error").is_none(), "client 2 should have no error");
 }
 
 #[tokio::test]
