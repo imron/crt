@@ -18,7 +18,7 @@ use ratatui::Frame;
 
 use crate::app::AppState;
 use crate::git;
-use crate::model::{PaneFocus, ReviewStatus};
+use crate::model::ReviewStatus;
 
 /// File list pane width as a percentage of terminal width.
 const FILE_LIST_PCT: u16 = 30;
@@ -47,7 +47,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) {
             state.file_list_area = panes[0];
             state.diff_area = panes[1];
             file_list::draw(frame, state, panes[0]);
-            draw_diff_pane(frame, state, panes[1]);
+            diff_view::draw(frame, state, panes[1]);
         }
         (true, false) => {
             state.file_list_area = main_area;
@@ -57,7 +57,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) {
         (false, true) => {
             state.file_list_area = Rect::default();
             state.diff_area = main_area;
-            draw_diff_pane(frame, state, main_area);
+            diff_view::draw(frame, state, main_area);
         }
         (false, false) => {
             // Should never happen — toggle logic prevents it.
@@ -76,80 +76,6 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) {
     if state.show_help {
         draw_help_overlay(frame);
     }
-}
-
-// ---------------------------------------------------------------------------
-// Diff pane (placeholder — full implementation in Stage 8)
-// ---------------------------------------------------------------------------
-
-fn draw_diff_pane(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    let focused = state.pane_focus == PaneFocus::Diff;
-    let border_style = pane_border_style(focused);
-
-    let (title, content) = match state.selected_file_entry() {
-        None => (" Diff ".to_string(), vec![Line::from("No files changed.")]),
-        Some(entry) => {
-            let title = format!(" {} ", entry.change.path);
-            let mut lines = Vec::new();
-
-            if entry.diff.is_binary {
-                lines.push(Line::from(Span::styled(
-                    "Binary file",
-                    Style::default().fg(Color::DarkGray),
-                )));
-            } else if entry.diff.hunks.is_empty() {
-                lines.push(Line::from("Empty diff."));
-            } else {
-                // Render a basic inline diff (placeholder — Stage 8 does this properly).
-                for hunk in &entry.diff.hunks {
-                    lines.push(Line::from(Span::styled(
-                        hunk.header.clone(),
-                        Style::default().fg(Color::Cyan),
-                    )));
-                    for line in &hunk.lines {
-                        let (prefix, color) = match line.kind {
-                            crate::model::LineKind::Context => (" ", Color::Gray),
-                            crate::model::LineKind::Addition => ("+", Color::Green),
-                            crate::model::LineKind::Deletion => ("-", Color::Red),
-                        };
-                        let text = format!("{prefix}{}", line.content.trim_end_matches('\n'));
-                        lines.push(Line::from(Span::styled(text, Style::default().fg(color))));
-                    }
-                }
-            }
-
-            (title, lines)
-        }
-    };
-
-    // Store plain text for clipboard extraction.
-    state.diff_rendered_text = content
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        })
-        .collect();
-
-    // Update content/viewport dimensions so key handlers can clamp scroll.
-    // Inner height = area minus top and bottom borders.
-    state.diff_content_height = content.len();
-    state.diff_view_height = area.height.saturating_sub(2) as usize;
-    state.clamp_diff_scroll();
-
-    // Apply scroll offset.
-    let visible_lines: Vec<Line> = content.into_iter().skip(state.diff_scroll).collect();
-
-    let paragraph = Paragraph::new(visible_lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(border_style)
-            .title(title),
-    );
-
-    frame.render_widget(paragraph, area);
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +236,8 @@ fn draw_help_overlay(frame: &mut Frame) {
         Line::from("  Tab           Switch pane focus"),
         Line::from("  Ctrl-n / p    Next / previous file"),
         Line::from("  Ctrl-w h/l    Focus left / right pane"),
+        Line::from("  s             Cycle: diff / HEAD / base"),
+        Line::from("  Ctrl-i / o    Next / previous diff hunk"),
         Line::from("  1 / 2         Toggle file list / diff pane"),
         Line::from("  Ctrl-c        Press twice to quit"),
         Line::from(""),
@@ -326,9 +254,10 @@ fn draw_help_overlay(frame: &mut Frame) {
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from("  j / k         Scroll down / up"),
-        Line::from("  Space         Page down"),
+        Line::from("  Space / Ctrl-b Page down / up"),
         Line::from("  Ctrl-d / u    Half page down / up"),
         Line::from("  g / G         Top / bottom"),
+        Line::from("  Enter         Expand reviewed file diff"),
         Line::from(""),
         Line::from(Span::styled(
             " Mouse",

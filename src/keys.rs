@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::AppState;
-use crate::model::PaneFocus;
+use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
 /// How long the "Press Ctrl-C again" prompt stays active.
 const CTRL_C_TIMEOUT: Duration = Duration::from_secs(3);
@@ -94,7 +94,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             // Next file.
             if !state.files.is_empty() {
                 state.selected_file = (state.selected_file + 1) % state.files.len();
-                state.diff_scroll = 0;
+                on_file_changed(state);
             }
             state.status_message = None;
             return;
@@ -107,7 +107,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
                 } else {
                     state.selected_file - 1
                 };
-                state.diff_scroll = 0;
+                on_file_changed(state);
             }
             state.status_message = None;
             return;
@@ -120,6 +120,24 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
         (KeyCode::Char('2'), KeyModifiers::NONE) => {
             toggle_pane_visibility(state, PaneFocus::Diff);
             state.status_message = None;
+            return;
+        }
+        (KeyCode::Char('i'), KeyModifiers::CONTROL) => {
+            // Next hunk.
+            jump_to_next_hunk(state);
+            state.status_message = None;
+            return;
+        }
+        (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
+            // Previous hunk.
+            jump_to_prev_hunk(state);
+            state.status_message = None;
+            return;
+        }
+        (KeyCode::Char('s'), KeyModifiers::NONE) => {
+            // Cycle: Diff → Head → Base → Diff.
+            state.status_message = None;
+            cycle_view_mode(state);
             return;
         }
         _ => {}
@@ -162,27 +180,200 @@ fn toggle_pane_visibility(state: &mut AppState, pane: PaneFocus) {
     }
 }
 
-/// File list pane keys. Full implementation in Stage 7.
+/// Reset diff-related state when the selected file changes.
+fn on_file_changed(state: &mut AppState) {
+    state.reviewed_diff_expanded = false;
+    state.hunk_start_rows.clear();
+    state.hunk_end_rows.clear();
+    state.load_head_content();
+
+    // Reload base content if we're currently in base view.
+    if state.content_mode == ContentMode::FullFile
+        && state.render_variant == RenderVariant::BaseVersion
+    {
+        state.load_base_content();
+    } else {
+        state.base_content = None;
+    }
+
+    // Scroll to the first hunk (approximate: new_start - 1 unchanged lines before it).
+    state.diff_scroll = state
+        .selected_file_entry()
+        .and_then(|e| e.diff.hunks.first())
+        .map(|h| (h.new_start as usize).saturating_sub(1))
+        .unwrap_or(0);
+}
+
+/// Cycle view mode: Diff → Head → Base → Diff.
+/// Preserves approximate scroll position by finding the closest line
+/// in the target view that corresponds to the current position.
+fn cycle_view_mode(state: &mut AppState) {
+    // Determine which new-file line is currently at the top of the viewport.
+    // In diff mode, a display row maps to a new-file line via the hunk data.
+    // For simplicity, use the approximate relationship: for gaps between
+    // hunks, display_row ≈ new_lineno. For hunk regions, the line number
+    // from the diff content is used.
+    let approx_line = estimate_current_line(state);
+
+    match (&state.content_mode, &state.render_variant) {
+        (ContentMode::Diff, _) => {
+            state.content_mode = ContentMode::FullFile;
+            state.render_variant = RenderVariant::HeadVersion;
+            // In HEAD view, display row ≈ lineno - 1.
+            state.diff_scroll = approx_line.saturating_sub(1);
+        }
+        (ContentMode::FullFile, RenderVariant::HeadVersion) => {
+            if state.base_content.is_none() {
+                state.load_base_content();
+            }
+            state.render_variant = RenderVariant::BaseVersion;
+            // In base view, the line numbers differ from HEAD due to
+            // additions/deletions. Use the old-file line that corresponds
+            // to the current new-file line via the diff mapping.
+            let base_line = map_new_to_old_line(state, approx_line);
+            state.diff_scroll = base_line.saturating_sub(1);
+        }
+        (ContentMode::FullFile, RenderVariant::BaseVersion) => {
+            state.content_mode = ContentMode::Diff;
+            state.render_variant = RenderVariant::Inline;
+            // Map old-file line back to approximate display row in diff view.
+            let old_line = state.diff_scroll + 1;
+            let new_line = map_old_to_new_line(state, old_line);
+            state.diff_scroll = new_line.saturating_sub(1);
+        }
+        _ => {
+            state.content_mode = ContentMode::Diff;
+            state.render_variant = RenderVariant::Inline;
+        }
+    }
+}
+
+/// Estimate the new-file line number at the current scroll position.
+fn estimate_current_line(state: &AppState) -> usize {
+    match state.content_mode {
+        ContentMode::Diff => {
+            // In inline diff mode, display rows include deletion lines
+            // (which don't have new-file line numbers). The approximate
+            // new-file line is scroll position adjusted for deletions
+            // in hunks above the scroll position.
+            let scroll = state.diff_scroll;
+            if let Some(entry) = state.selected_file_entry() {
+                let mut deletions_above = 0usize;
+                for (i, &start) in state.hunk_start_rows.iter().enumerate() {
+                    let end = state.hunk_end_rows.get(i).copied().unwrap_or(start);
+                    if start > scroll {
+                        break;
+                    }
+                    // Count deletion lines in this hunk that are above scroll.
+                    let hunk = &entry.diff.hunks[i.min(entry.diff.hunks.len() - 1)];
+                    let hunk_scroll_end = scroll.min(end);
+                    for (j, line) in hunk.lines.iter().enumerate() {
+                        if start + j > hunk_scroll_end {
+                            break;
+                        }
+                        if line.kind == crate::model::LineKind::Deletion && start + j <= scroll {
+                            deletions_above += 1;
+                        }
+                    }
+                }
+                scroll.saturating_sub(deletions_above) + 1
+            } else {
+                scroll + 1
+            }
+        }
+        ContentMode::FullFile => {
+            // In full-file mode, display row = lineno - 1.
+            state.diff_scroll + 1
+        }
+    }
+}
+
+/// Map a new-file line number to the corresponding old-file line number
+/// using the diff hunk data.
+fn map_new_to_old_line(state: &AppState, new_line: usize) -> usize {
+    let entry = match state.selected_file_entry() {
+        Some(e) => e,
+        None => return new_line,
+    };
+    // Walk through hunks to compute the offset between old and new line numbers.
+    let mut offset: i64 = 0; // old_line = new_line + offset
+    for hunk in &entry.diff.hunks {
+        if (hunk.new_start as usize) > new_line {
+            break;
+        }
+        // Each hunk changes the offset by (old_lines - new_lines).
+        offset = (hunk.old_start as i64 + hunk.old_lines as i64)
+            - (hunk.new_start as i64 + hunk.new_lines as i64);
+    }
+    (new_line as i64 + offset).max(1) as usize
+}
+
+/// Map an old-file line number to the corresponding new-file line number.
+fn map_old_to_new_line(state: &AppState, old_line: usize) -> usize {
+    let entry = match state.selected_file_entry() {
+        Some(e) => e,
+        None => return old_line,
+    };
+    let mut offset: i64 = 0; // new_line = old_line + offset
+    for hunk in &entry.diff.hunks {
+        if (hunk.old_start as usize) > old_line {
+            break;
+        }
+        offset = (hunk.new_start as i64 + hunk.new_lines as i64)
+            - (hunk.old_start as i64 + hunk.old_lines as i64);
+    }
+    (old_line as i64 + offset).max(1) as usize
+}
+
+/// Jump to the next hunk (Ctrl-i).
+fn jump_to_next_hunk(state: &mut AppState) {
+    let current = state.diff_scroll;
+    if let Some(&row) = state.hunk_start_rows.iter().find(|&&r| r > current) {
+        state.diff_scroll = row;
+        state.clamp_diff_scroll();
+    }
+}
+
+/// Jump to the previous hunk (Ctrl-o).
+fn jump_to_prev_hunk(state: &mut AppState) {
+    let current = state.diff_scroll;
+    if let Some(&row) = state.hunk_start_rows.iter().rev().find(|&&r| r < current) {
+        state.diff_scroll = row;
+    }
+}
+
+/// File list pane keys.
 fn handle_file_list_key(state: &mut AppState, key: KeyEvent) {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => {
             if !state.files.is_empty() {
-                state.selected_file = (state.selected_file + 1).min(state.files.len() - 1);
-                state.diff_scroll = 0;
+                let new = (state.selected_file + 1).min(state.files.len() - 1);
+                if new != state.selected_file {
+                    state.selected_file = new;
+                    on_file_changed(state);
+                }
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            state.selected_file = state.selected_file.saturating_sub(1);
-            state.diff_scroll = 0;
+            let new = state.selected_file.saturating_sub(1);
+            if new != state.selected_file {
+                state.selected_file = new;
+                on_file_changed(state);
+            }
         }
         KeyCode::Char('g') => {
-            state.selected_file = 0;
-            state.diff_scroll = 0;
+            if state.selected_file != 0 {
+                state.selected_file = 0;
+                on_file_changed(state);
+            }
         }
         KeyCode::Char('G') => {
             if !state.files.is_empty() {
-                state.selected_file = state.files.len() - 1;
-                state.diff_scroll = 0;
+                let new = state.files.len() - 1;
+                if new != state.selected_file {
+                    state.selected_file = new;
+                    on_file_changed(state);
+                }
             }
         }
         KeyCode::Enter => {
@@ -194,9 +385,21 @@ fn handle_file_list_key(state: &mut AppState, key: KeyEvent) {
     }
 }
 
-/// Diff pane keys. Full implementation in Stage 8.
+/// Diff pane keys.
 fn handle_diff_key(state: &mut AppState, key: KeyEvent) {
     match (key.code, key.modifiers) {
+        (KeyCode::Enter, _) => {
+            // Expand reviewed file diff or no-op.
+            if let Some(entry) = state.selected_file_entry() {
+                if matches!(entry.status, ReviewStatus::Reviewed { .. })
+                    && !state.reviewed_diff_expanded
+                {
+                    state.reviewed_diff_expanded = true;
+                    state.diff_scroll = 0;
+                }
+            }
+            return;
+        }
         (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
             state.diff_scroll = state.diff_scroll.saturating_add(1);
             state.clamp_diff_scroll();
@@ -204,10 +407,14 @@ fn handle_diff_key(state: &mut AppState, key: KeyEvent) {
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
             state.diff_scroll = state.diff_scroll.saturating_sub(1);
         }
-        (KeyCode::Char(' '), KeyModifiers::NONE) => {
+        (KeyCode::Char(' '), _) => {
             // Page down.
             state.diff_scroll = state.diff_scroll.saturating_add(state.diff_view_height);
             state.clamp_diff_scroll();
+        }
+        (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
+            // Ctrl-b: page up (fallback for terminals that don't send Shift-Space).
+            state.diff_scroll = state.diff_scroll.saturating_sub(state.diff_view_height);
         }
         (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
             // Half page down.

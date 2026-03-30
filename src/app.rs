@@ -80,6 +80,18 @@ pub struct AppState {
     pub render_variant: RenderVariant,
     /// Vertical scroll offset in the diff view (in lines).
     pub diff_scroll: usize,
+    /// Whether a reviewed file's diff has been expanded via Enter.
+    /// Resets when selected_file changes.
+    pub reviewed_diff_expanded: bool,
+    /// HEAD version of the selected file (loaded from git on file change).
+    pub head_content: Option<String>,
+    /// Base version of the selected file (loaded from git on demand).
+    pub base_content: Option<String>,
+    /// Display row indices where each hunk starts (set during render,
+    /// used by Ctrl-i/Ctrl-o to jump between hunks).
+    pub hunk_start_rows: Vec<usize>,
+    /// Display row indices where each hunk ends (exclusive, set during render).
+    pub hunk_end_rows: Vec<usize>,
     /// Total lines of content in the diff pane (set during render).
     pub diff_content_height: usize,
     /// Visible lines in the diff pane (set during render).
@@ -136,6 +148,11 @@ impl AppState {
             content_mode: ContentMode::Diff,
             render_variant: RenderVariant::Inline,
             diff_scroll: 0,
+            reviewed_diff_expanded: false,
+            head_content: None,
+            base_content: None,
+            hunk_start_rows: Vec::new(),
+            hunk_end_rows: Vec::new(),
             diff_content_height: 0,
             diff_view_height: 0,
             show_comments: false,
@@ -172,6 +189,49 @@ impl AppState {
     /// Maximum scroll offset: the last line sits at the top of the viewport.
     pub fn max_diff_scroll(&self) -> usize {
         self.diff_content_height.saturating_sub(1)
+    }
+
+    /// Load HEAD content for the currently selected file from git.
+    pub fn load_head_content(&mut self) {
+        self.head_content = None;
+        if let Some(entry) = self.files.get(self.selected_file) {
+            let path = entry.change.path.clone();
+            if let Ok(repo) = crate::git::Repo::open(std::path::Path::new(&self.context.worktree))
+            {
+                self.head_content = repo.file_content("HEAD", &path).ok().flatten();
+            }
+        }
+    }
+
+    /// Load base content for the currently selected file from git.
+    pub fn load_base_content(&mut self) {
+        self.base_content = None;
+        if let Some(entry) = self.files.get(self.selected_file) {
+            let path = entry.change.path.clone();
+            if let Ok(repo) = crate::git::Repo::open(std::path::Path::new(&self.context.worktree))
+            {
+                self.base_content = repo
+                    .file_content(&self.context.merge_base, &path)
+                    .ok()
+                    .flatten();
+            }
+        }
+    }
+
+    /// Which hunk (0-indexed) the current scroll position is inside,
+    /// or None if between hunks or before/after all hunks.
+    pub fn current_hunk_index(&self) -> Option<usize> {
+        for (i, (&start, &end)) in self
+            .hunk_start_rows
+            .iter()
+            .zip(&self.hunk_end_rows)
+            .enumerate()
+        {
+            if self.diff_scroll >= start && self.diff_scroll < end {
+                return Some(i);
+            }
+        }
+        None
     }
 
     /// Clamp `diff_scroll` to the valid range.
@@ -216,7 +276,8 @@ impl App {
             }
         };
 
-        let state = AppState::new(context, files);
+        let mut state = AppState::new(context, files);
+        state.load_head_content();
         let terminal = setup_terminal().context("Failed to set up terminal")?;
 
         Ok(Self {
