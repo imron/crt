@@ -4,10 +4,10 @@
 //! the server broadcasts a notification to all other connections in the
 //! same scope.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// A server-to-client notification.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Notification {
     /// The scope this notification applies to.
     pub base_ref: String,
@@ -17,7 +17,7 @@ pub struct Notification {
 }
 
 /// Types of state changes that trigger notifications.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NotificationKind {
     /// A file's review status changed.
     ReviewChanged { file_path: String },

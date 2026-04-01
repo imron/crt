@@ -6,6 +6,7 @@
 
 pub mod app;
 pub mod client;
+pub mod config;
 pub mod db;
 pub mod git;
 pub mod keys;
@@ -131,12 +132,13 @@ fn cmd_review(base: Option<String>, reset: bool, standalone: bool) -> Result<()>
         let init = client.init(&cwd.to_string_lossy(), &base).await?;
 
         if reset {
+            let result = client.reset_reviews().await?;
             println!(
-                "Reset review state for (merge_base: {}, head: {})",
+                "Reset review state for (merge_base: {}, head: {}): {} review(s) cleared.",
                 git::short_hash(&init.merge_base),
-                init.head_ref
+                init.head_ref,
+                result.cleared
             );
-            println!("Not yet implemented (stage 9).");
             drop(client);
             shutdown_embedded(cancel_guard).await;
             return Ok(());
@@ -146,7 +148,7 @@ fn cmd_review(base: Option<String>, reset: bool, standalone: bool) -> Result<()>
         let mut tui = app::App::new(client, init)
             .await
             .context("Failed to initialize TUI")?;
-        tui.run().context("TUI error")?;
+        tui.run().await.context("TUI error")?;
 
         // Clean shutdown of embedded server if we started one.
         drop(tui);

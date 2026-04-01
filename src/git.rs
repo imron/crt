@@ -14,6 +14,24 @@ pub use crate::model::{
     ChangeKind, DiffContent, DiffHunk, DiffLine, FileChange, FileVersion, LineKind,
 };
 
+/// Diff preferences read from the user's git config.
+#[derive(Debug, Clone, Default)]
+pub struct GitDiffConfig {
+    /// `diff.algorithm` setting, if set.
+    pub algorithm: Option<crate::config::DiffAlgorithm>,
+}
+
+/// Per-line blame information.
+#[derive(Debug, Clone)]
+pub struct BlameLine {
+    /// Short commit hash (7 chars).
+    pub hash: String,
+    /// Author name.
+    pub author: String,
+    /// Commit date (YYYY-MM-DD).
+    pub date: String,
+}
+
 /// Resolved repository context from a working directory path.
 #[derive(Debug, Clone)]
 pub struct RepoContext {
@@ -210,12 +228,53 @@ impl Repo {
         head_ref: &str,
         file_path: &str,
     ) -> Result<DiffContent> {
+        self.diff_file_opts(
+            base_ref,
+            head_ref,
+            file_path,
+            crate::config::DiffAlgorithm::Patience,
+            false,
+        )
+    }
+
+    /// Compute the structured diff with configurable algorithm and whitespace.
+    pub fn diff_file_opts(
+        &self,
+        base_ref: &str,
+        head_ref: &str,
+        file_path: &str,
+        algorithm: crate::config::DiffAlgorithm,
+        ignore_whitespace: bool,
+    ) -> Result<DiffContent> {
         let base_tree = self.resolve_tree(base_ref)?;
         let head_tree = self.resolve_tree(head_ref)?;
 
+        // Histogram requires shelling out to git CLI.
+        if algorithm == crate::config::DiffAlgorithm::Histogram {
+            return self.diff_file_git_cli(
+                base_ref,
+                head_ref,
+                file_path,
+                "histogram",
+                ignore_whitespace,
+            );
+        }
+
         let mut diff_opts = git2::DiffOptions::new();
-        diff_opts.patience(true);
+        match algorithm {
+            crate::config::DiffAlgorithm::Myers => {} // default
+            crate::config::DiffAlgorithm::Patience => {
+                diff_opts.patience(true);
+            }
+            crate::config::DiffAlgorithm::Minimal => {
+                diff_opts.minimal(true);
+            }
+            crate::config::DiffAlgorithm::Histogram => unreachable!(),
+        }
         diff_opts.pathspec(file_path);
+        if ignore_whitespace {
+            diff_opts.ignore_whitespace(true);
+        }
 
         let diff = self
             .inner
@@ -253,63 +312,64 @@ impl Repo {
             });
         }
 
-        // Collect hunks and lines
-        let mut hunks: Vec<DiffHunk> = Vec::new();
-        let mut hasher = Sha256::new();
+        let mut result = parse_diff(&diff)?;
+        result.is_binary = is_binary;
+        Ok(result)
+    }
 
-        diff.print(git2::DiffFormat::Patch, |_delta, hunk, line| {
-            // Feed everything to the hasher for a stable hash
-            hasher.update([line.origin() as u8]);
-            hasher.update(line.content());
+    /// Compute a diff by shelling out to the `git` CLI for algorithms
+    /// not supported by libgit2 (e.g. histogram). The output is parsed
+    /// back via `git2::Diff::from_buffer`.
+    fn diff_file_git_cli(
+        &self,
+        base_ref: &str,
+        head_ref: &str,
+        file_path: &str,
+        algorithm: &str,
+        ignore_whitespace: bool,
+    ) -> Result<DiffContent> {
+        let worktree = self
+            .inner
+            .workdir()
+            .unwrap_or_else(|| self.inner.path())
+            .to_path_buf();
 
-            match line.origin() {
-                '+' | '-' | ' ' => {
-                    let diff_line = DiffLine {
-                        kind: match line.origin() {
-                            '+' => LineKind::Addition,
-                            '-' => LineKind::Deletion,
-                            _ => LineKind::Context,
-                        },
-                        content: String::from_utf8_lossy(line.content()).into_owned(),
-                        old_lineno: line.old_lineno(),
-                        new_lineno: line.new_lineno(),
-                    };
+        let mut cmd = std::process::Command::new("git");
+        cmd.current_dir(&worktree);
+        cmd.args(["diff", &format!("--diff-algorithm={algorithm}")]);
+        if ignore_whitespace {
+            cmd.arg("-w");
+        }
+        cmd.args([base_ref, head_ref, "--", file_path]);
 
-                    // If we have a current hunk, add the line to it
-                    if let Some(current_hunk) = hunks.last_mut() {
-                        current_hunk.lines.push(diff_line);
-                    }
-                }
-                'H' => {
-                    // Hunk header
-                    if let Some(h) = hunk {
-                        hunks.push(DiffHunk {
-                            old_start: h.old_start(),
-                            old_lines: h.old_lines(),
-                            new_start: h.new_start(),
-                            new_lines: h.new_lines(),
-                            header: String::from_utf8_lossy(line.content())
-                                .trim_end()
-                                .to_string(),
-                            lines: Vec::new(),
-                        });
-                    }
-                }
-                _ => {
-                    // File header lines, "No newline at end of file", etc.
-                }
-            }
-            true
-        })
-        .context("Failed to print diff")?;
+        let output = cmd
+            .output()
+            .context("Failed to run git diff (is git on PATH?)")?;
 
-        let hash = format!("{:x}", hasher.finalize());
+        if !output.status.success() && output.stdout.is_empty() {
+            // Non-zero exit with no output typically means no diff.
+            return Ok(DiffContent {
+                hunks: Vec::new(),
+                is_binary: false,
+                diff_hash: hash_bytes(b""),
+            });
+        }
 
-        Ok(DiffContent {
-            hunks,
-            is_binary,
-            diff_hash: hash,
-        })
+        // Check for binary.
+        let stdout_str = String::from_utf8_lossy(&output.stdout);
+        if stdout_str.contains("Binary files") && stdout_str.contains("differ") {
+            return Ok(DiffContent {
+                hunks: Vec::new(),
+                is_binary: true,
+                diff_hash: hash_bytes(b"<binary>"),
+            });
+        }
+
+        // Parse the unified diff output via git2.
+        let diff =
+            git2::Diff::from_buffer(&output.stdout).context("Failed to parse git diff output")?;
+
+        parse_diff(&diff)
     }
 
     /// Read the full content of a file at a given ref.
@@ -335,8 +395,88 @@ impl Repo {
     }
 
     // -----------------------------------------------------------------------
+    // Blame
+    // -----------------------------------------------------------------------
+
+    /// Compute blame for a file at a given ref.
+    /// Returns a Vec with one entry per line (1-indexed line numbers).
+    pub fn blame_file(&self, refspec: &str, file_path: &str) -> Result<Vec<BlameLine>> {
+        let commit = self
+            .inner
+            .revparse_single(refspec)
+            .with_context(|| format!("Could not resolve ref '{}'", refspec))?
+            .peel_to_commit()
+            .with_context(|| format!("Ref '{}' does not point to a commit", refspec))?;
+
+        let mut blame_opts = git2::BlameOptions::new();
+        blame_opts.newest_commit(commit.id());
+
+        let blame = self
+            .inner
+            .blame_file(std::path::Path::new(file_path), Some(&mut blame_opts))
+            .with_context(|| format!("Failed to blame {file_path}"))?;
+
+        // Count total lines by finding max line in the last hunk.
+        let total_lines = blame
+            .iter()
+            .map(|h| h.final_start_line() + h.lines_in_hunk() - 1)
+            .max()
+            .unwrap_or(0);
+
+        let mut result = Vec::with_capacity(total_lines);
+        for line_no in 1..=total_lines {
+            if let Some(hunk) = blame.get_line(line_no) {
+                let oid = hunk.final_commit_id();
+                let hash = format!("{}", oid)[..7.min(format!("{}", oid).len())].to_string();
+                let sig = hunk.final_signature();
+                let author = sig.name().unwrap_or("?").to_string();
+                let date = sig
+                    .when()
+                    .seconds()
+                    .try_into()
+                    .ok()
+                    .and_then(|secs| {
+                        chrono::DateTime::from_timestamp(secs, 0)
+                            .map(|dt| dt.format("%Y-%m-%d").to_string())
+                    })
+                    .unwrap_or_else(|| "??????????".to_string());
+                result.push(BlameLine { hash, author, date });
+            } else {
+                result.push(BlameLine {
+                    hash: "???????".to_string(),
+                    author: "?".to_string(),
+                    date: "??????????".to_string(),
+                });
+            }
+        }
+
+        Ok(result)
+    }
+
+    // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
+
+    /// Read diff preferences from the user's git config
+    /// (`diff.algorithm`), resolved with system → global → local precedence.
+    pub fn diff_config(&self) -> GitDiffConfig {
+        let config = match self.inner.config() {
+            Ok(c) => c,
+            Err(_) => return GitDiffConfig::default(),
+        };
+
+        let algorithm = config.get_string("diff.algorithm").ok().and_then(|s| {
+            match s.to_lowercase().as_str() {
+                "myers" | "default" => Some(crate::config::DiffAlgorithm::Myers),
+                "patience" => Some(crate::config::DiffAlgorithm::Patience),
+                "minimal" => Some(crate::config::DiffAlgorithm::Minimal),
+                "histogram" => Some(crate::config::DiffAlgorithm::Histogram),
+                _ => None,
+            }
+        });
+
+        GitDiffConfig { algorithm }
+    }
 
     fn resolve_tree(&self, refspec: &str) -> Result<git2::Tree<'_>> {
         let obj = self
@@ -346,6 +486,71 @@ impl Repo {
         obj.peel_to_tree()
             .with_context(|| format!("Ref '{}' does not point to a tree", refspec))
     }
+}
+
+/// Parse a `git2::Diff` into our `DiffContent` structure.
+fn parse_diff(diff: &git2::Diff<'_>) -> Result<DiffContent> {
+    let mut hunks: Vec<DiffHunk> = Vec::new();
+    let mut hasher = Sha256::new();
+
+    diff.print(git2::DiffFormat::Patch, |_delta, hunk, line| {
+        match line.origin() {
+            '+' | '-' | ' ' => {
+                // Hash only the semantic diff content (origin + text).
+                hasher.update([line.origin() as u8]);
+                hasher.update(line.content());
+
+                let diff_line = DiffLine {
+                    kind: match line.origin() {
+                        '+' => LineKind::Addition,
+                        '-' => LineKind::Deletion,
+                        _ => LineKind::Context,
+                    },
+                    content: String::from_utf8_lossy(line.content()).into_owned(),
+                    old_lineno: line.old_lineno(),
+                    new_lineno: line.new_lineno(),
+                };
+
+                if let Some(current_hunk) = hunks.last_mut() {
+                    current_hunk.lines.push(diff_line);
+                }
+            }
+            'H' => {
+                // Hunk headers are part of the semantic content.
+                hasher.update([line.origin() as u8]);
+                hasher.update(line.content());
+
+                if let Some(h) = hunk {
+                    hunks.push(DiffHunk {
+                        old_start: h.old_start(),
+                        old_lines: h.old_lines(),
+                        new_start: h.new_start(),
+                        new_lines: h.new_lines(),
+                        header: String::from_utf8_lossy(line.content())
+                            .trim_end()
+                            .to_string(),
+                        lines: Vec::new(),
+                    });
+                }
+            }
+            _ => {
+                // File headers, "No newline at end of file", etc.
+                // NOT included in the hash — they contain metadata
+                // (blob OIDs, mode bits) that can vary without the
+                // actual diff content changing.
+            }
+        }
+        true
+    })
+    .context("Failed to print diff")?;
+
+    let hash = format!("{:x}", hasher.finalize());
+
+    Ok(DiffContent {
+        hunks,
+        is_binary: false,
+        diff_hash: hash,
+    })
 }
 
 fn hash_bytes(data: &[u8]) -> String {

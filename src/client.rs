@@ -21,11 +21,17 @@ pub type InitResult = model::ConnectionContext;
 // Client
 // ---------------------------------------------------------------------------
 
+/// A server-to-client notification.
+pub type Notification = crate::server::notify::Notification;
+
 /// Async client connected to a crt server.
 pub struct Client {
     reader: Mutex<BufReader<tokio::net::unix::OwnedReadHalf>>,
     writer: Mutex<tokio::net::unix::OwnedWriteHalf>,
     next_id: AtomicU64,
+    /// Channel for server-pushed notifications received during `call()`.
+    notify_tx: tokio::sync::mpsc::UnboundedSender<Notification>,
+    notify_rx: Mutex<tokio::sync::mpsc::UnboundedReceiver<Notification>>,
 }
 
 impl Client {
@@ -39,11 +45,14 @@ impl Client {
         })?;
 
         let (read_half, write_half) = stream.into_split();
+        let (notify_tx, notify_rx) = tokio::sync::mpsc::unbounded_channel();
 
         Ok(Self {
             reader: Mutex::new(BufReader::new(read_half)),
             writer: Mutex::new(write_half),
             next_id: AtomicU64::new(1),
+            notify_tx,
+            notify_rx: Mutex::new(notify_rx),
         })
     }
 
@@ -87,7 +96,7 @@ impl Client {
         .await
     }
 
-    pub async fn mark_reviewed(&self, file_path: &str) -> Result<serde_json::Value> {
+    pub async fn mark_reviewed(&self, file_path: &str) -> Result<model::ReviewActionResult> {
         self.call(
             "mark_reviewed",
             serde_json::json!({ "file_path": file_path }),
@@ -95,7 +104,7 @@ impl Client {
         .await
     }
 
-    pub async fn unmark_reviewed(&self, file_path: &str) -> Result<serde_json::Value> {
+    pub async fn unmark_reviewed(&self, file_path: &str) -> Result<model::ReviewActionResult> {
         self.call(
             "unmark_reviewed",
             serde_json::json!({ "file_path": file_path }),
@@ -103,7 +112,7 @@ impl Client {
         .await
     }
 
-    pub async fn reset_reviews(&self) -> Result<serde_json::Value> {
+    pub async fn reset_reviews(&self) -> Result<model::ResetReviewsResult> {
         self.call("reset_reviews", serde_json::json!({})).await
     }
 
@@ -166,6 +175,20 @@ impl Client {
     }
 
     // -----------------------------------------------------------------------
+    // Notifications
+    // -----------------------------------------------------------------------
+
+    /// Drain all pending server-pushed notifications.
+    pub async fn drain_notifications(&self) -> Vec<Notification> {
+        let mut rx = self.notify_rx.lock().await;
+        let mut out = Vec::new();
+        while let Ok(n) = rx.try_recv() {
+            out.push(n);
+        }
+        out
+    }
+
+    // -----------------------------------------------------------------------
     // Generic JSON-RPC call
     // -----------------------------------------------------------------------
 
@@ -192,21 +215,38 @@ impl Client {
             writer.flush().await.context("Failed to flush to server")?;
         }
 
-        // Read response
-        let mut response_line = String::new();
+        // Read response, routing any interleaved notifications to the
+        // notification channel.
+        let response: serde_json::Value;
         {
             let mut reader = self.reader.lock().await;
-            let n = reader
-                .read_line(&mut response_line)
-                .await
-                .context("Failed to read from server")?;
-            if n == 0 {
-                bail!("Server closed the connection");
+            loop {
+                let mut response_line = String::new();
+                let n = reader
+                    .read_line(&mut response_line)
+                    .await
+                    .context("Failed to read from server")?;
+                if n == 0 {
+                    bail!("Server closed the connection");
+                }
+
+                let msg: serde_json::Value = serde_json::from_str(response_line.trim())
+                    .context("Failed to parse server message")?;
+
+                // Server-pushed notification: has "method" but no "id".
+                if msg.get("method").is_some() && msg.get("id").is_none() {
+                    if let Some(params) = msg.get("params") {
+                        if let Ok(notif) = serde_json::from_value::<Notification>(params.clone()) {
+                            let _ = self.notify_tx.send(notif);
+                        }
+                    }
+                    continue; // keep reading for the actual response
+                }
+
+                response = msg;
+                break;
             }
         }
-
-        let response: serde_json::Value =
-            serde_json::from_str(&response_line).context("Failed to parse server response")?;
 
         // Check for error
         if let Some(error) = response.get("error") {
