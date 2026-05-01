@@ -23,8 +23,71 @@ use crate::config::StyleConfig;
 use crate::keys;
 use crate::model::{
     ConnectionContext, ContentMode, FileEntry, PaneFocus, RenderVariant, ReviewStatus,
+    SearchMatch, DefinitionLocation,
 };
 use crate::ui;
+
+// ---------------------------------------------------------------------------
+// Input mode
+// ---------------------------------------------------------------------------
+
+/// Current input mode for the TUI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputMode {
+    /// Normal mode — keys are dispatched as commands.
+    Normal,
+    /// Command mode — `:` prompt is active, collecting user input.
+    Command,
+}
+
+// ---------------------------------------------------------------------------
+// Search results overlay
+// ---------------------------------------------------------------------------
+
+/// Search/definition results displayed in an overlay.
+#[derive(Debug, Clone)]
+pub struct SearchResults {
+    /// The query that produced these results.
+    pub query: String,
+    /// Whether this was a `:grd` (diff-only) search.
+    pub diff_only: bool,
+    /// Matches from a codebase search.
+    pub matches: Vec<SearchMatch>,
+    /// Selected index in the results list.
+    pub selected: usize,
+    /// Scroll offset for the results list.
+    pub scroll: usize,
+}
+
+/// Definition lookup results.
+#[derive(Debug, Clone)]
+pub struct DefinitionResults {
+    /// The symbol that was looked up.
+    pub symbol: String,
+    /// Definition locations found.
+    pub definitions: Vec<DefinitionLocation>,
+    /// Selected index.
+    pub selected: usize,
+}
+
+// ---------------------------------------------------------------------------
+// Jump stack
+// ---------------------------------------------------------------------------
+
+/// A saved location for the jump stack (Ctrl-] / Ctrl-t).
+#[derive(Debug, Clone)]
+pub struct JumpLocation {
+    /// Index of the file in the file list.
+    pub file_index: usize,
+    /// Scroll offset in the diff view.
+    pub diff_scroll: usize,
+    /// Line cursor position in the diff view.
+    pub diff_line_cursor: usize,
+    /// Content mode at the time of the jump.
+    pub content_mode: ContentMode,
+    /// Render variant at the time of the jump.
+    pub render_variant: RenderVariant,
+}
 
 // ---------------------------------------------------------------------------
 // Mouse selection
@@ -85,6 +148,9 @@ pub struct AppState {
     pub render_variant: RenderVariant,
     /// Vertical scroll offset in the diff view (in lines).
     pub diff_scroll: usize,
+    /// Line cursor position in the diff view (0-indexed display row).
+    /// Moves with j/k and stays visible within the viewport.
+    pub diff_line_cursor: usize,
     /// Whether a reviewed file's diff has been expanded via Enter.
     /// Resets when selected_file changes.
     pub reviewed_diff_expanded: bool,
@@ -93,10 +159,13 @@ pub struct AppState {
     /// Base version of the selected file (loaded from git on demand).
     pub base_content: Option<String>,
     /// Display row indices where each hunk starts (set during render,
-    /// used by Ctrl-i/Ctrl-o to jump between hunks).
+    /// used by `[`/`]` to jump between hunks).
     pub hunk_start_rows: Vec<usize>,
     /// Display row indices where each hunk ends (exclusive, set during render).
     pub hunk_end_rows: Vec<usize>,
+    /// Display row of the first actual change (+/-) in each hunk (set during render).
+    /// Used by `]`/`[` to place the cursor on the context line just above the change.
+    pub hunk_first_change_rows: Vec<usize>,
     /// Number of columns occupied by line-number gutters in the diff pane
     /// (set during render). Used to exclude gutters from mouse selection.
     pub diff_gutter_cols: usize,
@@ -160,6 +229,21 @@ pub struct AppState {
     /// Cached diff content — avoids rebuilding all `Line<'static>` on every
     /// frame when only the scroll offset changed.
     pub diff_cache: Option<crate::ui::diff_view::DiffCache>,
+    /// Current input mode (Normal vs Command).
+    pub input_mode: InputMode,
+    /// Command-mode input buffer (the text after `:`).
+    pub command_input: String,
+    /// Cursor position within `command_input`.
+    pub command_cursor: usize,
+    /// Active search results overlay, if any.
+    pub search_results: Option<SearchResults>,
+    /// Active definition results overlay, if any.
+    pub definition_results: Option<DefinitionResults>,
+    /// Jump stack for Ctrl-] / Ctrl-t navigation.
+    pub jump_stack: Vec<JumpLocation>,
+    /// Pending command to execute asynchronously (set by key handler,
+    /// processed by async event loop).
+    pub pending_command: Option<String>,
 }
 
 impl AppState {
@@ -193,11 +277,13 @@ impl AppState {
             content_mode: ContentMode::Diff,
             render_variant: RenderVariant::Inline,
             diff_scroll: 0,
+            diff_line_cursor: 0,
             reviewed_diff_expanded: false,
             head_content: None,
             base_content: None,
             hunk_start_rows: Vec::new(),
             hunk_end_rows: Vec::new(),
+            hunk_first_change_rows: Vec::new(),
             diff_gutter_cols: 0,
             diff_content_height: 0,
             diff_view_height: 0,
@@ -226,6 +312,13 @@ impl AppState {
             should_suspend: false,
             should_quit: false,
             diff_cache: None,
+            input_mode: InputMode::Normal,
+            command_input: String::new(),
+            command_cursor: 0,
+            search_results: None,
+            definition_results: None,
+            jump_stack: Vec::new(),
+            pending_command: None,
         }
     }
 
@@ -275,25 +368,56 @@ impl AppState {
         }
     }
 
-    /// Which hunk (0-indexed) the current scroll position is inside,
-    /// or None if between hunks or before/after all hunks.
+    /// Which hunk (0-indexed) the cursor line is inside or nearest to.
+    /// Returns the hunk containing the cursor, or the next hunk if the
+    /// cursor is on context lines between hunks. Returns None only if
+    /// the cursor is after all hunks.
     pub fn current_hunk_index(&self) -> Option<usize> {
+        let cursor = self.diff_line_cursor;
         for (i, (&start, &end)) in self
             .hunk_start_rows
             .iter()
             .zip(&self.hunk_end_rows)
             .enumerate()
         {
-            if self.diff_scroll >= start && self.diff_scroll < end {
+            // Cursor is inside this hunk.
+            if cursor >= start && cursor < end {
+                return Some(i);
+            }
+            // Cursor is before this hunk (in context lines above it).
+            if cursor < start {
                 return Some(i);
             }
         }
-        None
+        // Cursor is after the last hunk.
+        if !self.hunk_start_rows.is_empty() {
+            Some(self.hunk_start_rows.len() - 1)
+        } else {
+            None
+        }
     }
 
     /// Clamp `diff_scroll` to the valid range.
     pub fn clamp_diff_scroll(&mut self) {
         self.diff_scroll = self.diff_scroll.min(self.max_diff_scroll());
+    }
+
+    /// Clamp `diff_line_cursor` to valid range and adjust scroll to keep
+    /// the cursor visible in the viewport.
+    pub fn clamp_cursor_and_scroll(&mut self) {
+        let max = self.max_diff_scroll();
+        self.diff_line_cursor = self.diff_line_cursor.min(max);
+        // Scroll up if cursor is above the viewport.
+        if self.diff_line_cursor < self.diff_scroll {
+            self.diff_scroll = self.diff_line_cursor;
+        }
+        // Scroll down if cursor is below the viewport.
+        if self.diff_view_height > 0
+            && self.diff_line_cursor >= self.diff_scroll + self.diff_view_height
+        {
+            self.diff_scroll = self.diff_line_cursor.saturating_sub(self.diff_view_height - 1);
+        }
+        self.clamp_diff_scroll();
     }
 
     /// Determine which pane a terminal coordinate falls in.
@@ -365,6 +489,7 @@ impl AppState {
         self.reviewed_diff_expanded = false;
         self.hunk_start_rows.clear();
         self.hunk_end_rows.clear();
+        self.hunk_first_change_rows.clear();
         self.load_head_content();
         self.load_blame();
 
@@ -377,12 +502,14 @@ impl AppState {
             self.base_content = None;
         }
 
-        // Scroll to the first hunk (approximate: new_start - 1 unchanged lines before it).
-        self.diff_scroll = self
+        // Place cursor and scroll at the first hunk.
+        let first_hunk_row = self
             .selected_file_entry()
             .and_then(|e| e.diff.hunks.first())
             .map(|h| (h.new_start as usize).saturating_sub(1))
             .unwrap_or(0);
+        self.diff_line_cursor = first_hunk_row;
+        self.diff_scroll = first_hunk_row;
     }
 }
 
@@ -520,6 +647,12 @@ impl App {
                 self.process_review_toggle().await;
             }
 
+            // Process pending command (search, definition, etc.).
+            if self.state.pending_command.is_some() {
+                let cmd = self.state.pending_command.take().unwrap();
+                self.process_pending_command(&cmd).await;
+            }
+
             // Check for server-pushed notifications (from other clients).
             self.process_notifications().await;
 
@@ -620,8 +753,15 @@ impl App {
                 self.state.last_click = Some((Instant::now(), mouse.column, mouse.row));
 
                 if is_double_click {
+                    // Clear any selection from the first click so the
+                    // subsequent Up event doesn't overwrite the clipboard.
+                    self.state.mouse_selection = None;
                     if let Some(pane) = self.state.pane_at(mouse.column, mouse.row) {
-                        self.select_word_at(pane, mouse.column, mouse.row);
+                        if pane == PaneFocus::FileList {
+                            self.copy_file_path_at(mouse.row);
+                        } else {
+                            self.select_word_at(pane, mouse.column, mouse.row);
+                        }
                     }
                     self.state.last_click = None; // prevent triple-click
                     return; // skip drag selection setup
@@ -687,11 +827,20 @@ impl App {
                 if self.state.pane_at(mouse.column, mouse.row) == Some(PaneFocus::Diff) {
                     self.state.diff_scroll = self.state.diff_scroll.saturating_add(3);
                     self.state.clamp_diff_scroll();
+                    // Keep cursor visible in viewport.
+                    if self.state.diff_line_cursor < self.state.diff_scroll {
+                        self.state.diff_line_cursor = self.state.diff_scroll;
+                    }
                 }
             }
             MouseEventKind::ScrollUp => {
                 if self.state.pane_at(mouse.column, mouse.row) == Some(PaneFocus::Diff) {
                     self.state.diff_scroll = self.state.diff_scroll.saturating_sub(3);
+                    // Keep cursor visible in viewport.
+                    let bottom = self.state.diff_scroll + self.state.diff_view_height.saturating_sub(1);
+                    if self.state.diff_line_cursor > bottom {
+                        self.state.diff_line_cursor = bottom;
+                    }
                 }
             }
             _ => {}
@@ -720,6 +869,135 @@ impl App {
                 let verb = if is_reviewed { "unmark" } else { "mark" };
                 self.state.status_message = Some((
                     format!("Failed to {verb} reviewed: {e}"),
+                    Instant::now(),
+                ));
+            }
+        }
+    }
+
+    /// Process a pending command set by the key handler.
+    async fn process_pending_command(&mut self, cmd: &str) {
+        let (name, args) = match cmd.split_once(char::is_whitespace) {
+            Some((n, a)) => (n, a.trim()),
+            None => (cmd, ""),
+        };
+
+        match name {
+            "gr" => {
+                self.state.status_message =
+                    Some(("Searching...".to_string(), Instant::now()));
+                // Force a re-render so the user sees the searching message.
+                let state = &mut self.state;
+                let _ = self.terminal.draw(|frame| ui::draw(frame, state));
+
+                match self.client.search_codebase(args, "all").await {
+                    Ok(result) => {
+                        if result.matches.is_empty() {
+                            self.state.status_message = Some((
+                                format!("No matches for /{args}/"),
+                                Instant::now(),
+                            ));
+                        } else {
+                            self.state.search_results = Some(SearchResults {
+                                query: args.to_string(),
+                                diff_only: false,
+                                matches: result.matches,
+                                selected: 0,
+                                scroll: 0,
+                            });
+                            self.state.status_message = None;
+                        }
+                    }
+                    Err(e) => {
+                        self.state.status_message = Some((
+                            format!("Search error: {e}"),
+                            Instant::now(),
+                        ));
+                    }
+                }
+            }
+            "grd" => {
+                self.state.status_message =
+                    Some(("Searching diff files...".to_string(), Instant::now()));
+                let state = &mut self.state;
+                let _ = self.terminal.draw(|frame| ui::draw(frame, state));
+
+                match self.client.search_codebase(args, "diff").await {
+                    Ok(result) => {
+                        if result.matches.is_empty() {
+                            self.state.status_message = Some((
+                                format!("No matches for /{args}/ in diff"),
+                                Instant::now(),
+                            ));
+                        } else {
+                            self.state.search_results = Some(SearchResults {
+                                query: args.to_string(),
+                                diff_only: true,
+                                matches: result.matches,
+                                selected: 0,
+                                scroll: 0,
+                            });
+                            self.state.status_message = None;
+                        }
+                    }
+                    Err(e) => {
+                        self.state.status_message = Some((
+                            format!("Search error: {e}"),
+                            Instant::now(),
+                        ));
+                    }
+                }
+            }
+            "find_definition" => {
+                self.state.status_message =
+                    Some(("Finding definition...".to_string(), Instant::now()));
+                let state = &mut self.state;
+                let _ = self.terminal.draw(|frame| ui::draw(frame, state));
+
+                let context_file = self.state.selected_file_entry()
+                    .map(|e| e.change.path.clone());
+                match self.client.find_definition(args, context_file.as_deref()).await {
+                    Ok(result) => {
+                        if result.definitions.is_empty() {
+                            self.state.status_message = Some((
+                                format!("No definitions found for '{args}'"),
+                                Instant::now(),
+                            ));
+                        } else if result.definitions.len() == 1 {
+                            // Single result: navigate directly.
+                            let def = result.definitions[0].clone();
+                            self.state.status_message = None;
+                            navigate_to_definition_from_app(&mut self.state, &def);
+                        } else {
+                            // Multiple results: show picker.
+                            self.state.definition_results = Some(DefinitionResults {
+                                symbol: args.to_string(),
+                                definitions: result.definitions,
+                                selected: 0,
+                            });
+                            self.state.status_message = None;
+                        }
+                    }
+                    Err(e) => {
+                        self.state.status_message = Some((
+                            format!("Definition error: {e}"),
+                            Instant::now(),
+                        ));
+                    }
+                }
+            }
+            "view_file" => {
+                // view_file <path> <line>
+                // For now, show a status message since read-only view
+                // for non-diff files would require a separate content mode.
+                self.state.status_message = Some((
+                    format!("File not in diff: {args}"),
+                    Instant::now(),
+                ));
+            }
+            _ => {
+                self.state.status_message = Some((
+                    format!("Unknown pending command: {name}"),
                     Instant::now(),
                 ));
             }
@@ -918,6 +1196,26 @@ impl App {
         }
     }
 
+    /// Double-click in the file list: copy the full file path to the clipboard.
+    fn copy_file_path_at(&mut self, row: u16) {
+        let area = self.state.file_list_area;
+        let inner_top = area.y + 1;
+        let content_row = (row as usize)
+            .saturating_sub(inner_top as usize)
+            + self.state.file_list_scroll;
+
+        if let Some(&Some(file_idx)) = self.state.file_list_row_to_file.get(content_row) {
+            if let Some(entry) = self.state.files.get(file_idx) {
+                let path = &entry.change.path;
+                copy_to_clipboard(path);
+                self.state.status_message = Some((
+                    format!("Copied: {path}"),
+                    Instant::now(),
+                ));
+            }
+        }
+    }
+
     /// Map a mouse click in the file list pane to a file selection.
     fn handle_file_list_click(&mut self, _col: u16, row: u16) {
         let area = self.state.file_list_area;
@@ -935,6 +1233,34 @@ impl App {
                 self.state.on_file_changed();
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Navigation helpers (used by process_pending_command)
+// ---------------------------------------------------------------------------
+
+/// Navigate to a definition location (same logic as in keys.rs but accessible
+/// from the App context without going through the key handler).
+fn navigate_to_definition_from_app(state: &mut AppState, def: &DefinitionLocation) {
+    if let Some(idx) = state.files.iter().position(|f| f.change.path == def.file_path) {
+        state.jump_stack.push(JumpLocation {
+            file_index: state.selected_file,
+            diff_scroll: state.diff_scroll,
+            diff_line_cursor: state.diff_line_cursor,
+            content_mode: state.content_mode,
+            render_variant: state.render_variant,
+        });
+        state.selected_file = idx;
+        state.on_file_changed();
+        state.diff_line_cursor = (def.line_number as usize).saturating_sub(1);
+        state.clamp_cursor_and_scroll();
+    } else {
+        // File not in diff — show status message for now.
+        state.status_message = Some((
+            format!("Definition in file not in diff: {}:{}", def.file_path, def.line_number),
+            Instant::now(),
+        ));
     }
 }
 

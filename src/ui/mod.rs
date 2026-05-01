@@ -17,7 +17,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::app::AppState;
+use crate::app::{AppState, InputMode};
 use crate::config::{PanelStyle, StyleConfig};
 use crate::git;
 use crate::model::ReviewStatus;
@@ -72,9 +72,24 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) {
         draw_selection_highlight(frame, sel, &state.styles, state.diff_gutter_cols);
     }
 
+    // Search results overlay.
+    if state.search_results.is_some() {
+        draw_search_results_overlay(frame, state);
+    }
+
+    // Definition results overlay.
+    if state.definition_results.is_some() {
+        draw_definition_results_overlay(frame, state);
+    }
+
     // Help overlay on top of everything else.
     if state.show_help {
         draw_help_overlay(frame, &state.styles);
+    }
+
+    // Command input line (renders cursor, must be last for SetCursorPosition).
+    if state.input_mode == InputMode::Command {
+        draw_command_input(frame, state, status_area);
     }
 }
 
@@ -198,7 +213,20 @@ fn draw_status_bar(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let bar_style = Style::default().bg(*ss.bar_bg).fg(*ss.bar_fg);
 
     // Split the status bar into left and right sections.
-    let right_width = right.len() as u16;
+    // Cap the right section so it never consumes more than half the bar,
+    // preventing long status messages from squeezing the left text into
+    // illegibility.
+    let max_right = (area.width / 2) as usize;
+    let right_display_len = right.chars().count();
+    let (right, right_width) = if right_display_len > max_right && max_right > 3 {
+        // Truncate the right text to fit, adding "…" indicator.
+        let truncated: String = right.chars().take(max_right - 1).collect();
+        let truncated = format!("{truncated}\u{2026}");
+        let w = truncated.chars().count() as u16;
+        (truncated, w)
+    } else {
+        (right, right_display_len as u16)
+    };
     let left_width = area.width.saturating_sub(right_width);
 
     let chunks = Layout::default()
@@ -226,7 +254,7 @@ fn draw_help_overlay(frame: &mut Frame, styles: &StyleConfig) {
 
     // Center the help box, capped at reasonable dimensions.
     let help_width = 56u16.min(area.width.saturating_sub(4));
-    let help_height = 34u16.min(area.height.saturating_sub(2));
+    let help_height = 40u16.min(area.height.saturating_sub(2));
     let x = (area.width.saturating_sub(help_width)) / 2;
     let y = (area.height.saturating_sub(help_height)) / 2;
     let help_area = Rect::new(x, y, help_width, help_height);
@@ -274,6 +302,18 @@ fn draw_help_overlay(frame: &mut Frame, styles: &StyleConfig) {
         Line::from("  Enter         Expand reviewed / focus diff"),
         Line::from(""),
         Line::from(Span::styled(
+            " Navigation & Search",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  :             Enter command mode"),
+        Line::from("  :gr <regex>   Search all files"),
+        Line::from("  :grd <regex>  Search diff files only"),
+        Line::from("  :gd [symbol]  Go to definition"),
+        Line::from("  :q            Quit"),
+        Line::from("  Ctrl-]        Go to definition (word)"),
+        Line::from("  Ctrl-t        Jump back (pop stack)"),
+        Line::from(""),
+        Line::from(Span::styled(
             " Mouse",
             Style::default().add_modifier(Modifier::BOLD),
         )),
@@ -298,6 +338,208 @@ fn draw_help_overlay(frame: &mut Frame, styles: &StyleConfig) {
         .style(Style::default().fg(*hs.text_fg).bg(*hs.bg));
 
     frame.render_widget(help, help_area);
+}
+
+// ---------------------------------------------------------------------------
+// Command input line
+// ---------------------------------------------------------------------------
+
+/// Draw the `:` command input line, replacing the status bar.
+fn draw_command_input(frame: &mut Frame, state: &AppState, area: Rect) {
+    let ss = &state.styles.status;
+    let input = format!(":{}", state.command_input);
+    let bar_style = Style::default().bg(*ss.bar_bg).fg(*ss.bar_fg);
+    let input_line = Paragraph::new(input.clone()).style(bar_style);
+    frame.render_widget(input_line, area);
+
+    // Place cursor at the correct position within the command input.
+    // The `:` prefix is 1 char, so cursor_x = area.x + 1 + command_cursor.
+    let cursor_x = area.x + 1 + state.command_cursor as u16;
+    let cursor_y = area.y;
+    frame.set_cursor_position(Position {
+        x: cursor_x,
+        y: cursor_y,
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Search results overlay
+// ---------------------------------------------------------------------------
+
+/// Draw the search results overlay as a centered popup.
+fn draw_search_results_overlay(frame: &mut Frame, state: &AppState) {
+    let results = match &state.search_results {
+        Some(r) => r,
+        None => return,
+    };
+    let hs = &state.styles.help;
+    let area = frame.area();
+
+    // Size the overlay.
+    let overlay_width = (area.width * 4 / 5)
+        .min(100)
+        .max(40)
+        .min(area.width.saturating_sub(4));
+    let overlay_height = (area.height * 3 / 4)
+        .max(10)
+        .min(area.height.saturating_sub(2));
+    let x = (area.width.saturating_sub(overlay_width)) / 2;
+    let y = (area.height.saturating_sub(overlay_height)) / 2;
+    let overlay_area = Rect::new(x, y, overlay_width, overlay_height);
+
+    // Dim background.
+    let buf = frame.buffer_mut();
+    for row in area.y..area.bottom() {
+        for col in area.x..area.right() {
+            if let Some(cell) = buf.cell_mut(Position { x: col, y: row }) {
+                cell.set_style(Style::default().fg(*hs.dim_fg));
+            }
+        }
+    }
+
+    // Build content lines.
+    let inner_height = overlay_height.saturating_sub(2) as usize; // borders
+    let total = results.matches.len();
+    let scope_label = if results.diff_only { " (diff)" } else { "" };
+    let title = format!(
+        " Search: /{}/{} — {} matches ",
+        results.query, scope_label, total
+    );
+
+    let mut lines: Vec<Line> = Vec::new();
+    if total == 0 {
+        lines.push(Line::from(Span::styled(
+            "  No matches found",
+            Style::default().fg(*hs.text_fg),
+        )));
+    } else {
+        let visible_start = results.scroll;
+        let visible_end = (visible_start + inner_height).min(total);
+        for i in visible_start..visible_end {
+            let m = &results.matches[i];
+            let is_selected = i == results.selected;
+            let style = if is_selected {
+                Style::default()
+                    .fg(ratatui::style::Color::Black)
+                    .bg(ratatui::style::Color::Cyan)
+            } else {
+                Style::default().fg(*hs.text_fg)
+            };
+            let prefix = if is_selected { "> " } else { "  " };
+            let display = format!(
+                "{}{} :{} {}",
+                prefix,
+                m.file_path,
+                m.line_number,
+                truncate_line(&m.line_content, overlay_width as usize - 8),
+            );
+            lines.push(Line::from(Span::styled(display, style)));
+        }
+    }
+
+    frame.render_widget(Clear, overlay_area);
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(*hs.border_fg))
+                .title(title)
+                .title_bottom(" j/k navigate  Enter open  q/Esc close "),
+        )
+        .style(Style::default().fg(*hs.text_fg).bg(*hs.bg));
+
+    frame.render_widget(paragraph, overlay_area);
+}
+
+// ---------------------------------------------------------------------------
+// Definition results overlay
+// ---------------------------------------------------------------------------
+
+/// Draw the definition results overlay as a centered popup.
+fn draw_definition_results_overlay(frame: &mut Frame, state: &AppState) {
+    let results = match &state.definition_results {
+        Some(r) => r,
+        None => return,
+    };
+    let hs = &state.styles.help;
+    let area = frame.area();
+
+    let total = results.definitions.len();
+    let overlay_width = (area.width * 3 / 5)
+        .min(80)
+        .max(40)
+        .min(area.width.saturating_sub(4));
+    let overlay_height = (total as u16 + 4).max(6).min(area.height.saturating_sub(2));
+    let x = (area.width.saturating_sub(overlay_width)) / 2;
+    let y = (area.height.saturating_sub(overlay_height)) / 2;
+    let overlay_area = Rect::new(x, y, overlay_width, overlay_height);
+
+    // Dim background.
+    let buf = frame.buffer_mut();
+    for row in area.y..area.bottom() {
+        for col in area.x..area.right() {
+            if let Some(cell) = buf.cell_mut(Position { x: col, y: row }) {
+                cell.set_style(Style::default().fg(*hs.dim_fg));
+            }
+        }
+    }
+
+    let title = format!(" Definition: {} — {} found ", results.symbol, total);
+
+    let mut lines: Vec<Line> = Vec::new();
+    if total == 0 {
+        lines.push(Line::from(Span::styled(
+            "  No definitions found",
+            Style::default().fg(*hs.text_fg),
+        )));
+    } else {
+        for (i, def) in results.definitions.iter().enumerate() {
+            let is_selected = i == results.selected;
+            let style = if is_selected {
+                Style::default()
+                    .fg(ratatui::style::Color::Black)
+                    .bg(ratatui::style::Color::Cyan)
+            } else {
+                Style::default().fg(*hs.text_fg)
+            };
+            let prefix = if is_selected { "> " } else { "  " };
+            let display = format!(
+                "{}{} :{} {}",
+                prefix,
+                def.file_path,
+                def.line_number,
+                truncate_line(&def.line_content, overlay_width as usize - 8),
+            );
+            lines.push(Line::from(Span::styled(display, style)));
+        }
+    }
+
+    frame.render_widget(Clear, overlay_area);
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(*hs.border_fg))
+                .title(title)
+                .title_bottom(" j/k navigate  Enter open  q/Esc close "),
+        )
+        .style(Style::default().fg(*hs.text_fg).bg(*hs.bg));
+
+    frame.render_widget(paragraph, overlay_area);
+}
+
+/// Truncate a line to a maximum width, adding "..." if truncated.
+fn truncate_line(s: &str, max: usize) -> String {
+    let trimmed = s.trim();
+    if trimmed.len() <= max {
+        trimmed.to_string()
+    } else if max > 3 {
+        format!("{}...", &trimmed[..max - 3])
+    } else {
+        trimmed[..max].to_string()
+    }
 }
 
 // ---------------------------------------------------------------------------

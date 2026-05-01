@@ -48,6 +48,7 @@ pub struct DiffCache {
     pub lines: Vec<Line<'static>>,
     pub hunk_starts: Vec<usize>,
     pub hunk_ends: Vec<usize>,
+    pub hunk_first_changes: Vec<usize>,
     pub gutter_w: usize,
     pub rendered_text: Vec<String>,
 }
@@ -93,7 +94,8 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     if !cache_hit {
         // Cache miss — rebuild everything.
-        let (_title, content, hunk_starts, hunk_ends, gutter_w) = build_content(state, inner_w);
+        let (_title, content, hunk_starts, hunk_ends, hunk_first_changes, gutter_w) =
+            build_content(state, inner_w);
 
         // Pre-compute rendered text for clipboard.
         let rendered_text: Vec<String> = content
@@ -111,6 +113,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
             lines: content,
             hunk_starts,
             hunk_ends,
+            hunk_first_changes,
             gutter_w,
             rendered_text,
         });
@@ -118,11 +121,12 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     // From here we know the cache is populated.
     // Extract values we need, then drop the immutable borrow on state.
-    let (hunk_starts, hunk_ends, gutter_w, content_height) = {
+    let (hunk_starts, hunk_ends, hunk_first_changes, gutter_w, content_height) = {
         let cache = state.diff_cache.as_ref().unwrap();
         (
             cache.hunk_starts.clone(),
             cache.hunk_ends.clone(),
+            cache.hunk_first_changes.clone(),
             cache.gutter_w,
             cache.lines.len(),
         )
@@ -130,6 +134,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     state.hunk_start_rows = hunk_starts;
     state.hunk_end_rows = hunk_ends;
+    state.hunk_first_change_rows = hunk_first_changes;
     // Two gutter columns (old + new) plus separator, plus optional blame.
     let blame_cols = if state.show_blame {
         BLAME_COL_WIDTH + 1
@@ -155,7 +160,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // Update content/viewport dimensions for scroll clamping.
     state.diff_content_height = content_height;
     state.diff_view_height = area.height.saturating_sub(2) as usize;
-    state.clamp_diff_scroll();
+    state.clamp_cursor_and_scroll();
 
     // Build the title fresh each frame — it depends on diff_scroll for hunk
     // navigation info (e.g. "3/5") so it can't be cached.
@@ -166,6 +171,9 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
     };
 
     // Extract only the visible slice from the cache — clone ~viewport lines.
+    // Apply cursor line highlight to the line at diff_line_cursor.
+    let cursor_line_bg = *state.styles.diff.cursor_line_bg;
+    let cursor_visible_idx = state.diff_line_cursor.saturating_sub(state.diff_scroll);
     let visible: Vec<Line> = {
         let cache = state.diff_cache.as_ref().unwrap();
         cache
@@ -173,7 +181,28 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
             .iter()
             .skip(state.diff_scroll)
             .take(state.diff_view_height)
-            .cloned()
+            .enumerate()
+            .map(|(i, line)| {
+                if i == cursor_visible_idx
+                    && state.diff_line_cursor >= state.diff_scroll
+                    && state.diff_line_cursor < state.diff_scroll + state.diff_view_height
+                {
+                    // Apply cursor line background to every span.
+                    let spans: Vec<Span> = line
+                        .spans
+                        .iter()
+                        .map(|span| {
+                            Span::styled(
+                                span.content.clone(),
+                                span.style.bg(cursor_line_bg),
+                            )
+                        })
+                        .collect();
+                    Line::from(spans)
+                } else {
+                    line.clone()
+                }
+            })
             .collect()
     };
 
@@ -196,6 +225,8 @@ struct BuiltContent {
     lines: Vec<Line<'static>>,
     hunk_starts: Vec<usize>,
     hunk_ends: Vec<usize>,
+    /// Row of the first actual change (+/-) in each hunk.
+    hunk_first_changes: Vec<usize>,
     /// Width of one line-number gutter column (in characters).
     gutter_w: usize,
 }
@@ -203,7 +234,7 @@ struct BuiltContent {
 fn build_content(
     state: &AppState,
     inner_w: usize,
-) -> (String, Vec<Line<'static>>, Vec<usize>, Vec<usize>, usize) {
+) -> (String, Vec<Line<'static>>, Vec<usize>, Vec<usize>, Vec<usize>, usize) {
     let ds = &state.styles.diff;
 
     let entry = match state.selected_file_entry() {
@@ -211,6 +242,7 @@ fn build_content(
             return (
                 " Diff ".to_string(),
                 vec![Line::from("No files changed.")],
+                vec![],
                 vec![],
                 vec![],
                 0,
@@ -240,7 +272,7 @@ fn build_content(
                 Style::default().fg(*ds.placeholder_fg),
             )),
         ];
-        return (title, lines, vec![], vec![], 0);
+        return (title, lines, vec![], vec![], vec![], 0);
     }
 
     // Binary file.
@@ -252,6 +284,7 @@ fn build_content(
                 "  Binary file",
                 Style::default().fg(*ds.placeholder_fg),
             ))],
+            vec![],
             vec![],
             vec![],
             0,
@@ -311,6 +344,7 @@ fn build_content(
             lines: vec![Line::from("  (unknown variant)")],
             hunk_starts: vec![],
             hunk_ends: vec![],
+            hunk_first_changes: vec![],
             gutter_w: 0,
         },
     };
@@ -324,6 +358,7 @@ fn build_content(
         built.lines,
         built.hunk_starts,
         built.hunk_ends,
+        built.hunk_first_changes,
         built.gutter_w,
     )
 }
@@ -392,6 +427,7 @@ fn build_inline_diff(
                 lines: vec![Line::from("  No changes.")],
                 hunk_starts: vec![],
                 hunk_ends: vec![],
+                hunk_first_changes: vec![],
                 gutter_w: 0,
             };
         }
@@ -424,6 +460,7 @@ fn build_inline_diff(
             lines,
             hunk_starts: vec![],
             hunk_ends: vec![],
+            hunk_first_changes: vec![],
             gutter_w,
         };
     }
@@ -458,6 +495,7 @@ fn build_inline_diff(
     let mut result = Vec::new();
     let mut hunk_starts = Vec::new();
     let mut hunk_ends = Vec::new();
+    let mut hunk_first_changes = Vec::new();
     let mut old_cursor: u32 = 1;
     let mut new_cursor: u32 = 1;
 
@@ -484,6 +522,11 @@ fn build_inline_diff(
 
         // Record hunk start.
         hunk_starts.push(result.len());
+
+        // Find the display row of the first actual change in this hunk.
+        // Count leading context lines to compute the offset.
+        let leading_context = hunk.lines.iter().take_while(|l| l.kind == LineKind::Context).count();
+        hunk_first_changes.push(result.len() + leading_context);
 
         // Hunk lines — faint background on changed lines to delineate hunks.
         // Process lines in blocks: consecutive deletions followed by
@@ -680,6 +723,7 @@ fn build_inline_diff(
         lines: result,
         hunk_starts,
         hunk_ends,
+        hunk_first_changes,
         gutter_w,
     }
 }
@@ -706,6 +750,7 @@ fn build_side_by_side_diff(
             lines: vec![Line::from("  No changes.")],
             hunk_starts: vec![],
             hunk_ends: vec![],
+            hunk_first_changes: vec![],
             gutter_w: 0,
         };
     }
@@ -758,6 +803,7 @@ fn build_side_by_side_diff(
     let mut result: Vec<Line<'static>> = Vec::new();
     let mut hunk_starts = Vec::new();
     let mut hunk_ends = Vec::new();
+    let mut hunk_first_changes = Vec::new();
     let mut old_cursor: u32 = 1;
     let mut new_cursor: u32 = 1;
 
@@ -864,6 +910,8 @@ fn build_side_by_side_diff(
         }
 
         hunk_starts.push(result.len());
+        let leading_context = hunk.lines.iter().take_while(|l| l.kind == LineKind::Context).count();
+        hunk_first_changes.push(result.len() + leading_context);
 
         // Process hunk lines: collect deletion/addition blocks and pair them.
         let hunk_lines = &hunk.lines;
@@ -1027,6 +1075,7 @@ fn build_side_by_side_diff(
         lines: result,
         hunk_starts,
         hunk_ends,
+        hunk_first_changes,
         gutter_w,
     }
 }
@@ -1053,6 +1102,7 @@ fn build_full_file_head(
                 ))],
                 hunk_starts: vec![],
                 hunk_ends: vec![],
+                hunk_first_changes: vec![],
                 gutter_w: 0,
             };
         }
@@ -1067,6 +1117,7 @@ fn build_full_file_head(
             ))],
             hunk_starts: vec![],
             hunk_ends: vec![],
+            hunk_first_changes: vec![],
             gutter_w: 0,
         };
     }
@@ -1093,6 +1144,8 @@ fn build_full_file_head(
     let mut result = Vec::new();
     let mut hunk_starts = Vec::new();
     let mut hunk_ends = Vec::new();
+    let mut hunk_first_changes = Vec::new();
+    let mut current_hunk_first_change_recorded = false;
 
     for (i, text) in file_lines.iter().enumerate() {
         let lineno = (i + 1) as u32;
@@ -1101,6 +1154,7 @@ fn build_full_file_head(
         for &(start, end) in &hunk_new_ranges {
             if lineno == start {
                 hunk_starts.push(result.len());
+                current_hunk_first_change_recorded = false;
             }
             if lineno == end {
                 hunk_ends.push(result.len());
@@ -1108,6 +1162,13 @@ fn build_full_file_head(
         }
 
         let is_addition = addition_lines.contains(&lineno);
+
+        // Record first change row for the current hunk.
+        if is_addition && !current_hunk_first_change_recorded {
+            hunk_first_changes.push(result.len());
+            current_hunk_first_change_recorded = true;
+        }
+
         let style = if is_addition {
             addition_style
         } else {
@@ -1135,11 +1196,16 @@ fn build_full_file_head(
     while hunk_ends.len() < hunk_starts.len() {
         hunk_ends.push(result.len());
     }
+    // Ensure hunk_first_changes has an entry for every hunk.
+    while hunk_first_changes.len() < hunk_starts.len() {
+        hunk_first_changes.push(*hunk_starts.last().unwrap_or(&0));
+    }
 
     BuiltContent {
         lines: result,
         hunk_starts,
         hunk_ends,
+        hunk_first_changes,
         gutter_w,
     }
 }
@@ -1166,6 +1232,7 @@ fn build_full_file_base(
                 ))],
                 hunk_starts: vec![],
                 hunk_ends: vec![],
+                hunk_first_changes: vec![],
                 gutter_w: 0,
             };
         }
@@ -1180,6 +1247,7 @@ fn build_full_file_base(
             ))],
             hunk_starts: vec![],
             hunk_ends: vec![],
+            hunk_first_changes: vec![],
             gutter_w: 0,
         };
     }
@@ -1206,6 +1274,8 @@ fn build_full_file_base(
     let mut result = Vec::new();
     let mut hunk_starts = Vec::new();
     let mut hunk_ends = Vec::new();
+    let mut hunk_first_changes = Vec::new();
+    let mut current_hunk_first_change_recorded = false;
 
     for (i, text) in file_lines.iter().enumerate() {
         let lineno = (i + 1) as u32;
@@ -1213,6 +1283,7 @@ fn build_full_file_base(
         for &(start, end) in &hunk_old_ranges {
             if lineno == start {
                 hunk_starts.push(result.len());
+                current_hunk_first_change_recorded = false;
             }
             if lineno == end {
                 hunk_ends.push(result.len());
@@ -1220,6 +1291,12 @@ fn build_full_file_base(
         }
 
         let is_deletion = deletion_lines.contains(&lineno);
+
+        if is_deletion && !current_hunk_first_change_recorded {
+            hunk_first_changes.push(result.len());
+            current_hunk_first_change_recorded = true;
+        }
+
         let style = if is_deletion {
             deletion_style
         } else {
@@ -1246,11 +1323,15 @@ fn build_full_file_base(
     while hunk_ends.len() < hunk_starts.len() {
         hunk_ends.push(result.len());
     }
+    while hunk_first_changes.len() < hunk_starts.len() {
+        hunk_first_changes.push(*hunk_starts.last().unwrap_or(&0));
+    }
 
     BuiltContent {
         lines: result,
         hunk_starts,
         hunk_ends,
+        hunk_first_changes,
         gutter_w,
     }
 }
