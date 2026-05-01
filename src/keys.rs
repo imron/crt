@@ -939,22 +939,91 @@ fn map_old_to_new_line(state: &AppState, old_line: usize) -> usize {
     (old_line as i64 + offset).max(1) as usize
 }
 
-/// Jump to the next hunk — moves the cursor to the first changed line.
+/// Jump to the next hunk — moves the cursor to the first changed line,
+/// then scrolls to show as much of the hunk as possible.
 fn jump_to_next_hunk(state: &mut AppState) {
     let current = state.diff_line_cursor;
-    if let Some(&row) = state.hunk_first_change_rows.iter().find(|&&r| r > current) {
-        state.diff_line_cursor = row;
-        state.clamp_cursor_and_scroll();
+    let idx = state
+        .hunk_first_change_rows
+        .iter()
+        .position(|&r| r > current);
+    if let Some(i) = idx {
+        let first_row = state.hunk_first_change_rows[i];
+        let hunk_end = state.hunk_end_rows.get(i).copied().unwrap_or(first_row + 1);
+        state.diff_line_cursor = first_row;
+        scroll_to_show_hunk(state, first_row, hunk_end);
     }
 }
 
-/// Jump to the previous hunk — moves the cursor to the first changed line.
+/// Jump to the previous hunk — moves the cursor to the first changed line,
+/// then scrolls to show as much of the hunk as possible.
 fn jump_to_prev_hunk(state: &mut AppState) {
     let current = state.diff_line_cursor;
-    if let Some(&row) = state.hunk_first_change_rows.iter().rev().find(|&&r| r < current) {
-        state.diff_line_cursor = row;
-        state.clamp_cursor_and_scroll();
+    let idx = state
+        .hunk_first_change_rows
+        .iter()
+        .rposition(|&r| r < current);
+    if let Some(i) = idx {
+        let first_row = state.hunk_first_change_rows[i];
+        let hunk_end = state.hunk_end_rows.get(i).copied().unwrap_or(first_row + 1);
+        state.diff_line_cursor = first_row;
+        scroll_to_show_hunk(state, first_row, hunk_end);
     }
+}
+
+/// Scroll to show as much of a hunk as possible after jumping to it.
+///
+/// Strategy:
+/// - If the entire hunk already fits in the viewport, don't scroll.
+/// - Otherwise, try to center the first change line in the viewport.
+/// - If the hunk is longer than that, keep scrolling down so more of
+///   the hunk is visible, but never scroll past the first change line
+///   (it must remain visible at the top of the viewport at minimum).
+fn scroll_to_show_hunk(state: &mut AppState, first_row: usize, hunk_end: usize) {
+    let vh = state.diff_view_height;
+    if vh == 0 {
+        state.clamp_cursor_and_scroll();
+        return;
+    }
+
+    let hunk_size = hunk_end.saturating_sub(first_row);
+    let viewport_start = state.diff_scroll;
+    let viewport_end = viewport_start + vh;
+
+    // Case: entire hunk is already visible — just clamp cursor, don't move scroll.
+    if first_row >= viewport_start && hunk_end <= viewport_end {
+        state.clamp_cursor_and_scroll();
+        return;
+    }
+
+    // Try to center the first change line in the viewport.
+    let centered_scroll = first_row.saturating_sub(vh / 2);
+
+    // How many hunk lines would be visible with centered scroll?
+    let visible_end = centered_scroll + vh;
+    if hunk_end <= visible_end || hunk_size >= vh {
+        // Either the whole hunk fits when centered, or the hunk is bigger
+        // than the viewport. In the latter case, centering is still the
+        // best starting point — but we cap so first_row stays visible.
+        // For very large hunks, scroll down as far as possible while
+        // keeping first_row on screen (i.e. first_row at the top).
+        let max_scroll = first_row; // first_row must be >= scroll
+        let desired = if hunk_size >= vh {
+            // Large hunk: push first_row toward the top of the viewport.
+            // Try to show as much as possible: scroll = first_row.
+            first_row
+        } else {
+            centered_scroll
+        };
+        state.diff_scroll = desired.min(max_scroll);
+    } else {
+        // Hunk partially off-screen when centered. Scroll further so the
+        // full hunk is visible, but never past first_row.
+        let needed_scroll = hunk_end.saturating_sub(vh);
+        state.diff_scroll = needed_scroll.min(first_row);
+    }
+
+    state.clamp_cursor_and_scroll();
 }
 
 enum Direction {
