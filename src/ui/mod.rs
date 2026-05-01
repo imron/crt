@@ -65,7 +65,18 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) {
         }
     }
 
-    draw_status_bar(frame, state, status_area);
+    // Draw status bar or input prompt (command/search replace the status bar).
+    match state.input_mode {
+        InputMode::Command => {
+            draw_command_input(frame, state, status_area);
+        }
+        InputMode::DiffSearch => {
+            draw_diff_search_input(frame, state, status_area);
+        }
+        InputMode::Normal => {
+            draw_status_bar(frame, state, status_area);
+        }
+    }
 
     // Render mouse selection highlight on top of everything.
     if let Some(sel) = &state.mouse_selection {
@@ -85,11 +96,6 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) {
     // Help overlay on top of everything else.
     if state.show_help {
         draw_help_overlay(frame, &state.styles);
-    }
-
-    // Command input line (renders cursor, must be last for SetCursorPosition).
-    if state.input_mode == InputMode::Command {
-        draw_command_input(frame, state, status_area);
     }
 }
 
@@ -355,6 +361,23 @@ fn draw_command_input(frame: &mut Frame, state: &AppState, area: Rect) {
     // Place cursor at the correct position within the command input.
     // The `:` prefix is 1 char, so cursor_x = area.x + 1 + command_cursor.
     let cursor_x = area.x + 1 + state.command_cursor as u16;
+    let cursor_y = area.y;
+    frame.set_cursor_position(Position {
+        x: cursor_x,
+        y: cursor_y,
+    });
+}
+
+/// Draw the `/` diff search input line, replacing the status bar.
+fn draw_diff_search_input(frame: &mut Frame, state: &AppState, area: Rect) {
+    let ss = &state.styles.status;
+    let input = format!("/{}", state.diff_search_input);
+    let bar_style = Style::default().bg(*ss.bar_bg).fg(*ss.bar_fg);
+    let input_line = Paragraph::new(input.clone()).style(bar_style);
+    frame.render_widget(input_line, area);
+
+    // Place cursor at the correct position within the search input.
+    let cursor_x = area.x + 1 + state.diff_search_cursor as u16;
     let cursor_y = area.y;
     frame.set_cursor_position(Position {
         x: cursor_x,

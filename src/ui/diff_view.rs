@@ -170,9 +170,19 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
         None => " Diff ".to_string(),
     };
 
+    // Recompute diff search matches when content has changed (cache miss).
+    if !cache_hit && state.diff_search_query.is_some() {
+        if let Some(_err) = state.recompute_diff_search_matches() {
+            // Invalid regex — clear search silently on content change.
+            state.diff_search_query = None;
+        }
+    }
+
     // Extract only the visible slice from the cache — clone ~viewport lines.
-    // Apply cursor line highlight to the line at diff_line_cursor.
+    // Apply cursor line highlight and search match highlighting.
     let cursor_line_bg = *state.styles.diff.cursor_line_bg;
+    let search_match_bg = *state.styles.diff.search_match_bg;
+    let search_current_bg = *state.styles.diff.search_current_match_bg;
     let cursor_visible_idx = state.diff_line_cursor.saturating_sub(state.diff_scroll);
     let visible: Vec<Line> = {
         let cache = state.diff_cache.as_ref().unwrap();
@@ -183,11 +193,22 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
             .take(state.diff_view_height)
             .enumerate()
             .map(|(i, line)| {
-                if i == cursor_visible_idx
+                let display_row = state.diff_scroll + i;
+                let is_cursor_line = i == cursor_visible_idx
                     && state.diff_line_cursor >= state.diff_scroll
-                    && state.diff_line_cursor < state.diff_scroll + state.diff_view_height
-                {
-                    // Apply cursor line background to every span.
+                    && state.diff_line_cursor < state.diff_scroll + state.diff_view_height;
+
+                // Collect search matches on this row.
+                let row_matches: Vec<(usize, usize, bool)> = state
+                    .diff_search_matches
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (row, _, _))| *row == display_row)
+                    .map(|(idx, (_, start, end))| (*start, *end, idx == state.diff_search_current))
+                    .collect();
+
+                if row_matches.is_empty() && is_cursor_line {
+                    // Simple case: cursor line, no search matches.
                     let spans: Vec<Span> = line
                         .spans
                         .iter()
@@ -199,8 +220,22 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
                         })
                         .collect();
                     Line::from(spans)
-                } else {
+                } else if row_matches.is_empty() {
                     line.clone()
+                } else {
+                    // Apply search match highlights by splitting spans.
+                    let highlighted = apply_search_highlights(
+                        line,
+                        &row_matches,
+                        search_match_bg,
+                        search_current_bg,
+                        if is_cursor_line {
+                            Some(cursor_line_bg)
+                        } else {
+                            None
+                        },
+                    );
+                    Line::from(highlighted)
                 }
             })
             .collect()
@@ -1495,4 +1530,77 @@ fn digit_width(n: u32) -> usize {
         _ => 6,
     }
     .max(3)
+}
+
+// ---------------------------------------------------------------------------
+// Search match highlighting
+// ---------------------------------------------------------------------------
+
+/// Apply search match highlights to a line by splitting spans at match
+/// boundaries and overriding the background color.
+///
+/// `matches` is a list of (byte_start, byte_end, is_current_match) relative
+/// to the flattened span text. `cursor_line_bg` is applied to non-match
+/// portions if the line is the cursor line.
+fn apply_search_highlights(
+    line: &Line,
+    matches: &[(usize, usize, bool)],
+    match_bg: Color,
+    current_bg: Color,
+    cursor_line_bg: Option<Color>,
+) -> Vec<Span<'static>> {
+    // Flatten spans into (text, style, byte_offset) segments.
+    let mut result: Vec<Span<'static>> = Vec::new();
+    let mut byte_pos: usize = 0;
+
+    for span in &line.spans {
+        let text = span.content.as_ref();
+        let span_start = byte_pos;
+        let span_end = byte_pos + text.len();
+
+        // Find all match regions that overlap this span.
+        let mut cursor = span_start;
+        for &(m_start, m_end, is_current) in matches {
+            if m_end <= span_start || m_start >= span_end {
+                continue; // no overlap
+            }
+            let overlap_start = m_start.max(span_start);
+            let overlap_end = m_end.min(span_end);
+
+            // Emit text before this match overlap.
+            if cursor < overlap_start {
+                let before = &text[(cursor - span_start)..(overlap_start - span_start)];
+                let style = if let Some(bg) = cursor_line_bg {
+                    span.style.bg(bg)
+                } else {
+                    span.style
+                };
+                result.push(Span::styled(before.to_string(), style));
+            }
+
+            // Emit the match highlight.
+            let match_text =
+                &text[(overlap_start - span_start)..(overlap_end - span_start)];
+            let bg = if is_current { current_bg } else { match_bg };
+            let style = span.style.bg(bg).fg(Color::Black);
+            result.push(Span::styled(match_text.to_string(), style));
+
+            cursor = overlap_end;
+        }
+
+        // Emit remaining text after all matches.
+        if cursor < span_end {
+            let remaining = &text[(cursor - span_start)..];
+            let style = if let Some(bg) = cursor_line_bg {
+                span.style.bg(bg)
+            } else {
+                span.style
+            };
+            result.push(Span::styled(remaining.to_string(), style));
+        }
+
+        byte_pos = span_end;
+    }
+
+    result
 }

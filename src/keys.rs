@@ -22,6 +22,12 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
         return;
     }
 
+    // --- Diff search input ---
+    if state.input_mode == InputMode::DiffSearch {
+        handle_diff_search_input(state, key);
+        return;
+    }
+
     // --- Search results overlay catches keys ---
     if state.search_results.is_some() {
         handle_search_results_key(state, key);
@@ -117,6 +123,81 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             KeyCode::Char(c) => {
                 state.command_input.insert(state.command_cursor, c);
                 state.command_cursor += 1;
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle keystrokes while in diff search mode (`/` prompt active).
+    fn handle_diff_search_input(state: &mut AppState, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                state.input_mode = InputMode::Normal;
+                state.diff_search_input.clear();
+                state.diff_search_cursor = 0;
+                // Keep existing query/matches (Escape just closes the prompt).
+            }
+            KeyCode::Enter => {
+                let query = state.diff_search_input.clone();
+                state.input_mode = InputMode::Normal;
+                state.diff_search_input.clear();
+                state.diff_search_cursor = 0;
+                if query.is_empty() {
+                    // Empty search clears the current search.
+                    state.diff_search_query = None;
+                    state.diff_search_matches.clear();
+                    state.diff_search_current = 0;
+                } else {
+                    state.diff_search_query = Some(query);
+                    if let Some(err) = state.recompute_diff_search_matches() {
+                        state.diff_search_query = None;
+                        state.status_message = Some((err, Instant::now()));
+                    } else if state.diff_search_matches.is_empty() {
+                        state.status_message =
+                            Some(("No matches".to_string(), Instant::now()));
+                    } else {
+                        state.diff_search_jump_to_current();
+                        let total = state.diff_search_matches.len();
+                        let cur = state.diff_search_current + 1;
+                        state.status_message =
+                            Some((format!("{cur}/{total}"), Instant::now()));
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if state.diff_search_cursor > 0 {
+                    state.diff_search_cursor -= 1;
+                    state.diff_search_input.remove(state.diff_search_cursor);
+                } else {
+                    // Backspace on empty input exits search mode.
+                    state.input_mode = InputMode::Normal;
+                }
+            }
+            KeyCode::Delete => {
+                if state.diff_search_cursor < state.diff_search_input.len() {
+                    state.diff_search_input.remove(state.diff_search_cursor);
+                }
+            }
+            KeyCode::Left => {
+                state.diff_search_cursor = state.diff_search_cursor.saturating_sub(1);
+            }
+            KeyCode::Right => {
+                state.diff_search_cursor = state
+                    .diff_search_cursor
+                    .min(state.diff_search_input.len())
+                    .saturating_add(1);
+                state.diff_search_cursor =
+                    state.diff_search_cursor.min(state.diff_search_input.len());
+            }
+            KeyCode::Home => {
+                state.diff_search_cursor = 0;
+            }
+            KeyCode::End => {
+                state.diff_search_cursor = state.diff_search_input.len();
+            }
+            KeyCode::Char(c) => {
+                state.diff_search_input.insert(state.diff_search_cursor, c);
+                state.diff_search_cursor += 1;
             }
             _ => {}
         }
@@ -423,8 +504,63 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             state.command_cursor = 0;
             return;
         }
-        // `/` is reserved for file-local diff search (Stage 12).
-        // Not yet implemented — ignore for now.
+        (KeyCode::Char('/'), KeyModifiers::NONE) => {
+            state.input_mode = InputMode::DiffSearch;
+            state.diff_search_input.clear();
+            state.diff_search_cursor = 0;
+            return;
+        }
+        (KeyCode::Char('n'), KeyModifiers::NONE) => {
+            if state.diff_search_query.is_some() && !state.diff_search_matches.is_empty() {
+                // Next match: find first match strictly after current cursor.
+                let cursor = state.diff_line_cursor;
+                let len = state.diff_search_matches.len();
+                let idx = state
+                    .diff_search_matches
+                    .iter()
+                    .position(|(row, _, _)| *row > cursor)
+                    .unwrap_or(0); // wrap to first match
+                state.diff_search_current = idx;
+                let (row, _, _) = state.diff_search_matches[idx];
+                state.diff_line_cursor = row;
+                state.clamp_cursor_and_scroll();
+                let cur = idx + 1;
+                state.status_message =
+                    Some((format!("{cur}/{len}"), Instant::now()));
+                return;
+            }
+            // Fall through if no active search — `n` might be used elsewhere.
+        }
+        (KeyCode::Char('N'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
+            if state.diff_search_query.is_some() && !state.diff_search_matches.is_empty() {
+                // Previous match: find last match strictly before current cursor.
+                let cursor = state.diff_line_cursor;
+                let len = state.diff_search_matches.len();
+                let idx = state
+                    .diff_search_matches
+                    .iter()
+                    .rposition(|(row, _, _)| *row < cursor)
+                    .unwrap_or(len - 1); // wrap to last match
+                state.diff_search_current = idx;
+                let (row, _, _) = state.diff_search_matches[idx];
+                state.diff_line_cursor = row;
+                state.clamp_cursor_and_scroll();
+                let cur = idx + 1;
+                state.status_message =
+                    Some((format!("{cur}/{len}"), Instant::now()));
+                return;
+            }
+            // Fall through if no active search.
+        }
+        (KeyCode::Esc, KeyModifiers::NONE) => {
+            // Escape clears search highlights.
+            if state.diff_search_query.is_some() {
+                state.diff_search_query = None;
+                state.diff_search_matches.clear();
+                state.diff_search_current = 0;
+                return;
+            }
+        }
         (KeyCode::Tab, KeyModifiers::NONE | KeyModifiers::SHIFT) => {
             // Only toggle between visible panes.
             if state.show_file_list && state.show_diff_pane {
