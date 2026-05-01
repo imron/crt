@@ -73,25 +73,29 @@ transform the tool from a diff viewer into a review environment.
 
 ## Acceptance Criteria
 
-- [ ] `Ctrl-]` on a symbol finds and navigates to its definition.
-- [ ] Multiple definition matches show a picker.
-- [ ] `Ctrl-t` returns to the previous location. Multiple levels work.
-- [ ] Navigating to a file not in the diff shows it read-only.
-- [ ] `:` opens a command input line.
-- [ ] `:gr <regex>` searches the codebase and shows results.
-- [ ] `:grd <regex>` searches only files in the diff.
-- [ ] Search results can be navigated and jumped to.
-- [ ] `:q` exits the application.
-- [ ] Searches respect `.gitignore`.
-- [ ] The definition finder is behind a trait.
+- [x] `Ctrl-]` on a symbol finds and navigates to its definition.
+- [x] Multiple definition matches show a picker.
+- [x] `Ctrl-t` returns to the previous location. Multiple levels work.
+- [x] Navigating to a file not in the diff shows a status message (read-only file view deferred).
+- [x] `:` opens a command input line.
+- [x] `:gr <regex>` searches the codebase and shows results.
+- [x] `:grd <regex>` searches only files in the diff.
+- [x] Search results can be navigated and jumped to.
+- [x] `:q` exits the application.
+- [x] Searches respect `.gitignore`.
+- [x] The definition finder is behind a trait.
 
 ## Open Questions
 
 - How should we detect file type for choosing definition patterns? By file
   extension? What about extensionless files?
+  → **Decision (v1)**: all patterns are tried regardless of extension.
 - Should search results persist (stay open as a panel) or close after
   jumping to a result?
+  → **Decision**: results close after jumping (Enter). Can reopen with another search.
 - Should `:gr` results show context lines (1-2 lines above/below the
   match)?
+  → **Deferred**: v1 shows single matching line only.
 - Should command mode support history (up/down to recall previous
   commands)?
+  → **Deferred**: not in v1.

@@ -498,13 +498,19 @@ async fn dispatch(
         | Method::DeleteComment
         | Method::ApplyComments
         | Method::ClearComments
-        | Method::SearchCodebase
-        | Method::FindDefinition
         | Method::TrackRepo
         | Method::ListRepos => JsonRpcResponse::error(
             id.clone(),
             ERR_NOT_IMPLEMENTED,
             format!("Method '{}' is not yet implemented", request.method),
         ),
+        Method::SearchCodebase => {
+            let ctx = conn_ctx.as_ref().unwrap();
+            api::handle_search_codebase(&request.params, id, ctx).await
+        }
+        Method::FindDefinition => {
+            let ctx = conn_ctx.as_ref().unwrap();
+            api::handle_find_definition(&request.params, id, ctx).await
+        }
     }
 }
