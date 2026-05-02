@@ -221,6 +221,73 @@ impl Repo {
         Ok(changes)
     }
 
+    /// List files changed between a base ref and the working tree.
+    /// Similar to `git diff <base_ref>` (includes both staged and unstaged).
+    pub fn list_changed_files_workdir(&self, base_ref: &str) -> Result<Vec<FileChange>> {
+        let base_tree = self.resolve_tree(base_ref)?;
+
+        let mut diff_opts = git2::DiffOptions::new();
+        diff_opts.patience(true);
+
+        // Compare base tree to the working directory (via the index, so
+        // both staged and unstaged changes are included).
+        let diff = self
+            .inner
+            .diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut diff_opts))
+            .context("Failed to compute diff between base and working tree")?;
+
+        // Enable rename detection.
+        let mut find_opts = git2::DiffFindOptions::new();
+        find_opts.renames(true);
+        let mut diff = diff;
+        diff.find_similar(Some(&mut find_opts))
+            .context("Failed to detect renames")?;
+
+        let mut changes = Vec::new();
+
+        for delta in diff.deltas() {
+            let kind = match delta.status() {
+                git2::Delta::Added => ChangeKind::Added,
+                git2::Delta::Deleted => ChangeKind::Deleted,
+                git2::Delta::Modified => ChangeKind::Modified,
+                git2::Delta::Renamed => ChangeKind::Renamed,
+                git2::Delta::Copied => ChangeKind::Added,
+                git2::Delta::Untracked => continue, // skip untracked files
+                _ => ChangeKind::Modified,
+            };
+
+            let new_path = delta
+                .new_file()
+                .path()
+                .map(|p| p.to_string_lossy().into_owned());
+            let old_path = delta
+                .old_file()
+                .path()
+                .map(|p| p.to_string_lossy().into_owned());
+
+            let path = match kind {
+                ChangeKind::Deleted => old_path.clone().unwrap_or_default(),
+                _ => new_path.unwrap_or_default(),
+            };
+
+            let old_path = if kind == ChangeKind::Renamed {
+                old_path
+            } else {
+                None
+            };
+
+            changes.push(FileChange {
+                path,
+                old_path,
+                kind,
+            });
+        }
+
+        changes.sort_by(|a, b| a.path.cmp(&b.path));
+
+        Ok(changes)
+    }
+
     /// Compute the structured diff for a single file between base and HEAD.
     pub fn diff_file(
         &self,
@@ -231,6 +298,20 @@ impl Repo {
         self.diff_file_opts(
             base_ref,
             head_ref,
+            file_path,
+            crate::config::DiffAlgorithm::Patience,
+            false,
+        )
+    }
+
+    /// Compute the structured diff for a single file between base and working tree.
+    pub fn diff_file_workdir(
+        &self,
+        base_ref: &str,
+        file_path: &str,
+    ) -> Result<DiffContent> {
+        self.diff_file_workdir_opts(
+            base_ref,
             file_path,
             crate::config::DiffAlgorithm::Patience,
             false,
@@ -315,6 +396,165 @@ impl Repo {
         let mut result = parse_diff(&diff)?;
         result.is_binary = is_binary;
         Ok(result)
+    }
+
+    /// Compute the structured diff for a single file between base and working
+    /// tree, with configurable algorithm and whitespace settings.
+    pub fn diff_file_workdir_opts(
+        &self,
+        base_ref: &str,
+        file_path: &str,
+        algorithm: crate::config::DiffAlgorithm,
+        ignore_whitespace: bool,
+    ) -> Result<DiffContent> {
+        let base_tree = self.resolve_tree(base_ref)?;
+
+        // Histogram requires shelling out to git CLI.
+        if algorithm == crate::config::DiffAlgorithm::Histogram {
+            return self.diff_file_workdir_git_cli(
+                base_ref,
+                file_path,
+                "histogram",
+                ignore_whitespace,
+            );
+        }
+
+        let mut diff_opts = git2::DiffOptions::new();
+        match algorithm {
+            crate::config::DiffAlgorithm::Myers => {}
+            crate::config::DiffAlgorithm::Patience => {
+                diff_opts.patience(true);
+            }
+            crate::config::DiffAlgorithm::Minimal => {
+                diff_opts.minimal(true);
+            }
+            crate::config::DiffAlgorithm::Histogram => unreachable!(),
+        }
+        diff_opts.pathspec(file_path);
+        if ignore_whitespace {
+            diff_opts.ignore_whitespace(true);
+        }
+
+        let diff = self
+            .inner
+            .diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut diff_opts))
+            .context("Failed to compute diff against working tree")?;
+
+        // Check for binary. For workdir diffs, the new file OID may be zero
+        // (file on disk, not in ODB). Check the old blob and also inspect
+        // the diff flags.
+        let is_binary = diff.deltas().next().is_some_and(|d| {
+            // Check diff delta flags first (git2 sets BINARY after content inspection).
+            if d.flags().contains(git2::DiffFlags::BINARY) {
+                return true;
+            }
+            let old_binary = if d.old_file().id().is_zero() {
+                false
+            } else {
+                self.inner
+                    .find_blob(d.old_file().id())
+                    .map(|b| b.is_binary())
+                    .unwrap_or(false)
+            };
+            // For the new file, check if the blob is in the ODB; if not,
+            // read from disk and check for NUL bytes.
+            let new_binary = if d.new_file().id().is_zero() {
+                if let Some(path) = d.new_file().path() {
+                    let worktree = self.inner.workdir().unwrap_or_else(|| self.inner.path());
+                    is_likely_binary_file(&worktree.join(path))
+                } else {
+                    false
+                }
+            } else {
+                self.inner
+                    .find_blob(d.new_file().id())
+                    .map(|b| b.is_binary())
+                    .unwrap_or(false)
+            };
+            old_binary || new_binary
+        });
+
+        if is_binary {
+            return Ok(DiffContent {
+                hunks: Vec::new(),
+                is_binary: true,
+                diff_hash: hash_bytes(b"<binary>"),
+            });
+        }
+
+        let mut result = parse_diff(&diff)?;
+        result.is_binary = is_binary;
+        Ok(result)
+    }
+
+    /// Compute a workdir diff by shelling out to `git` CLI (e.g. histogram).
+    fn diff_file_workdir_git_cli(
+        &self,
+        base_ref: &str,
+        file_path: &str,
+        algorithm: &str,
+        ignore_whitespace: bool,
+    ) -> Result<DiffContent> {
+        let worktree = self
+            .inner
+            .workdir()
+            .unwrap_or_else(|| self.inner.path())
+            .to_path_buf();
+
+        let mut cmd = std::process::Command::new("git");
+        cmd.current_dir(&worktree);
+        cmd.args(["diff", &format!("--diff-algorithm={algorithm}")]);
+        if ignore_whitespace {
+            cmd.arg("-w");
+        }
+        // No second ref — compares base to working tree.
+        cmd.args([base_ref, "--", file_path]);
+
+        let output = cmd
+            .output()
+            .context("Failed to run git diff (is git on PATH?)")?;
+
+        if !output.status.success() && output.stdout.is_empty() {
+            return Ok(DiffContent {
+                hunks: Vec::new(),
+                is_binary: false,
+                diff_hash: hash_bytes(b""),
+            });
+        }
+
+        let stdout_str = String::from_utf8_lossy(&output.stdout);
+        if stdout_str.contains("Binary files") && stdout_str.contains("differ") {
+            return Ok(DiffContent {
+                hunks: Vec::new(),
+                is_binary: true,
+                diff_hash: hash_bytes(b"<binary>"),
+            });
+        }
+
+        let diff =
+            git2::Diff::from_buffer(&output.stdout).context("Failed to parse git diff output")?;
+
+        parse_diff(&diff)
+    }
+
+    /// Read the content of a file from the working tree on disk.
+    pub fn file_content_workdir(&self, file_path: &str) -> Result<Option<String>> {
+        let worktree = self
+            .inner
+            .workdir()
+            .unwrap_or_else(|| self.inner.path());
+        let full_path = worktree.join(file_path);
+        match std::fs::read(&full_path) {
+            Ok(bytes) => {
+                // Check for binary (NUL byte in the first 8KB).
+                if bytes.iter().take(8192).any(|&b| b == 0) {
+                    return Ok(None);
+                }
+                Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Compute a diff by shelling out to the `git` CLI for algorithms
@@ -557,6 +797,16 @@ fn hash_bytes(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     format!("{:x}", hasher.finalize())
+}
+
+/// Check if a file on disk is likely binary (contains NUL in first 512 bytes).
+fn is_likely_binary_file(path: &Path) -> bool {
+    if let Ok(data) = std::fs::read(path) {
+        let check_len = data.len().min(512);
+        data[..check_len].contains(&0)
+    } else {
+        false
+    }
 }
 
 /// Truncate a hex hash to a short display form, safely.

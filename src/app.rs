@@ -230,6 +230,9 @@ pub struct AppState {
     pub should_suspend: bool,
     /// Set to true to exit the event loop.
     pub should_quit: bool,
+    /// Set to true when the terminal regains focus — triggers a full
+    /// file list reload on the next event loop iteration.
+    pub pending_refresh: bool,
     /// Cached diff content — avoids rebuilding all `Line<'static>` on every
     /// frame when only the scroll offset changed.
     pub diff_cache: Option<crate::ui::diff_view::DiffCache>,
@@ -326,6 +329,7 @@ impl AppState {
             dragging_border: false,
             should_suspend: false,
             should_quit: false,
+            pending_refresh: false,
             diff_cache: None,
             input_mode: InputMode::Normal,
             command_input: String::new(),
@@ -361,14 +365,14 @@ impl AppState {
         self.diff_content_height.saturating_sub(1)
     }
 
-    /// Load HEAD content for the currently selected file from git.
+    /// Load content for the currently selected file from the working tree.
     pub fn load_head_content(&mut self) {
         self.head_content = None;
         if let Some(entry) = self.files.get(self.selected_file) {
             let path = entry.change.path.clone();
             if let Ok(repo) = crate::git::Repo::open(std::path::Path::new(&self.context.worktree))
             {
-                self.head_content = repo.file_content("HEAD", &path).ok().flatten();
+                self.head_content = repo.file_content_workdir(&path).ok().flatten();
             }
         }
     }
@@ -475,6 +479,31 @@ impl AppState {
         }
     }
 
+    /// Refresh the diff for the currently selected file from the working tree,
+    /// using the current diff algorithm and whitespace settings. Updates the
+    /// cached diff in place without changing cursor position.
+    fn refresh_current_file_diff(&mut self) {
+        if let Some(entry) = self.files.get(self.selected_file) {
+            let path = entry.change.path.clone();
+            if let Ok(repo) =
+                crate::git::Repo::open(std::path::Path::new(&self.context.worktree))
+            {
+                if let Ok(diff) = repo.diff_file_workdir_opts(
+                    &self.context.merge_base,
+                    &path,
+                    self.diff_algorithm,
+                    self.ignore_whitespace,
+                ) {
+                    if let Some(entry) = self.files.get_mut(self.selected_file) {
+                        entry.diff = diff;
+                    }
+                }
+            }
+        }
+        // Invalidate the diff cache so the view rebuilds.
+        self.diff_cache = None;
+    }
+
     /// Reload the diff for the currently selected file, respecting
     /// the `ignore_whitespace` flag.
     pub fn reload_current_diff(&mut self) {
@@ -483,9 +512,8 @@ impl AppState {
             if let Ok(repo) =
                 crate::git::Repo::open(std::path::Path::new(&self.context.worktree))
             {
-                if let Ok(diff) = repo.diff_file_opts(
+                if let Ok(diff) = repo.diff_file_workdir_opts(
                     &self.context.merge_base,
-                    "HEAD",
                     &path,
                     self.diff_algorithm,
                     self.ignore_whitespace,
@@ -614,12 +642,14 @@ impl AppState {
     }
 
     /// Called after `selected_file` changes. Resets diff state and loads
-    /// the appropriate file content from git.
+    /// the appropriate file content from the working tree.
     pub fn on_file_changed(&mut self) {
         self.reviewed_diff_expanded = false;
         self.hunk_start_rows.clear();
         self.hunk_end_rows.clear();
         self.hunk_first_change_rows.clear();
+        // Refresh the diff for this file from the working tree.
+        self.refresh_current_file_diff();
         self.load_head_content();
         self.load_blame();
 
@@ -787,6 +817,12 @@ impl App {
             // Check for server-pushed notifications (from other clients).
             self.process_notifications().await;
 
+            // Refresh file list on focus gain.
+            if self.state.pending_refresh {
+                self.state.pending_refresh = false;
+                self.reload_file_list().await;
+            }
+
             if self.state.should_suspend {
                 self.state.should_suspend = false;
                 self.suspend()?;
@@ -817,6 +853,10 @@ impl App {
             }
             Event::Resize(_w, _h) => {
                 // ratatui handles resize automatically on next draw.
+            }
+            Event::FocusGained => {
+                // Terminal regained focus — schedule a full refresh.
+                self.state.pending_refresh = true;
             }
             _ => {}
         }
@@ -1516,8 +1556,13 @@ fn base64_encode(data: &[u8]) -> String {
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     terminal::enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
-        .context("Failed to enter alternate screen")?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        crossterm::event::EnableFocusChange,
+    )
+    .context("Failed to enter alternate screen")?;
     let backend = CrosstermBackend::new(stdout);
     Terminal::new(backend).context("Failed to create terminal")
 }
@@ -1528,6 +1573,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Re
     execute!(
         terminal.backend_mut(),
         DisableMouseCapture,
+        crossterm::event::DisableFocusChange,
         LeaveAlternateScreen
     )
     .context("Failed to leave alternate screen")?;

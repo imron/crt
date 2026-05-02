@@ -150,11 +150,11 @@ pub async fn handle_list_changed_files(
     // Git operations are blocking — run on the blocking thread pool.
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let repo = git::Repo::open(&worktree)?;
-        let changes = repo.list_changed_files(&merge_base, "HEAD")?;
+        let changes = repo.list_changed_files_workdir(&merge_base)?;
 
         let mut files = Vec::new();
         for change in changes {
-            let diff = repo.diff_file(&merge_base, "HEAD", &change.path)?;
+            let diff = repo.diff_file_workdir(&merge_base, &change.path)?;
 
             let status = match reviews.get(&change.path) {
                 None => model::ReviewStatus::Unreviewed,
@@ -225,7 +225,7 @@ pub async fn handle_get_file_diff(
 
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let repo = git::Repo::open(&worktree)?;
-        let diff = repo.diff_file(&merge_base, "HEAD", &file_path)?;
+        let diff = repo.diff_file_workdir(&merge_base, &file_path)?;
         Ok(model::GetFileDiffResult { diff })
     })
     .await;
@@ -283,7 +283,7 @@ pub async fn handle_mark_reviewed(
         let fp = file_path.clone();
         let result = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
             let repo = git::Repo::open(&wt)?;
-            let diff = repo.diff_file(&mb, "HEAD", &fp)?;
+            let diff = repo.diff_file_workdir(&mb, &fp)?;
             Ok(diff.diff_hash)
         })
         .await;
@@ -499,7 +499,7 @@ pub async fn handle_search_codebase(
                 );
             }
         };
-        match repo.list_changed_files(&ctx.merge_base, "HEAD") {
+        match repo.list_changed_files_workdir(&ctx.merge_base) {
             Ok(files) => Some(files.iter().map(|f| f.path.clone()).collect::<Vec<_>>()),
             Err(e) => {
                 return JsonRpcResponse::error(
