@@ -747,8 +747,8 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
         }
         (KeyCode::Char('G'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
             state.diff_line_cursor = state.max_diff_scroll();
-            state.diff_scroll = state.max_diff_scroll();
             state.diff_col_cursor = 0;
+            state.clamp_cursor_and_scroll();
             return;
         }
         (KeyCode::Char('H'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
