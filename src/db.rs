@@ -23,6 +23,8 @@ pub struct StoredReview {
     pub head_ref: String,
     pub diff_hash: String,
     pub reviewed_at: String,
+    /// The HEAD commit OID at the time the file was reviewed.
+    pub reviewed_commit: String,
 }
 
 /// Parameters for creating a new comment.
@@ -83,6 +85,7 @@ impl Database {
 
         let db = Self { conn };
         db.init_schema()?;
+        db.migrate()?;
         Ok(db)
     }
 
@@ -91,11 +94,12 @@ impl Database {
             .execute_batch(
                 "
             CREATE TABLE IF NOT EXISTS file_reviews (
-                file_path   TEXT NOT NULL,
-                merge_base  TEXT NOT NULL,
-                head_ref    TEXT NOT NULL,
-                diff_hash   TEXT NOT NULL,
-                reviewed_at TEXT NOT NULL,
+                file_path       TEXT NOT NULL,
+                merge_base      TEXT NOT NULL,
+                head_ref        TEXT NOT NULL,
+                diff_hash       TEXT NOT NULL,
+                reviewed_at     TEXT NOT NULL,
+                reviewed_commit TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (merge_base, head_ref, file_path)
             );
 
@@ -126,6 +130,27 @@ impl Database {
         Ok(())
     }
 
+    /// Run forward-only migrations for schema changes added after the
+    /// initial `CREATE TABLE IF NOT EXISTS`.
+    fn migrate(&self) -> Result<()> {
+        // Migration 1: add `reviewed_commit` column to `file_reviews`.
+        // The column already exists in the CREATE TABLE for new databases,
+        // but existing databases need the ALTER TABLE.
+        let has_col = self
+            .conn
+            .prepare("SELECT reviewed_commit FROM file_reviews LIMIT 0")
+            .is_ok();
+        if !has_col {
+            self.conn
+                .execute_batch(
+                    "ALTER TABLE file_reviews ADD COLUMN reviewed_commit TEXT NOT NULL DEFAULT ''",
+                )
+                .context("Failed to add reviewed_commit column")?;
+        }
+
+        Ok(())
+    }
+
     // -----------------------------------------------------------------------
     // Review operations
     // -----------------------------------------------------------------------
@@ -137,15 +162,16 @@ impl Database {
         head_ref: &str,
         file_path: &str,
         diff_hash: &str,
+        reviewed_commit: &str,
     ) -> Result<StoredReview> {
         let now = now_iso8601();
         self.conn
             .execute(
-                "INSERT INTO file_reviews (merge_base, head_ref, file_path, diff_hash, reviewed_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
+                "INSERT INTO file_reviews (merge_base, head_ref, file_path, diff_hash, reviewed_at, reviewed_commit)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT (merge_base, head_ref, file_path)
-                 DO UPDATE SET diff_hash = ?4, reviewed_at = ?5",
-                params![merge_base, head_ref, file_path, diff_hash, now],
+                 DO UPDATE SET diff_hash = ?4, reviewed_at = ?5, reviewed_commit = ?6",
+                params![merge_base, head_ref, file_path, diff_hash, now, reviewed_commit],
             )
             .context("Failed to store review")?;
 
@@ -155,6 +181,7 @@ impl Database {
             head_ref: head_ref.to_string(),
             diff_hash: diff_hash.to_string(),
             reviewed_at: now,
+            reviewed_commit: reviewed_commit.to_string(),
         })
     }
 
@@ -168,7 +195,7 @@ impl Database {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT file_path, merge_base, head_ref, diff_hash, reviewed_at
+                "SELECT file_path, merge_base, head_ref, diff_hash, reviewed_at, reviewed_commit
                  FROM file_reviews
                  WHERE merge_base = ?1 AND head_ref = ?2",
             )
@@ -182,6 +209,7 @@ impl Database {
                     head_ref: row.get(2)?,
                     diff_hash: row.get(3)?,
                     reviewed_at: row.get(4)?,
+                    reviewed_commit: row.get(5)?,
                 })
             })
             .context("Failed to load reviews")?;
@@ -497,7 +525,7 @@ mod tests {
     fn test_store_and_load_review() {
         let (_dir, db) = test_db();
 
-        db.store_review("main", "feature-a", "src/main.rs", "abc123")
+        db.store_review("main", "feature-a", "src/main.rs", "abc123", "deadbeef")
             .unwrap();
 
         let reviews = db.load_reviews("main", "feature-a").unwrap();
@@ -506,6 +534,7 @@ mod tests {
         let review = &reviews["src/main.rs"];
         assert_eq!(review.file_path, "src/main.rs");
         assert_eq!(review.diff_hash, "abc123");
+        assert_eq!(review.reviewed_commit, "deadbeef");
         assert!(!review.reviewed_at.is_empty());
     }
 
@@ -513,9 +542,9 @@ mod tests {
     fn test_review_upsert() {
         let (_dir, db) = test_db();
 
-        db.store_review("main", "feature-a", "src/main.rs", "hash1")
+        db.store_review("main", "feature-a", "src/main.rs", "hash1", "commit1")
             .unwrap();
-        db.store_review("main", "feature-a", "src/main.rs", "hash2")
+        db.store_review("main", "feature-a", "src/main.rs", "hash2", "commit2")
             .unwrap();
 
         let reviews = db.load_reviews("main", "feature-a").unwrap();
@@ -527,9 +556,9 @@ mod tests {
     fn test_review_scope_isolation() {
         let (_dir, db) = test_db();
 
-        db.store_review("main", "feature-a", "src/main.rs", "hash-a")
+        db.store_review("main", "feature-a", "src/main.rs", "hash-a", "commit-a")
             .unwrap();
-        db.store_review("main", "feature-b", "src/main.rs", "hash-b")
+        db.store_review("main", "feature-b", "src/main.rs", "hash-b", "commit-b")
             .unwrap();
 
         let reviews_a = db.load_reviews("main", "feature-a").unwrap();
@@ -550,8 +579,8 @@ mod tests {
     fn test_remove_review() {
         let (_dir, db) = test_db();
 
-        db.store_review("main", "feat", "a.rs", "h1").unwrap();
-        db.store_review("main", "feat", "b.rs", "h2").unwrap();
+        db.store_review("main", "feat", "a.rs", "h1", "c1").unwrap();
+        db.store_review("main", "feat", "b.rs", "h2", "c2").unwrap();
 
         db.remove_review("main", "feat", "a.rs").unwrap();
 
@@ -564,9 +593,9 @@ mod tests {
     fn test_clear_reviews() {
         let (_dir, db) = test_db();
 
-        db.store_review("main", "feat-a", "a.rs", "h1").unwrap();
-        db.store_review("main", "feat-a", "b.rs", "h2").unwrap();
-        db.store_review("main", "feat-b", "a.rs", "h3").unwrap();
+        db.store_review("main", "feat-a", "a.rs", "h1", "c1").unwrap();
+        db.store_review("main", "feat-a", "b.rs", "h2", "c2").unwrap();
+        db.store_review("main", "feat-b", "a.rs", "h3", "c3").unwrap();
 
         let count = db.clear_reviews("main", "feat-a").unwrap();
         assert_eq!(count, 2);
@@ -725,7 +754,7 @@ mod tests {
     fn test_timestamps_iso8601() {
         let (_dir, db) = test_db();
 
-        let review = db.store_review("main", "feat", "a.rs", "hash").unwrap();
+        let review = db.store_review("main", "feat", "a.rs", "hash", "c1").unwrap();
 
         // Should parse as a valid datetime with timezone
         assert!(

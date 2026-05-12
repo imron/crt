@@ -301,6 +301,7 @@ fn draw_help_overlay(frame: &mut Frame, styles: &StyleConfig) {
         Line::from("  i             Toggle inline / side-by-side"),
         Line::from("  s             Cycle: diff / HEAD / base"),
         Line::from("  d             Cycle diff algorithm"),
+        Line::from("  m             Toggle merge base / since review"),
         Line::from("  w             Toggle ignore whitespace"),
         Line::from("  b             Toggle blame annotations"),
         Line::from("  1 / 2         Toggle file list / diff pane"),
