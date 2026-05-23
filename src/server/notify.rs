@@ -25,4 +25,6 @@ pub enum NotificationKind {
     CommentChanged { comment_id: i64 },
     /// Reviews were cleared/reset.
     ReviewsCleared,
+    /// Reviews were migrated from an old scope after a rebase.
+    ReviewsMigrated { count: usize },
 }

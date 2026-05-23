@@ -635,6 +635,30 @@ impl Repo {
     }
 
     // -----------------------------------------------------------------------
+    // Object queries (for rebase migration)
+    // -----------------------------------------------------------------------
+
+    /// Get the blob OID (hex string) of a file at a given commit.
+    ///
+    /// Returns `Ok(None)` if the file doesn't exist at that commit.
+    /// Returns `Err` if the commit itself can't be resolved (e.g. GC'd).
+    pub fn file_blob_hash(&self, commit_ref: &str, file_path: &str) -> Result<Option<String>> {
+        let tree = self.resolve_tree(commit_ref)?;
+        match tree.get_path(Path::new(file_path)) {
+            Ok(entry) => Ok(Some(entry.id().to_string())),
+            Err(_) => Ok(None), // File doesn't exist at this commit
+        }
+    }
+
+    /// Check whether a commit OID exists in the object store.
+    ///
+    /// Returns `true` if the commit is resolvable (even if dangling),
+    /// `false` if it has been garbage collected.
+    pub fn commit_exists(&self, oid: &str) -> bool {
+        self.inner.revparse_single(oid).is_ok()
+    }
+
+    // -----------------------------------------------------------------------
     // Blame
     // -----------------------------------------------------------------------
 
@@ -1138,5 +1162,47 @@ mod tests {
         let diff = repo.diff_file("base", "HEAD", "image.bin").unwrap();
         assert!(diff.is_binary, "should detect binary file");
         assert!(diff.hunks.is_empty(), "binary diff should have no hunks");
+    }
+
+    #[test]
+    fn test_file_blob_hash() {
+        let (_dir, repo) = setup_test_repo();
+
+        // File exists at HEAD.
+        let hash = repo.file_blob_hash("HEAD", "hello.rs").unwrap();
+        assert!(hash.is_some());
+        assert_eq!(hash.as_ref().unwrap().len(), 40, "should be full SHA-1");
+
+        // File does not exist at HEAD (was deleted).
+        let hash = repo.file_blob_hash("HEAD", "lib.rs").unwrap();
+        assert!(hash.is_none());
+
+        // File exists at base.
+        let hash = repo.file_blob_hash("base", "lib.rs").unwrap();
+        assert!(hash.is_some());
+
+        // Same file at same ref should produce the same blob hash.
+        let h1 = repo.file_blob_hash("HEAD", "hello.rs").unwrap();
+        let h2 = repo.file_blob_hash("HEAD", "hello.rs").unwrap();
+        assert_eq!(h1, h2);
+
+        // Different content at different refs should produce different hashes.
+        let base_hash = repo.file_blob_hash("base", "hello.rs").unwrap();
+        let head_hash = repo.file_blob_hash("HEAD", "hello.rs").unwrap();
+        assert_ne!(base_hash, head_hash);
+    }
+
+    #[test]
+    fn test_commit_exists() {
+        let (_dir, repo) = setup_test_repo();
+
+        let head_oid = repo.resolve_commit("HEAD").unwrap();
+        assert!(repo.commit_exists(&head_oid));
+
+        let base_oid = repo.resolve_commit("base").unwrap();
+        assert!(repo.commit_exists(&base_oid));
+
+        // Nonexistent commit.
+        assert!(!repo.commit_exists("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"));
     }
 }

@@ -234,6 +234,68 @@ impl Database {
         Ok(())
     }
 
+    /// Load all reviews for a given `head_ref` regardless of `merge_base`.
+    ///
+    /// Returns a list of `(merge_base, HashMap<file_path, StoredReview>)` pairs,
+    /// ordered by the most recent `reviewed_at` timestamp descending (so the
+    /// first entry is the most recently active scope).
+    ///
+    /// Used during rebase migration: when no reviews exist for the current
+    /// `(merge_base, head_ref)`, we look for reviews under the same `head_ref`
+    /// but a different (old) `merge_base`.
+    pub fn load_reviews_by_head_ref(
+        &self,
+        head_ref: &str,
+    ) -> Result<Vec<(String, HashMap<String, StoredReview>)>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT file_path, merge_base, head_ref, diff_hash, reviewed_at, reviewed_commit
+                 FROM file_reviews
+                 WHERE head_ref = ?1
+                 ORDER BY reviewed_at DESC",
+            )
+            .context("Failed to prepare review-by-head-ref query")?;
+
+        let rows = stmt
+            .query_map(params![head_ref], |row| {
+                Ok(StoredReview {
+                    file_path: row.get(0)?,
+                    merge_base: row.get(1)?,
+                    head_ref: row.get(2)?,
+                    diff_hash: row.get(3)?,
+                    reviewed_at: row.get(4)?,
+                    reviewed_commit: row.get(5)?,
+                })
+            })
+            .context("Failed to load reviews by head_ref")?;
+
+        // Group by merge_base, preserving the order of first appearance
+        // (which is most-recent-first due to the ORDER BY).
+        let mut seen_order: Vec<String> = Vec::new();
+        let mut groups: HashMap<String, HashMap<String, StoredReview>> = HashMap::new();
+
+        for row in rows {
+            let review = row.context("Failed to read review row")?;
+            let mb = review.merge_base.clone();
+            if !groups.contains_key(&mb) {
+                seen_order.push(mb.clone());
+            }
+            groups
+                .entry(mb)
+                .or_default()
+                .insert(review.file_path.clone(), review);
+        }
+
+        Ok(seen_order
+            .into_iter()
+            .map(|mb| {
+                let map = groups.remove(&mb).unwrap_or_default();
+                (mb, map)
+            })
+            .collect())
+    }
+
     /// Clear all reviews for a `(merge_base, head_ref)` pair.
     pub fn clear_reviews(&self, merge_base: &str, head_ref: &str) -> Result<u64> {
         let count = self
@@ -748,6 +810,51 @@ mod tests {
 
         let updated = db.update_comment(9999, "nope").unwrap();
         assert!(!updated);
+    }
+
+    #[test]
+    fn test_load_reviews_by_head_ref() {
+        let (_dir, db) = test_db();
+
+        // Store reviews under two different merge_bases for the same head_ref.
+        db.store_review("old_base", "feature-a", "src/main.rs", "hash1", "commit1")
+            .unwrap();
+        db.store_review("old_base", "feature-a", "src/lib.rs", "hash2", "commit2")
+            .unwrap();
+        db.store_review("new_base", "feature-a", "src/main.rs", "hash3", "commit3")
+            .unwrap();
+
+        // Also store a review for a different head_ref (should not appear).
+        db.store_review("old_base", "feature-b", "src/main.rs", "hash4", "commit4")
+            .unwrap();
+
+        let scopes = db.load_reviews_by_head_ref("feature-a").unwrap();
+
+        // Should have 2 scopes for feature-a.
+        assert_eq!(scopes.len(), 2);
+
+        // Verify both scopes are present with the correct data.
+        let old_scope = scopes.iter().find(|(mb, _)| mb == "old_base");
+        let new_scope = scopes.iter().find(|(mb, _)| mb == "new_base");
+
+        assert!(old_scope.is_some(), "should have old_base scope");
+        assert!(new_scope.is_some(), "should have new_base scope");
+
+        let old_reviews = &old_scope.unwrap().1;
+        assert_eq!(old_reviews.len(), 2);
+        assert_eq!(old_reviews["src/main.rs"].diff_hash, "hash1");
+        assert_eq!(old_reviews["src/lib.rs"].diff_hash, "hash2");
+
+        let new_reviews = &new_scope.unwrap().1;
+        assert_eq!(new_reviews.len(), 1);
+        assert_eq!(new_reviews["src/main.rs"].diff_hash, "hash3");
+    }
+
+    #[test]
+    fn test_load_reviews_by_head_ref_empty() {
+        let (_dir, db) = test_db();
+        let scopes = db.load_reviews_by_head_ref("nonexistent").unwrap();
+        assert!(scopes.is_empty());
     }
 
     #[test]
