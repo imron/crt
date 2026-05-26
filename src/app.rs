@@ -190,6 +190,9 @@ pub struct AppState {
     pub show_diff_pane: bool,
     /// Active mouse text selection, if any.
     pub mouse_selection: Option<MouseSelection>,
+    /// Mouse down anchor (pane, pane area, column, row) used to start a drag
+    /// selection only after the pointer actually moves.
+    pub mouse_down_anchor: Option<(PaneFocus, Rect, u16, u16)>,
     /// Plain text of rendered diff lines (set during render, for clipboard).
     pub diff_rendered_text: Vec<String>,
     /// Plain text of rendered file list lines (set during render, for clipboard).
@@ -316,6 +319,7 @@ impl AppState {
             show_file_list: true,
             show_diff_pane: true,
             mouse_selection: None,
+            mouse_down_anchor: None,
             diff_rendered_text: Vec::new(),
             file_list_rendered_text: Vec::new(),
             file_list_row_to_file: Vec::new(),
@@ -918,6 +922,7 @@ impl App {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 // Any keypress clears mouse selection.
                 self.state.mouse_selection = None;
+                self.state.mouse_down_anchor = None;
                 keys::handle_key_event(&mut self.state, key);
             }
             Event::Mouse(mouse) => {
@@ -984,6 +989,8 @@ impl App {
                     return;
                 }
 
+                let pane = self.state.pane_at(mouse.column, mouse.row);
+
                 // Double-click detection: select the word under cursor.
                 let is_double_click = self
                     .state
@@ -999,7 +1006,8 @@ impl App {
                     // Clear any selection from the first click so the
                     // subsequent Up event doesn't overwrite the clipboard.
                     self.state.mouse_selection = None;
-                    if let Some(pane) = self.state.pane_at(mouse.column, mouse.row) {
+                    self.state.mouse_down_anchor = None;
+                    if let Some(pane) = pane {
                         if pane == PaneFocus::FileList {
                             self.copy_file_path_at(mouse.row);
                         } else {
@@ -1010,26 +1018,26 @@ impl App {
                     return; // skip drag selection setup
                 }
 
-                if let Some(pane) = self.state.pane_at(mouse.column, mouse.row) {
+                if let Some(pane) = pane {
                     // Click in the file list selects a file.
                     if pane == PaneFocus::FileList {
                         self.handle_file_list_click(mouse.column, mouse.row);
+                    } else {
+                        self.set_diff_cursor_from_mouse(mouse.column, mouse.row);
                     }
 
-                    // Start a new text selection in whichever pane was clicked.
+                    // Record mouse-down anchor; drag starts selection.
                     let pane_area = match pane {
                         PaneFocus::FileList => self.state.file_list_area,
                         PaneFocus::Diff => self.state.diff_area,
                     };
-                    self.state.mouse_selection = Some(MouseSelection {
+                    self.state.mouse_selection = None;
+                    self.state.mouse_down_anchor = Some((
                         pane,
                         pane_area,
-                        start_col: mouse.column,
-                        start_row: mouse.row,
-                        end_col: mouse.column,
-                        end_row: mouse.row,
-                        word_selected: false,
-                    });
+                        mouse.column,
+                        mouse.row,
+                    ));
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
@@ -1049,6 +1057,23 @@ impl App {
                     let area = sel.pane_area;
                     sel.end_col = mouse.column.clamp(area.x + 1, area.right().saturating_sub(2));
                     sel.end_row = mouse.row.clamp(area.y + 1, area.bottom().saturating_sub(2));
+                } else if let Some((pane, pane_area, start_col, start_row)) = self.state.mouse_down_anchor
+                {
+                    let end_col = mouse
+                        .column
+                        .clamp(pane_area.x + 1, pane_area.right().saturating_sub(2));
+                    let end_row = mouse
+                        .row
+                        .clamp(pane_area.y + 1, pane_area.bottom().saturating_sub(2));
+                    self.state.mouse_selection = Some(MouseSelection {
+                        pane,
+                        pane_area,
+                        start_col,
+                        start_row,
+                        end_col,
+                        end_row,
+                        word_selected: false,
+                    });
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
@@ -1057,6 +1082,7 @@ impl App {
                     self.save_file_list_width();
                     return;
                 }
+                self.state.mouse_down_anchor = None;
                 // Finish selection: extract text and copy to clipboard.
                 if let Some(sel) = self.state.mouse_selection.take() {
                     if !sel.word_selected {
@@ -1400,11 +1426,32 @@ impl App {
         self.state.on_file_changed();
     }
 
+    /// Move the diff cursor to the mouse position.
+    fn set_diff_cursor_from_mouse(&mut self, col: u16, row: u16) {
+        let area = self.state.diff_area;
+        let inner_top = area.y + 1;
+        let inner_left = area.x + 1;
+        let inner_bottom = area.bottom().saturating_sub(1);
+        if row < inner_top || row >= inner_bottom {
+            return;
+        }
+
+        let view_row = (row - inner_top) as usize;
+        let display_row = self.state.diff_scroll.saturating_add(view_row);
+        self.state.diff_line_cursor = display_row;
+
+        let content_start = inner_left as usize + self.state.diff_content_start_col();
+        self.state.diff_col_cursor = (col as usize).saturating_sub(content_start);
+
+        self.state.clamp_cursor_and_scroll();
+        self.state.clamp_col_cursor();
+    }
+
     /// Select the word under the given terminal position and copy to clipboard.
     ///
-    /// Reads directly from the terminal buffer so it works correctly
-    /// regardless of blame columns, gutters, or other prefix spans.
-    fn select_word_at(&mut self, pane: PaneFocus, col: u16, row: u16) {
+    /// In the diff pane, this maps through rendered diff text for stable
+    /// coordinate behavior. Other panes read directly from the terminal buffer.
+    fn select_word_at(&mut self, pane: PaneFocus, col: u16, row: u16) -> bool {
         let pane_area = match pane {
             PaneFocus::FileList => self.state.file_list_area,
             PaneFocus::Diff => self.state.diff_area,
@@ -1414,7 +1461,53 @@ impl App {
         let inner_right = pane_area.right().saturating_sub(1);
 
         if col < inner_left || col >= inner_right {
-            return;
+            return false;
+        }
+
+        // Prefer rendered-text mapping for the diff pane. This avoids terminal
+        // buffer cell quirks and maps directly to what we render.
+        if pane == PaneFocus::Diff {
+            let inner_top = pane_area.y + 1;
+            let content_row = (row as usize)
+                .saturating_sub(inner_top as usize)
+                + self.state.diff_scroll;
+            let line = match self.state.diff_rendered_text.get(content_row) {
+                Some(l) => l,
+                None => return false,
+            };
+
+            let chars: Vec<char> = line.chars().collect();
+            let click_idx = (col as usize).saturating_sub(inner_left as usize);
+            if click_idx >= chars.len() || !is_identifier_char(chars[click_idx]) {
+                return false;
+            }
+
+            let mut start = click_idx;
+            while start > 0 && is_identifier_char(chars[start - 1]) {
+                start -= 1;
+            }
+            let mut end = click_idx;
+            while end + 1 < chars.len() && is_identifier_char(chars[end + 1]) {
+                end += 1;
+            }
+
+            let word: String = chars[start..=end].iter().collect();
+            if word.is_empty() {
+                return false;
+            }
+
+            copy_to_clipboard(&word);
+            self.state.mouse_selection = Some(MouseSelection {
+                pane,
+                pane_area,
+                start_col: inner_left.saturating_add(start as u16),
+                start_row: row,
+                end_col: inner_left.saturating_add(end as u16),
+                end_row: row,
+                word_selected: true,
+            });
+            self.state.status_message = Some((format!("Copied identifier: {word}"), Instant::now()));
+            return true;
         }
 
         // Read the row from the terminal buffer.
@@ -1430,28 +1523,10 @@ impl App {
             }
         }
 
-        // Find the character index at the clicked column.
-        let click_idx = row_chars.iter().position(|&(x, _)| x == col);
-        let click_idx = match click_idx {
-            Some(i) => i,
-            None => return,
+        let (start, end) = match word_bounds_at_column(&row_chars, col) {
+            Some(bounds) => bounds,
+            None => return false,
         };
-
-        let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
-
-        if !is_word_char(row_chars[click_idx].1) {
-            return;
-        }
-
-        // Expand to word boundaries.
-        let mut start = click_idx;
-        while start > 0 && is_word_char(row_chars[start - 1].1) {
-            start -= 1;
-        }
-        let mut end = click_idx;
-        while end + 1 < row_chars.len() && is_word_char(row_chars[end + 1].1) {
-            end += 1;
-        }
 
         let word: String = row_chars[start..=end].iter().map(|&(_, c)| c).collect();
         if !word.is_empty() {
@@ -1467,7 +1542,12 @@ impl App {
                 end_row: row,
                 word_selected: true,
             });
+
+            self.state.status_message = Some((format!("Copied identifier: {word}"), Instant::now()));
+            return true;
         }
+
+        false
     }
 
     /// Double-click in the file list: copy the full file path to the clipboard.
@@ -1508,6 +1588,30 @@ impl App {
             }
         }
     }
+}
+
+fn is_identifier_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+fn word_bounds_at_column(row_chars: &[(u16, char)], col: u16) -> Option<(usize, usize)> {
+    // Find the character index at the clicked column.
+    let click_idx = row_chars.iter().position(|&(x, _)| x == col)?;
+
+    if !is_identifier_char(row_chars[click_idx].1) {
+        return None;
+    }
+
+    // Expand to word boundaries.
+    let mut start = click_idx;
+    while start > 0 && is_identifier_char(row_chars[start - 1].1) {
+        start -= 1;
+    }
+    let mut end = click_idx;
+    while end + 1 < row_chars.len() && is_identifier_char(row_chars[end + 1].1) {
+        end += 1;
+    }
+    Some((start, end))
 }
 
 // ---------------------------------------------------------------------------
@@ -1736,5 +1840,38 @@ mod tests {
             word_selected: false,
         };
         assert_eq!(sel.normalized(), (5, 2, 10, 4));
+    }
+
+    #[test]
+    fn test_word_bounds_at_column_selects_full_identifier() {
+        let text = "use merge_base even";
+        let row_chars: Vec<(u16, char)> = text
+            .chars()
+            .enumerate()
+            .map(|(i, c)| ((i + 1) as u16, c))
+            .collect();
+
+        // Click on the first character 'm'.
+        let (start, end) = word_bounds_at_column(&row_chars, 5).expect("expected identifier");
+        let word: String = row_chars[start..=end].iter().map(|(_, c)| *c).collect();
+        assert_eq!(word, "merge_base");
+
+        // Click on the underscore still selects the whole identifier.
+        let (start, end) = word_bounds_at_column(&row_chars, 10).expect("expected identifier");
+        let word: String = row_chars[start..=end].iter().map(|(_, c)| *c).collect();
+        assert_eq!(word, "merge_base");
+    }
+
+    #[test]
+    fn test_word_bounds_at_column_returns_none_on_punctuation() {
+        let text = "foo.bar";
+        let row_chars: Vec<(u16, char)> = text
+            .chars()
+            .enumerate()
+            .map(|(i, c)| ((i + 1) as u16, c))
+            .collect();
+
+        // Click on '.'
+        assert!(word_bounds_at_column(&row_chars, 4).is_none());
     }
 }
