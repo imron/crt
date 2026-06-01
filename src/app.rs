@@ -22,8 +22,8 @@ use crate::client::Client;
 use crate::config::StyleConfig;
 use crate::keys;
 use crate::model::{
-    ConnectionContext, ContentMode, FileEntry, PaneFocus, RenderVariant, ReviewStatus,
-    SearchMatch, DefinitionLocation,
+    ConnectionContext, ContentMode, DefinitionLocation, FileEntry, PaneFocus, RenderVariant,
+    ReviewStatus, SearchMatch,
 };
 use crate::ui;
 
@@ -406,8 +406,7 @@ impl AppState {
         self.head_content = None;
         if let Some(entry) = self.files.get(self.selected_file) {
             let path = entry.change.path.clone();
-            if let Ok(repo) = crate::git::Repo::open(std::path::Path::new(&self.context.worktree))
-            {
+            if let Ok(repo) = crate::git::Repo::open(std::path::Path::new(&self.context.worktree)) {
                 self.head_content = repo.file_content_workdir(&path).ok().flatten();
             }
         }
@@ -418,8 +417,7 @@ impl AppState {
         self.base_content = None;
         if let Some(entry) = self.files.get(self.selected_file) {
             let path = entry.change.path.clone();
-            if let Ok(repo) = crate::git::Repo::open(std::path::Path::new(&self.context.worktree))
-            {
+            if let Ok(repo) = crate::git::Repo::open(std::path::Path::new(&self.context.worktree)) {
                 self.base_content = repo
                     .file_content(&self.context.merge_base, &path)
                     .ok()
@@ -475,7 +473,9 @@ impl AppState {
         if self.diff_view_height > 0
             && self.diff_line_cursor >= self.diff_scroll + self.diff_view_height
         {
-            self.diff_scroll = self.diff_line_cursor.saturating_sub(self.diff_view_height - 1);
+            self.diff_scroll = self
+                .diff_line_cursor
+                .saturating_sub(self.diff_view_height - 1);
         }
         self.clamp_diff_scroll();
     }
@@ -502,9 +502,7 @@ impl AppState {
 
         if let Some(entry) = self.files.get(self.selected_file) {
             let path = entry.change.path.clone();
-            if let Ok(repo) =
-                crate::git::Repo::open(std::path::Path::new(&self.context.worktree))
-            {
+            if let Ok(repo) = crate::git::Repo::open(std::path::Path::new(&self.context.worktree)) {
                 if let Ok(blame) = repo.blame_file("HEAD", &path) {
                     self.head_blame = blame;
                 }
@@ -523,9 +521,7 @@ impl AppState {
             let path = entry.change.path.clone();
             let diff_base = self.effective_diff_base().to_string();
             let merge_base = self.context.merge_base.clone();
-            if let Ok(repo) =
-                crate::git::Repo::open(std::path::Path::new(&self.context.worktree))
-            {
+            if let Ok(repo) = crate::git::Repo::open(std::path::Path::new(&self.context.worktree)) {
                 let diff = repo
                     .diff_file_workdir_opts(
                         &diff_base,
@@ -566,9 +562,7 @@ impl AppState {
             let path = entry.change.path.clone();
             let diff_base = self.effective_diff_base().to_string();
             let merge_base = self.context.merge_base.clone();
-            if let Ok(repo) =
-                crate::git::Repo::open(std::path::Path::new(&self.context.worktree))
-            {
+            if let Ok(repo) = crate::git::Repo::open(std::path::Path::new(&self.context.worktree)) {
                 let diff = repo
                     .diff_file_workdir_opts(
                         &diff_base,
@@ -862,8 +856,8 @@ impl App {
             let ev = if self.state.status_message.is_some() {
                 match tokio::time::timeout(Duration::from_secs(1), event_rx.recv()).await {
                     Ok(Some(ev)) => ev,
-                    Ok(None) => break,       // channel closed
-                    Err(_) => continue,      // timeout — re-render to clear message
+                    Ok(None) => break,  // channel closed
+                    Err(_) => continue, // timeout — re-render to clear message
                 }
             } else {
                 match event_rx.recv().await {
@@ -992,14 +986,9 @@ impl App {
                 let pane = self.state.pane_at(mouse.column, mouse.row);
 
                 // Double-click detection: select the word under cursor.
-                let is_double_click = self
-                    .state
-                    .last_click
-                    .is_some_and(|(t, c, r)| {
-                        t.elapsed() < Duration::from_millis(400)
-                            && c == mouse.column
-                            && r == mouse.row
-                    });
+                let is_double_click = self.state.last_click.is_some_and(|(t, c, r)| {
+                    t.elapsed() < Duration::from_millis(400) && c == mouse.column && r == mouse.row
+                });
                 self.state.last_click = Some((Instant::now(), mouse.column, mouse.row));
 
                 if is_double_click {
@@ -1032,12 +1021,7 @@ impl App {
                         PaneFocus::Diff => self.state.diff_area,
                     };
                     self.state.mouse_selection = None;
-                    self.state.mouse_down_anchor = Some((
-                        pane,
-                        pane_area,
-                        mouse.column,
-                        mouse.row,
-                    ));
+                    self.state.mouse_down_anchor = Some((pane, pane_area, mouse.column, mouse.row));
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
@@ -1045,9 +1029,7 @@ impl App {
                     // Resize the file list pane. Minimum 10, maximum
                     // terminal width minus 20.
                     let min_w = 10u16;
-                    let max_w = self.state.file_list_area.width
-                        + self.state.diff_area.width
-                        - 20;
+                    let max_w = self.state.file_list_area.width + self.state.diff_area.width - 20;
                     let new_width = (mouse.column + 1).clamp(min_w, max_w);
                     self.state.file_list_width = new_width;
                     return;
@@ -1055,9 +1037,12 @@ impl App {
                 // Extend the selection, clamped to the originating pane.
                 if let Some(sel) = &mut self.state.mouse_selection {
                     let area = sel.pane_area;
-                    sel.end_col = mouse.column.clamp(area.x + 1, area.right().saturating_sub(2));
+                    sel.end_col = mouse
+                        .column
+                        .clamp(area.x + 1, area.right().saturating_sub(2));
                     sel.end_row = mouse.row.clamp(area.y + 1, area.bottom().saturating_sub(2));
-                } else if let Some((pane, pane_area, start_col, start_row)) = self.state.mouse_down_anchor
+                } else if let Some((pane, pane_area, start_col, start_row)) =
+                    self.state.mouse_down_anchor
                 {
                     let end_col = mouse
                         .column
@@ -1111,7 +1096,8 @@ impl App {
                 if self.state.pane_at(mouse.column, mouse.row) == Some(PaneFocus::Diff) {
                     self.state.diff_scroll = self.state.diff_scroll.saturating_sub(3);
                     // Keep cursor visible in viewport.
-                    let bottom = self.state.diff_scroll + self.state.diff_view_height.saturating_sub(1);
+                    let bottom =
+                        self.state.diff_scroll + self.state.diff_view_height.saturating_sub(1);
                     if self.state.diff_line_cursor > bottom {
                         self.state.diff_line_cursor = bottom;
                     }
@@ -1141,10 +1127,8 @@ impl App {
             Ok(action_result) => self.apply_review_result(&action_result),
             Err(e) => {
                 let verb = if is_reviewed { "unmark" } else { "mark" };
-                self.state.status_message = Some((
-                    format!("Failed to {verb} reviewed: {e}"),
-                    Instant::now(),
-                ));
+                self.state.status_message =
+                    Some((format!("Failed to {verb} reviewed: {e}"), Instant::now()));
             }
         }
     }
@@ -1158,8 +1142,7 @@ impl App {
 
         match name {
             "gr" => {
-                self.state.status_message =
-                    Some(("Searching...".to_string(), Instant::now()));
+                self.state.status_message = Some(("Searching...".to_string(), Instant::now()));
                 // Force a re-render so the user sees the searching message.
                 let state = &mut self.state;
                 let _ = self.terminal.draw(|frame| ui::draw(frame, state));
@@ -1167,10 +1150,8 @@ impl App {
                 match self.client.search_codebase(args, "all").await {
                     Ok(result) => {
                         if result.matches.is_empty() {
-                            self.state.status_message = Some((
-                                format!("No matches for /{args}/"),
-                                Instant::now(),
-                            ));
+                            self.state.status_message =
+                                Some((format!("No matches for /{args}/"), Instant::now()));
                         } else {
                             self.state.search_results = Some(SearchResults {
                                 query: args.to_string(),
@@ -1183,10 +1164,8 @@ impl App {
                         }
                     }
                     Err(e) => {
-                        self.state.status_message = Some((
-                            format!("Search error: {e}"),
-                            Instant::now(),
-                        ));
+                        self.state.status_message =
+                            Some((format!("Search error: {e}"), Instant::now()));
                     }
                 }
             }
@@ -1199,10 +1178,8 @@ impl App {
                 match self.client.search_codebase(args, "diff").await {
                     Ok(result) => {
                         if result.matches.is_empty() {
-                            self.state.status_message = Some((
-                                format!("No matches for /{args}/ in diff"),
-                                Instant::now(),
-                            ));
+                            self.state.status_message =
+                                Some((format!("No matches for /{args}/ in diff"), Instant::now()));
                         } else {
                             self.state.search_results = Some(SearchResults {
                                 query: args.to_string(),
@@ -1215,10 +1192,8 @@ impl App {
                         }
                     }
                     Err(e) => {
-                        self.state.status_message = Some((
-                            format!("Search error: {e}"),
-                            Instant::now(),
-                        ));
+                        self.state.status_message =
+                            Some((format!("Search error: {e}"), Instant::now()));
                     }
                 }
             }
@@ -1228,9 +1203,15 @@ impl App {
                 let state = &mut self.state;
                 let _ = self.terminal.draw(|frame| ui::draw(frame, state));
 
-                let context_file = self.state.selected_file_entry()
+                let context_file = self
+                    .state
+                    .selected_file_entry()
                     .map(|e| e.change.path.clone());
-                match self.client.find_definition(args, context_file.as_deref()).await {
+                match self
+                    .client
+                    .find_definition(args, context_file.as_deref())
+                    .await
+                {
                     Ok(result) => {
                         if result.definitions.is_empty() {
                             self.state.status_message = Some((
@@ -1253,10 +1234,8 @@ impl App {
                         }
                     }
                     Err(e) => {
-                        self.state.status_message = Some((
-                            format!("Definition error: {e}"),
-                            Instant::now(),
-                        ));
+                        self.state.status_message =
+                            Some((format!("Definition error: {e}"), Instant::now()));
                     }
                 }
             }
@@ -1264,16 +1243,12 @@ impl App {
                 // view_file <path> <line>
                 // For now, show a status message since read-only view
                 // for non-diff files would require a separate content mode.
-                self.state.status_message = Some((
-                    format!("File not in diff: {args}"),
-                    Instant::now(),
-                ));
+                self.state.status_message =
+                    Some((format!("File not in diff: {args}"), Instant::now()));
             }
             _ => {
-                self.state.status_message = Some((
-                    format!("Unknown pending command: {name}"),
-                    Instant::now(),
-                ));
+                self.state.status_message =
+                    Some((format!("Unknown pending command: {name}"), Instant::now()));
             }
         }
     }
@@ -1350,10 +1325,8 @@ impl App {
                 }
             }
             Err(e) => {
-                self.state.status_message = Some((
-                    format!("Failed to reload files: {e}"),
-                    Instant::now(),
-                ));
+                self.state.status_message =
+                    Some((format!("Failed to reload files: {e}"), Instant::now()));
             }
         }
     }
@@ -1468,9 +1441,8 @@ impl App {
         // buffer cell quirks and maps directly to what we render.
         if pane == PaneFocus::Diff {
             let inner_top = pane_area.y + 1;
-            let content_row = (row as usize)
-                .saturating_sub(inner_top as usize)
-                + self.state.diff_scroll;
+            let content_row =
+                (row as usize).saturating_sub(inner_top as usize) + self.state.diff_scroll;
             let line = match self.state.diff_rendered_text.get(content_row) {
                 Some(l) => l,
                 None => return false,
@@ -1506,7 +1478,8 @@ impl App {
                 end_row: row,
                 word_selected: true,
             });
-            self.state.status_message = Some((format!("Copied identifier: {word}"), Instant::now()));
+            self.state.status_message =
+                Some((format!("Copied identifier: {word}"), Instant::now()));
             return true;
         }
 
@@ -1543,7 +1516,8 @@ impl App {
                 word_selected: true,
             });
 
-            self.state.status_message = Some((format!("Copied identifier: {word}"), Instant::now()));
+            self.state.status_message =
+                Some((format!("Copied identifier: {word}"), Instant::now()));
             return true;
         }
 
@@ -1554,18 +1528,14 @@ impl App {
     fn copy_file_path_at(&mut self, row: u16) {
         let area = self.state.file_list_area;
         let inner_top = area.y + 1;
-        let content_row = (row as usize)
-            .saturating_sub(inner_top as usize)
-            + self.state.file_list_scroll;
+        let content_row =
+            (row as usize).saturating_sub(inner_top as usize) + self.state.file_list_scroll;
 
         if let Some(&Some(file_idx)) = self.state.file_list_row_to_file.get(content_row) {
             if let Some(entry) = self.state.files.get(file_idx) {
                 let path = &entry.change.path;
                 copy_to_clipboard(path);
-                self.state.status_message = Some((
-                    format!("Copied: {path}"),
-                    Instant::now(),
-                ));
+                self.state.status_message = Some((format!("Copied: {path}"), Instant::now()));
             }
         }
     }
@@ -1576,9 +1546,8 @@ impl App {
         let inner_top = area.y + 1; // skip border
 
         // Convert screen row to content row (accounting for scroll).
-        let content_row = (row as usize)
-            .saturating_sub(inner_top as usize)
-            + self.state.file_list_scroll;
+        let content_row =
+            (row as usize).saturating_sub(inner_top as usize) + self.state.file_list_scroll;
 
         // Look up which file (if any) this row corresponds to.
         if let Some(&Some(file_idx)) = self.state.file_list_row_to_file.get(content_row) {
@@ -1621,7 +1590,11 @@ fn word_bounds_at_column(row_chars: &[(u16, char)], col: u16) -> Option<(usize, 
 /// Navigate to a definition location (same logic as in keys.rs but accessible
 /// from the App context without going through the key handler).
 fn navigate_to_definition_from_app(state: &mut AppState, def: &DefinitionLocation) {
-    if let Some(idx) = state.files.iter().position(|f| f.change.path == def.file_path) {
+    if let Some(idx) = state
+        .files
+        .iter()
+        .position(|f| f.change.path == def.file_path)
+    {
         state.jump_stack.push(JumpLocation {
             file_index: state.selected_file,
             diff_scroll: state.diff_scroll,
@@ -1636,7 +1609,10 @@ fn navigate_to_definition_from_app(state: &mut AppState, def: &DefinitionLocatio
     } else {
         // File not in diff — show status message for now.
         state.status_message = Some((
-            format!("Definition in file not in diff: {}:{}", def.file_path, def.line_number),
+            format!(
+                "Definition in file not in diff: {}:{}",
+                def.file_path, def.line_number
+            ),
             Instant::now(),
         ));
     }
@@ -1674,9 +1650,7 @@ fn extract_selected_text(state: &AppState, sel: &MouseSelection) -> String {
 
     let mut result = String::new();
     for screen_row in start_row..=end_row {
-        let content_idx = (screen_row as usize)
-            .saturating_sub(inner_top as usize)
-            + scroll;
+        let content_idx = (screen_row as usize).saturating_sub(inner_top as usize) + scroll;
         if content_idx >= text.len() {
             break;
         }
@@ -1791,11 +1765,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Re
 /// Emergency terminal restore without a Terminal handle (for panic hook).
 fn restore_terminal_raw() {
     let _ = terminal::disable_raw_mode();
-    let _ = execute!(
-        io::stdout(),
-        DisableMouseCapture,
-        LeaveAlternateScreen
-    );
+    let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
 }
 
 // ---------------------------------------------------------------------------

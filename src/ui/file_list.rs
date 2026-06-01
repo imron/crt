@@ -1,11 +1,11 @@
 //! File list widget: split unreviewed/reviewed sections with headers,
 //! status markers, scrolling, and cursor tracking.
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::Frame;
 
 use crate::app::AppState;
 use crate::config::FilesStyle;

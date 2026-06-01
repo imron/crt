@@ -9,7 +9,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use chrono::Local;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -655,9 +655,12 @@ mod tests {
     fn test_clear_reviews() {
         let (_dir, db) = test_db();
 
-        db.store_review("main", "feat-a", "a.rs", "h1", "c1").unwrap();
-        db.store_review("main", "feat-a", "b.rs", "h2", "c2").unwrap();
-        db.store_review("main", "feat-b", "a.rs", "h3", "c3").unwrap();
+        db.store_review("main", "feat-a", "a.rs", "h1", "c1")
+            .unwrap();
+        db.store_review("main", "feat-a", "b.rs", "h2", "c2")
+            .unwrap();
+        db.store_review("main", "feat-b", "a.rs", "h3", "c3")
+            .unwrap();
 
         let count = db.clear_reviews("main", "feat-a").unwrap();
         assert_eq!(count, 2);
@@ -861,7 +864,9 @@ mod tests {
     fn test_timestamps_iso8601() {
         let (_dir, db) = test_db();
 
-        let review = db.store_review("main", "feat", "a.rs", "hash", "c1").unwrap();
+        let review = db
+            .store_review("main", "feat", "a.rs", "hash", "c1")
+            .unwrap();
 
         // Should parse as a valid datetime with timezone
         assert!(
