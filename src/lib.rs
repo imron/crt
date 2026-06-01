@@ -7,6 +7,7 @@
 pub mod app;
 pub mod client;
 pub mod config;
+pub mod core;
 pub mod db;
 pub mod git;
 pub mod keys;
