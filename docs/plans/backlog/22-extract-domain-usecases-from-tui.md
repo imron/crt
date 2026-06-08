@@ -83,6 +83,9 @@ that contract.
   content loading, blame loading, and diff fallback loading into `core::diff`.
 - Extracted line-number mapping, hunk jump targeting/scrolling, and
   section-scoped file cycling into `core::navigation` with focused unit tests.
+- Extracted search result shaping, definition result routing, and
+  path-to-location target resolution into `core::search` with focused unit
+  tests.
 
 ## Acceptance Criteria
 

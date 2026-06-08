@@ -11,6 +11,7 @@ pub mod navigation;
 pub mod prompt;
 pub mod render;
 pub mod review;
+pub mod search;
 pub mod services;
 pub mod world;
 
