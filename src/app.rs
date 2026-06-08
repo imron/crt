@@ -1264,9 +1264,9 @@ impl App {
         let needs_reload = notifications.iter().any(|n| {
             matches!(
                 n.kind,
-                crate::server::notify::NotificationKind::ReviewChanged { .. }
-                    | crate::server::notify::NotificationKind::ReviewsCleared
-                    | crate::server::notify::NotificationKind::ReviewsMigrated { .. }
+                crate::protocol::NotificationKind::ReviewChanged { .. }
+                    | crate::protocol::NotificationKind::ReviewsCleared
+                    | crate::protocol::NotificationKind::ReviewsMigrated { .. }
             )
         });
 

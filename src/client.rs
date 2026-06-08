@@ -22,7 +22,7 @@ pub type InitResult = model::ConnectionContext;
 // ---------------------------------------------------------------------------
 
 /// A server-to-client notification.
-pub type Notification = crate::server::notify::Notification;
+pub type Notification = crate::protocol::Notification;
 
 /// Async client connected to a crt server.
 pub struct Client {
