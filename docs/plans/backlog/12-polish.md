@@ -111,7 +111,7 @@ tool and smoothing out rough edges.
 - [ ] `Tab` switches focus correctly.
 - [ ] `/` opens search, matches highlighted, `n`/`N` navigate matches.
 - [ ] Horizontal cursor: `h`/`l` move within a line, `0`/`$` jump to start/end.
-- [ ] `Ctrl-]` uses word at (line, col) cursor for go-to-definition.
+- [x] `Ctrl-]` uses word at (line, col) cursor for go-to-definition.
 - [ ] Empty diff handled gracefully.
 - [ ] Large diffs and file lists don't cause freezing.
 - [ ] Terminal resize works without panics.
