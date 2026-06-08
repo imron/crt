@@ -31,6 +31,10 @@ use crate::protocol::{
 pub struct ConnectionContext {
     pub repo_root: PathBuf,
     pub worktree: PathBuf,
+    /// The original base ref string passed to `init`.
+    pub base_ref: String,
+    /// Whether `base_ref` resolved through a named branch, remote branch, or tag.
+    pub base_ref_is_named_ref: bool,
     /// The merge-base commit hash (stable scope key).
     pub merge_base: String,
     pub head_ref: String,

@@ -107,9 +107,15 @@ impl ClientConn {
             .await
             .unwrap();
 
-        let mut response_line = String::new();
-        self.reader.read_line(&mut response_line).await.unwrap();
-        serde_json::from_str(&response_line).unwrap()
+        loop {
+            let mut response_line = String::new();
+            self.reader.read_line(&mut response_line).await.unwrap();
+            let msg: serde_json::Value = serde_json::from_str(&response_line).unwrap();
+            if msg.get("method").is_some() && msg.get("id").is_none() {
+                continue;
+            }
+            return msg;
+        }
     }
 }
 
@@ -125,6 +131,21 @@ fn run_git(path: &Path, args: &[&str]) {
         args,
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+fn git_output(path: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +281,125 @@ async fn test_multiple_clients() {
         resp2.get("error").is_none(),
         "client 2 should have no error"
     );
+}
+
+#[tokio::test]
+async fn test_explicit_commit_base_does_not_migrate_reviews() {
+    let server = TestServer::start().await;
+    let head_ref = git_output(&server.repo_dir, &["branch", "--show-current"]);
+
+    let old_base = git_output(&server.repo_dir, &["rev-parse", "HEAD"]);
+
+    std::fs::write(server.repo_dir.join("a.txt"), "a\n").unwrap();
+    run_git(&server.repo_dir, &["add", "-A"]);
+    run_git(&server.repo_dir, &["commit", "-m", "A"]);
+    let explicit_base = git_output(&server.repo_dir, &["rev-parse", "HEAD"]);
+
+    std::fs::write(server.repo_dir.join("b.txt"), "b\n").unwrap();
+    run_git(&server.repo_dir, &["add", "-A"]);
+    run_git(&server.repo_dir, &["commit", "-m", "B"]);
+    let head = git_output(&server.repo_dir, &["rev-parse", "HEAD"]);
+
+    let crt_dir = server.repo_dir.join(".crt");
+    std::fs::create_dir_all(&crt_dir).unwrap();
+    let db = crt::db::Database::open(&crt_dir.join("reviews.db")).unwrap();
+    db.store_review(&old_base, &head_ref, "b.txt", "old-diff-hash", &head)
+        .unwrap();
+
+    let mut conn = server.connect().await;
+    let resp = conn
+        .request(
+            "init",
+            serde_json::json!({
+                "worktree": server.repo_dir.to_string_lossy(),
+                "base_ref": explicit_base,
+            }),
+        )
+        .await;
+    assert!(resp["error"].is_null(), "init failed: {resp}");
+
+    let resp = conn
+        .request("list_changed_files", serde_json::json!({}))
+        .await;
+    assert!(resp["error"].is_null(), "list failed: {resp}");
+
+    let files = resp["result"]["files"].as_array().unwrap();
+    let b = files
+        .iter()
+        .find(|file| file["change"]["path"] == "b.txt")
+        .expect("b.txt should be in explicit commit review range");
+    assert_eq!(b["status"]["status"], "unreviewed");
+
+    let current_scope_reviews = db.load_reviews(&explicit_base, &head_ref).unwrap();
+    assert!(
+        current_scope_reviews.is_empty(),
+        "explicit commit base should not receive migrated review rows"
+    );
+    let old_scope_reviews = db.load_reviews(&old_base, &head_ref).unwrap();
+    assert_eq!(
+        old_scope_reviews.len(),
+        1,
+        "old review scope should be preserved when migration is skipped"
+    );
+}
+
+#[tokio::test]
+async fn test_migrated_changed_review_stays_changed() {
+    let server = TestServer::start().await;
+    let head_ref = git_output(&server.repo_dir, &["branch", "--show-current"]);
+
+    let old_base = git_output(&server.repo_dir, &["rev-parse", "HEAD"]);
+
+    std::fs::write(server.repo_dir.join("b.txt"), "reviewed version\n").unwrap();
+    run_git(&server.repo_dir, &["add", "-A"]);
+    run_git(&server.repo_dir, &["commit", "-m", "reviewed"]);
+    run_git(&server.repo_dir, &["tag", "newbase"]);
+    let reviewed_commit = git_output(&server.repo_dir, &["rev-parse", "HEAD"]);
+
+    let repo = crt::git::Repo::open(&server.repo_dir).unwrap();
+    let reviewed_diff = repo
+        .diff_file(&old_base, &reviewed_commit, "b.txt")
+        .unwrap();
+
+    std::fs::write(server.repo_dir.join("b.txt"), "changed after review\n").unwrap();
+    run_git(&server.repo_dir, &["add", "-A"]);
+    run_git(&server.repo_dir, &["commit", "-m", "changed"]);
+
+    let crt_dir = server.repo_dir.join(".crt");
+    std::fs::create_dir_all(&crt_dir).unwrap();
+    let db = crt::db::Database::open(&crt_dir.join("reviews.db")).unwrap();
+    db.store_review(
+        &old_base,
+        &head_ref,
+        "b.txt",
+        &reviewed_diff.diff_hash,
+        &reviewed_commit,
+    )
+    .unwrap();
+
+    let mut conn = server.connect().await;
+    let resp = conn
+        .request(
+            "init",
+            serde_json::json!({
+                "worktree": server.repo_dir.to_string_lossy(),
+                "base_ref": "newbase",
+            }),
+        )
+        .await;
+    assert!(resp["error"].is_null(), "init failed: {resp}");
+
+    let resp = conn
+        .request("list_changed_files", serde_json::json!({}))
+        .await;
+    assert!(resp["error"].is_null(), "list failed: {resp}");
+
+    let files = resp["result"]["files"].as_array().unwrap();
+    let b = files
+        .iter()
+        .find(|file| file["change"]["path"] == "b.txt")
+        .expect("b.txt should still be in review range");
+    assert_eq!(b["status"]["status"], "changed");
 }
 
 #[tokio::test]

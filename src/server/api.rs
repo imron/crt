@@ -43,13 +43,14 @@ pub async fn handle_init(
         let repo = git::Repo::open(&wt)?;
         let ctx = repo.context()?;
         repo.resolve_commit(&br)?; // validate base ref
+        let base_ref_is_named_ref = repo.is_named_ref(&br);
         let merge_base = repo.merge_base(&br, "HEAD")?;
-        Ok((ctx, merge_base))
+        Ok((ctx, merge_base, base_ref_is_named_ref))
     })
     .await;
 
-    let (git_ctx, merge_base) = match git_result {
-        Ok(Ok(pair)) => pair,
+    let (git_ctx, merge_base, base_ref_is_named_ref) = match git_result {
+        Ok(Ok(result)) => result,
         Ok(Err(e)) => {
             return JsonRpcResponse::error(id.clone(), ERR_INVALID_PARAMS, format!("{e:#}"));
         }
@@ -95,6 +96,8 @@ pub async fn handle_init(
     let ctx = ConnectionContext {
         repo_root: git_ctx.repo_root.clone(),
         worktree: worktree_path.clone(),
+        base_ref: base_ref.clone(),
+        base_ref_is_named_ref,
         merge_base: merge_base.clone(),
         head_ref: git_ctx.head_ref.clone(),
         db_path,
@@ -237,6 +240,10 @@ async fn try_migrate_reviews(
 ) -> anyhow::Result<Option<std::collections::HashMap<String, crate::db::StoredReview>>> {
     use std::collections::HashMap;
 
+    if !ctx.base_ref_is_named_ref {
+        return Ok(None);
+    }
+
     // 1. Find old-scope reviews for this head_ref.
     let old_scopes = {
         let db_guard = db.lock().await;
@@ -300,8 +307,9 @@ async fn try_migrate_reviews(
                     // File content changed during rebase.
                     // Migrate as Changed — keep the old reviewed_commit so
                     // the diff shows only what changed since the review.
-                    // Recompute diff_hash against new merge_base.
-                    let diff = repo.diff_file_workdir(&new_merge_base, file_path)?;
+                    // Store the reviewed-state diff hash so current diffs
+                    // compare unequal and list as Changed.
+                    let diff = repo.diff_file(&new_merge_base, reviewed_commit, file_path)?;
                     migrated.push((file_path.clone(), diff.diff_hash, reviewed_commit.clone()));
                 }
             } else {

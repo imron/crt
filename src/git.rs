@@ -124,6 +124,32 @@ impl Repo {
         Ok(commit.id().to_string())
     }
 
+    /// Whether a ref string resolves through a named branch, remote branch, or tag.
+    ///
+    /// Explicit commits and rev expressions like `HEAD~1` are valid refs for
+    /// diffing, but they should not be treated like long-lived review bases
+    /// for review-scope migration.
+    pub fn is_named_ref(&self, refspec: &str) -> bool {
+        let candidates = [
+            refspec.to_string(),
+            format!("refs/heads/{refspec}"),
+            format!("refs/remotes/{refspec}"),
+            format!("refs/tags/{refspec}"),
+        ];
+
+        if candidates
+            .iter()
+            .any(|candidate| self.inner.find_reference(candidate).is_ok())
+        {
+            return true;
+        }
+
+        self.inner
+            .revparse_ext(refspec)
+            .map(|(_, reference)| reference.is_some())
+            .unwrap_or(false)
+    }
+
     /// Compute the merge-base (common ancestor) of two refs.
     ///
     /// This is the "true" fork point — the commit where the branch diverged
@@ -1037,6 +1063,22 @@ mod tests {
 
         let err = repo.resolve_commit("nonexistent");
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_is_named_ref() {
+        let (_dir, repo) = setup_test_repo();
+        let oid = repo.resolve_commit("base").unwrap();
+
+        assert!(repo.is_named_ref("base"), "tag should be a named ref");
+        assert!(
+            !repo.is_named_ref(&oid),
+            "explicit commit hash should not be a named ref"
+        );
+        assert!(
+            !repo.is_named_ref("HEAD~1"),
+            "rev expression should not be a named ref"
+        );
     }
 
     #[test]
