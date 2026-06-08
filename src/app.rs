@@ -20,6 +20,8 @@ use ratatui::layout::Rect;
 
 use crate::client::Client;
 use crate::config::StyleConfig;
+use crate::core::diff;
+use crate::core::review;
 use crate::keys;
 use crate::model::{
     ConnectionContext, ContentMode, DefinitionLocation, FileEntry, PaneFocus, RenderVariant,
@@ -282,15 +284,7 @@ impl AppState {
         context: ConnectionContext,
         mut files: Vec<FileEntry>,
     ) -> Self {
-        // Sort: unreviewed (including changed) first, then reviewed.
-        // Alphabetical by path within each group.
-        files.sort_by(|a, b| {
-            let a_reviewed = matches!(a.status, ReviewStatus::Reviewed { .. });
-            let b_reviewed = matches!(b.status, ReviewStatus::Reviewed { .. });
-            a_reviewed
-                .cmp(&b_reviewed)
-                .then(a.change.path.cmp(&b.change.path))
-        });
+        review::sort_files(&mut files);
 
         Self {
             styles,
@@ -368,32 +362,17 @@ impl AppState {
     /// reviewed commit so the diff only shows changes since the review.
     /// Otherwise fall back to the merge base.
     pub fn effective_diff_base(&self) -> &str {
-        if !self.show_merge_base {
-            if let Some(entry) = self.selected_file_entry() {
-                let commit = match &entry.status {
-                    ReviewStatus::Reviewed {
-                        reviewed_commit, ..
-                    } => reviewed_commit.as_deref(),
-                    ReviewStatus::Changed {
-                        reviewed_commit, ..
-                    } => reviewed_commit.as_deref(),
-                    ReviewStatus::Unreviewed => None,
-                };
-                if let Some(c) = commit {
-                    return c;
-                }
-            }
-        }
-        &self.context.merge_base
+        review::effective_diff_base(
+            self.selected_file_entry(),
+            &self.context.merge_base,
+            self.show_merge_base,
+        )
     }
 
     /// Number of unreviewed files (Unreviewed + Changed status).
     /// Since files are sorted unreviewed-first, these are files[0..count].
     pub fn unreviewed_count(&self) -> usize {
-        self.files
-            .iter()
-            .filter(|f| !matches!(f.status, ReviewStatus::Reviewed { .. }))
-            .count()
+        review::unreviewed_count(&self.files)
     }
 
     /// Maximum scroll offset: the last line sits at the top of the viewport.
@@ -406,9 +385,7 @@ impl AppState {
         self.head_content = None;
         if let Some(entry) = self.files.get(self.selected_file) {
             let path = entry.change.path.clone();
-            if let Ok(repo) = crate::git::Repo::open(std::path::Path::new(&self.context.worktree)) {
-                self.head_content = repo.file_content_workdir(&path).ok().flatten();
-            }
+            self.head_content = diff::workdir_file_content(&self.context.worktree, &path);
         }
     }
 
@@ -417,12 +394,8 @@ impl AppState {
         self.base_content = None;
         if let Some(entry) = self.files.get(self.selected_file) {
             let path = entry.change.path.clone();
-            if let Ok(repo) = crate::git::Repo::open(std::path::Path::new(&self.context.worktree)) {
-                self.base_content = repo
-                    .file_content(&self.context.merge_base, &path)
-                    .ok()
-                    .flatten();
-            }
+            self.base_content =
+                diff::file_content(&self.context.worktree, &self.context.merge_base, &path);
         }
     }
 
@@ -496,20 +469,16 @@ impl AppState {
         self.head_blame.clear();
         self.base_blame.clear();
 
-        if !self.show_blame {
-            return;
-        }
-
         if let Some(entry) = self.files.get(self.selected_file) {
             let path = entry.change.path.clone();
-            if let Ok(repo) = crate::git::Repo::open(std::path::Path::new(&self.context.worktree)) {
-                if let Ok(blame) = repo.blame_file("HEAD", &path) {
-                    self.head_blame = blame;
-                }
-                if let Ok(blame) = repo.blame_file(&self.context.merge_base, &path) {
-                    self.base_blame = blame;
-                }
-            }
+            let (head, base) = diff::blame_pair(
+                &self.context.worktree,
+                &self.context.merge_base,
+                &path,
+                self.show_blame,
+            );
+            self.head_blame = head;
+            self.base_blame = base;
         }
     }
 
@@ -521,33 +490,16 @@ impl AppState {
             let path = entry.change.path.clone();
             let diff_base = self.effective_diff_base().to_string();
             let merge_base = self.context.merge_base.clone();
-            if let Ok(repo) = crate::git::Repo::open(std::path::Path::new(&self.context.worktree)) {
-                let diff = repo
-                    .diff_file_workdir_opts(
-                        &diff_base,
-                        &path,
-                        self.diff_algorithm,
-                        self.ignore_whitespace,
-                    )
-                    .or_else(|_| {
-                        // If the diff base (reviewed_commit) is unresolvable
-                        // (e.g. GC'd after interactive rebase), fall back to
-                        // the merge base.
-                        if diff_base != merge_base {
-                            repo.diff_file_workdir_opts(
-                                &merge_base,
-                                &path,
-                                self.diff_algorithm,
-                                self.ignore_whitespace,
-                            )
-                        } else {
-                            Err(anyhow::anyhow!("diff failed"))
-                        }
-                    });
-                if let Ok(diff) = diff {
-                    if let Some(entry) = self.files.get_mut(self.selected_file) {
-                        entry.diff = diff;
-                    }
+            if let Some(diff) = diff::diff_with_fallback(
+                &self.context.worktree,
+                &diff_base,
+                &merge_base,
+                &path,
+                self.diff_algorithm,
+                self.ignore_whitespace,
+            ) {
+                if let Some(entry) = self.files.get_mut(self.selected_file) {
+                    entry.diff = diff;
                 }
             }
         }
@@ -562,32 +514,16 @@ impl AppState {
             let path = entry.change.path.clone();
             let diff_base = self.effective_diff_base().to_string();
             let merge_base = self.context.merge_base.clone();
-            if let Ok(repo) = crate::git::Repo::open(std::path::Path::new(&self.context.worktree)) {
-                let diff = repo
-                    .diff_file_workdir_opts(
-                        &diff_base,
-                        &path,
-                        self.diff_algorithm,
-                        self.ignore_whitespace,
-                    )
-                    .or_else(|_| {
-                        // Fall back to merge_base if reviewed_commit is
-                        // unresolvable (e.g. squashed + GC'd).
-                        if diff_base != merge_base {
-                            repo.diff_file_workdir_opts(
-                                &merge_base,
-                                &path,
-                                self.diff_algorithm,
-                                self.ignore_whitespace,
-                            )
-                        } else {
-                            Err(anyhow::anyhow!("diff failed"))
-                        }
-                    });
-                if let Ok(diff) = diff {
-                    if let Some(entry) = self.files.get_mut(self.selected_file) {
-                        entry.diff = diff;
-                    }
+            if let Some(diff) = diff::diff_with_fallback(
+                &self.context.worktree,
+                &diff_base,
+                &merge_base,
+                &path,
+                self.diff_algorithm,
+                self.ignore_whitespace,
+            ) {
+                if let Some(entry) = self.files.get_mut(self.selected_file) {
+                    entry.diff = diff;
                 }
             }
         }
@@ -768,12 +704,8 @@ impl App {
         };
 
         // Resolve diff algorithm: crt config → git config → patience.
-        let diff_algorithm = cfg.layout.diff_algorithm.unwrap_or_else(|| {
-            crate::git::Repo::open(std::path::Path::new(&context.worktree))
-                .ok()
-                .and_then(|repo| repo.diff_config().algorithm)
-                .unwrap_or(crate::config::DiffAlgorithm::Patience)
-        });
+        let diff_algorithm =
+            diff::resolve_diff_algorithm(&context.worktree, cfg.layout.diff_algorithm);
 
         let config_path = crate::config::config_path();
         let mut state = AppState::new(
@@ -1277,11 +1209,7 @@ impl App {
 
     /// Reload the file list from the server, preserving selection and cursor.
     async fn reload_file_list(&mut self) {
-        let selected_path = self
-            .state
-            .files
-            .get(self.state.selected_file)
-            .map(|f| f.change.path.clone());
+        let selected_path = review::selected_path(&self.state.files, self.state.selected_file);
 
         // Save cursor/scroll position to restore after reload.
         let saved_cursor = self.state.diff_line_cursor;
@@ -1293,19 +1221,11 @@ impl App {
         match self.client.list_changed_files().await {
             Ok(result) => {
                 self.state.files = result.files;
-                // Re-sort.
-                self.state.files.sort_by(|a, b| {
-                    let a_reviewed = matches!(a.status, ReviewStatus::Reviewed { .. });
-                    let b_reviewed = matches!(b.status, ReviewStatus::Reviewed { .. });
-                    a_reviewed
-                        .cmp(&b_reviewed)
-                        .then(a.change.path.cmp(&b.change.path))
-                });
+                review::sort_files(&mut self.state.files);
                 // Restore selection by path.
                 let prev_selected = self.state.selected_file;
-                self.state.selected_file = selected_path
-                    .and_then(|p| self.state.files.iter().position(|f| f.change.path == p))
-                    .unwrap_or(0);
+                self.state.selected_file =
+                    review::restore_selection_by_path(&self.state.files, selected_path.as_deref());
 
                 // Refresh diff and content for the selected file.
                 self.state.refresh_current_file_diff();
@@ -1334,68 +1254,8 @@ impl App {
     /// Apply a review action result from the server: update the file's status,
     /// re-sort the file list, and auto-advance if needed.
     fn apply_review_result(&mut self, result: &crate::model::ReviewActionResult) {
-        let was_marking = matches!(result.status, ReviewStatus::Reviewed { .. });
-
-        // Before mutating, find the advance target: the next unreviewed
-        // file after the current selection (by list position, not path).
-        let advance_target = if was_marking {
-            self.state
-                .files
-                .iter()
-                .skip(self.state.selected_file + 1)
-                .find(|f| !matches!(f.status, ReviewStatus::Reviewed { .. }))
-                .map(|f| f.change.path.clone())
-        } else {
-            None
-        };
-
-        // Update the file entry's status.
-        if let Some(entry) = self
-            .state
-            .files
-            .iter_mut()
-            .find(|f| f.change.path == result.file_path)
-        {
-            entry.status = result.status.clone();
-        }
-
-        // Re-sort: unreviewed/changed first, then reviewed.
-        self.state.files.sort_by(|a, b| {
-            let a_reviewed = matches!(a.status, ReviewStatus::Reviewed { .. });
-            let b_reviewed = matches!(b.status, ReviewStatus::Reviewed { .. });
-            a_reviewed
-                .cmp(&b_reviewed)
-                .then(a.change.path.cmp(&b.change.path))
-        });
-
-        if was_marking {
-            let unreviewed_count = self.state.unreviewed_count();
-            if unreviewed_count > 0 {
-                // Try to select the file that was next in line.
-                // Fall back to the first unreviewed file if that target
-                // no longer exists or was already reviewed.
-                self.state.selected_file = advance_target
-                    .and_then(|path| self.state.files.iter().position(|f| f.change.path == path))
-                    .unwrap_or(0);
-            } else {
-                // All reviewed — stay on the file we just reviewed.
-                self.state.selected_file = self
-                    .state
-                    .files
-                    .iter()
-                    .position(|f| f.change.path == result.file_path)
-                    .unwrap_or(0);
-            }
-        } else {
-            // Un-marking: stay on the same file by path.
-            self.state.selected_file = self
-                .state
-                .files
-                .iter()
-                .position(|f| f.change.path == result.file_path)
-                .unwrap_or(0);
-        }
-
+        self.state.selected_file =
+            review::apply_review_result(&mut self.state.files, self.state.selected_file, result);
         self.state.on_file_changed();
     }
 

@@ -1,6 +1,6 @@
 # Stage 22: Extract Domain Use-Cases from TUI
 
-## Status: Backlog
+## Status: In Progress
 
 ## Order
 
@@ -74,9 +74,17 @@ that contract.
 - `src/app.rs` updated to call service methods rather than embedding rules.
 - `src/keys.rs` reduced usage of domain helpers owned by TUI.
 
+## Progress
+
+- Extracted review-list ordering, unreviewed counting, effective diff-base
+  selection, selected-file restoration, and post-review auto-advance rules
+  into `core::review` with focused unit tests.
+- Extracted AppState git orchestration for diff algorithm resolution, file
+  content loading, blame loading, and diff fallback loading into `core::diff`.
+
 ## Acceptance Criteria
 
-- [ ] No direct git orchestration remains in TUI application state methods.
+- [x] No direct git orchestration remains in TUI application state methods.
 - [ ] Review/diff/navigation/search rules are exercised by service-level tests.
 - [ ] Command/search/definition semantics are no longer implemented in TUI
       business-logic helpers.
