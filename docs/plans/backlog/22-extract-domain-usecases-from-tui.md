@@ -1,6 +1,6 @@
 # Stage 22: Extract Domain Use-Cases from TUI
 
-## Status: In Progress
+## Status: Complete
 
 ## Order
 
@@ -90,6 +90,7 @@ that contract.
   pending commands with typed command requests.
 - Added focused `core::diff` tests for diff algorithm selection, content
   loading, blame gating, and diff-base fallback behavior.
+- Human review approved functional equivalence for existing workflows.
 
 ## Acceptance Criteria
 
@@ -97,7 +98,7 @@ that contract.
 - [x] Review/diff/navigation/search rules are exercised by service-level tests.
 - [x] Command/search/definition semantics are no longer implemented in TUI
       business-logic helpers.
-- [ ] TUI behavior remains functionally equivalent for existing workflows.
+- [x] TUI behavior remains functionally equivalent for existing workflows.
 - [x] New service code is interface-reusable for GUI.
 
 ## Resolved Decisions
