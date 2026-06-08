@@ -17,6 +17,10 @@ pub enum CoreEffect {
     ClearPrompt { id: PromptId },
     Command(CommandParse),
     DiffSearch(DiffSearchEffect),
+    Quit,
+    Suspend,
+    ShowHelp,
+    DismissHelp,
     ReviewToggle,
     NavigateFile(Direction),
     JumpHunk(Direction),
@@ -56,6 +60,8 @@ pub enum ConnectionState {
 pub struct InteractionContext {
     /// Optional hint about current connection state.
     pub connection_state: Option<ConnectionState>,
+    /// Whether the help overlay is currently visible in the adapter.
+    pub help_visible: bool,
     /// Word under the cursor, supplied by the adapter for commands like `gd`.
     pub fallback_word: Option<String>,
 }
@@ -82,12 +88,15 @@ impl CoreInteractionEngine {
     }
 
     /// Single core input entrypoint for UI adapters.
-    pub fn handle_input(
-        &mut self,
-        event: InputEvent,
-        _context: &InteractionContext,
-    ) -> CoreEffects {
+    pub fn handle_input(&mut self, event: InputEvent, context: &InteractionContext) -> CoreEffects {
         match event {
+            InputEvent::Key(key)
+                if context.help_visible
+                    && key.kind == KeyEventKind::Press
+                    && help_dismiss_key(&key) =>
+            {
+                vec![CoreEffect::DismissHelp]
+            }
             InputEvent::Key(key)
                 if key.kind == KeyEventKind::Press
                     && key_has_no_command_modifier(key.modifiers)
@@ -115,6 +124,27 @@ impl CoreInteractionEngine {
                     placeholder: Some("Type a regex".to_string()),
                     initial_value: String::new(),
                 })]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_no_modifier(key.modifiers)
+                    && key.key == Key::Char('q') =>
+            {
+                vec![CoreEffect::Quit]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_control_modifier_only(key.modifiers)
+                    && key.key == Key::Char('z') =>
+            {
+                vec![CoreEffect::Suspend]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_no_command_modifier(key.modifiers)
+                    && key.key == Key::Char('?') =>
+            {
+                vec![CoreEffect::ShowHelp]
             }
             InputEvent::Key(key)
                 if key.kind == KeyEventKind::Press
@@ -245,7 +275,7 @@ impl CoreInteractionEngine {
                         CoreEffect::ClearPrompt { id },
                         CoreEffect::Command(command::parse_command(
                             &value,
-                            _context.fallback_word.as_deref(),
+                            context.fallback_word.as_deref(),
                         )),
                     ],
                     PromptKind::Search => vec![
@@ -293,6 +323,15 @@ fn key_has_no_modifier(modifiers: super::input::InputModifiers) -> bool {
 
 fn key_has_control_modifier_only(modifiers: super::input::InputModifiers) -> bool {
     modifiers.ctrl && !modifiers.alt && !modifiers.shift
+}
+
+fn help_dismiss_key(key: &super::input::KeyEvent) -> bool {
+    match key.key {
+        Key::Escape => key_has_no_modifier(key.modifiers),
+        Key::Char('q') => key_has_no_modifier(key.modifiers),
+        Key::Char('?') => key_has_no_command_modifier(key.modifiers),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -403,6 +442,89 @@ mod tests {
         );
 
         assert_eq!(effects, vec![CoreEffect::ReviewToggle]);
+    }
+
+    #[test]
+    fn q_requests_quit_when_help_is_hidden() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(Key::Char('q'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(effects, vec![CoreEffect::Quit]);
+    }
+
+    #[test]
+    fn control_z_requests_suspend() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(
+                Key::Char('z'),
+                InputModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(effects, vec![CoreEffect::Suspend]);
+    }
+
+    #[test]
+    fn question_mark_requests_help() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let normal = engine.handle_input(
+            key_event(Key::Char('?'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+        let shifted = engine.handle_input(
+            key_event(
+                Key::Char('?'),
+                InputModifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(normal, vec![CoreEffect::ShowHelp]);
+        assert_eq!(shifted, vec![CoreEffect::ShowHelp]);
+    }
+
+    #[test]
+    fn help_visible_dismiss_keys_dismiss_help_before_global_actions() {
+        let mut engine = CoreInteractionEngine::new();
+        let context = InteractionContext {
+            help_visible: true,
+            ..InteractionContext::default()
+        };
+
+        let q = engine.handle_input(
+            key_event(Key::Char('q'), InputModifiers::default()),
+            &context,
+        );
+        let escape =
+            engine.handle_input(key_event(Key::Escape, InputModifiers::default()), &context);
+        let question = engine.handle_input(
+            key_event(
+                Key::Char('?'),
+                InputModifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            &context,
+        );
+
+        assert_eq!(q, vec![CoreEffect::DismissHelp]);
+        assert_eq!(escape, vec![CoreEffect::DismissHelp]);
+        assert_eq!(question, vec![CoreEffect::DismissHelp]);
     }
 
     #[test]
