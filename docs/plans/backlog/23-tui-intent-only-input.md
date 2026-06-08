@@ -92,6 +92,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   typed app/session effects.
 - Routed search and definition results overlay close, selection movement, and
   accept-selected keys through core input as typed overlay effects.
+- Routed diff cursor line, page, viewport, horizontal, and word movement keys
+  through core input as typed cursor effects.
 
 ## Acceptance Criteria
 
