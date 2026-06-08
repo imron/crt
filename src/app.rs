@@ -22,6 +22,7 @@ use crate::client::Client;
 use crate::config::StyleConfig;
 use crate::core::command::Command;
 use crate::core::diff;
+use crate::core::interaction::CoreInteractionEngine;
 use crate::core::review;
 use crate::core::search as core_search;
 use crate::keys;
@@ -275,6 +276,8 @@ pub struct AppState {
     /// When true, force diffs to use merge_base even for reviewed files.
     /// Toggled by the `m` keybinding.
     pub show_merge_base: bool,
+    /// Core interaction entrypoint used by the TUI adapter for migrated input.
+    pub core_interaction: CoreInteractionEngine,
 }
 
 impl AppState {
@@ -350,6 +353,7 @@ impl AppState {
             diff_search_matches: Vec::new(),
             diff_search_current: 0,
             show_merge_base: false,
+            core_interaction: CoreInteractionEngine::new(),
         }
     }
 

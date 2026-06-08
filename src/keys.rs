@@ -6,19 +6,98 @@
 
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{
+    KeyCode, KeyEvent as CrosstermKeyEvent, KeyEventKind as CrosstermKeyEventKind, KeyModifiers,
+};
 
 use crate::app::{AppState, InputMode};
 use crate::core::command::{self, Command, CommandParse};
 use crate::core::navigation::{self, Direction, FileNavigationScope};
 use crate::core::search as core_search;
+use crate::core::{
+    CoreEffect, InputEvent, InputModifiers, InteractionContext, Key as CoreKey,
+    KeyEvent as CoreKeyEvent, KeyEventKind as CoreKeyEventKind, PromptKind,
+};
 use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
 /// How long the "Press Ctrl-C again" prompt stays active.
 const CTRL_C_TIMEOUT: Duration = Duration::from_secs(3);
 
+pub(crate) fn input_event_from_key(key: CrosstermKeyEvent) -> Option<InputEvent> {
+    Some(InputEvent::Key(CoreKeyEvent {
+        kind: match key.kind {
+            CrosstermKeyEventKind::Press => CoreKeyEventKind::Press,
+            CrosstermKeyEventKind::Repeat => CoreKeyEventKind::Repeat,
+            CrosstermKeyEventKind::Release => CoreKeyEventKind::Release,
+        },
+        key: match key.code {
+            KeyCode::Backspace => CoreKey::Backspace,
+            KeyCode::Enter => CoreKey::Enter,
+            KeyCode::Left => CoreKey::Left,
+            KeyCode::Right => CoreKey::Right,
+            KeyCode::Up => CoreKey::Up,
+            KeyCode::Down => CoreKey::Down,
+            KeyCode::Home => CoreKey::Home,
+            KeyCode::End => CoreKey::End,
+            KeyCode::PageUp => CoreKey::PageUp,
+            KeyCode::PageDown => CoreKey::PageDown,
+            KeyCode::Tab | KeyCode::BackTab => CoreKey::Tab,
+            KeyCode::Delete => CoreKey::Delete,
+            KeyCode::Esc => CoreKey::Escape,
+            KeyCode::Char(c) => CoreKey::Char(c),
+            KeyCode::F(n) => CoreKey::Function(n),
+            _ => return None,
+        },
+        modifiers: InputModifiers {
+            ctrl: key.modifiers.contains(KeyModifiers::CONTROL),
+            alt: key.modifiers.contains(KeyModifiers::ALT),
+            shift: key.modifiers.contains(KeyModifiers::SHIFT),
+        },
+    }))
+}
+
+fn dispatch_core_input(state: &mut AppState, key: CrosstermKeyEvent) -> bool {
+    let Some(event) = input_event_from_key(key) else {
+        return false;
+    };
+    let effects = state
+        .core_interaction
+        .handle_input(event, &InteractionContext::default());
+    apply_core_effects(state, effects)
+}
+
+fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
+    let mut handled = false;
+    for effect in effects {
+        handled = true;
+        match effect {
+            CoreEffect::RequestPrompt(prompt) => match prompt.kind {
+                PromptKind::CommandLine => {
+                    state.input_mode = InputMode::Command;
+                    state.command_input = prompt.initial_value;
+                    state.command_cursor = state.command_input.len();
+                }
+                PromptKind::Search => {
+                    state.input_mode = InputMode::DiffSearch;
+                    state.diff_search_input = prompt.initial_value;
+                    state.diff_search_cursor = state.diff_search_input.len();
+                }
+                PromptKind::Custom(_) => {}
+            },
+            CoreEffect::Status(status) => {
+                state.status_message = Some((status.text, Instant::now()));
+            }
+            CoreEffect::ClearPrompt { .. }
+            | CoreEffect::Render(_)
+            | CoreEffect::ConnectionState(_)
+            | CoreEffect::TransientError(_) => {}
+        }
+    }
+    handled
+}
+
 /// Handle a key press event by mutating the application state.
-pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
+pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
     // --- Command mode input ---
     if state.input_mode == InputMode::Command {
         handle_command_input(state, key);
@@ -59,7 +138,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
     // ---------------------------------------------------------------------------
 
     /// Handle keystrokes while in command mode (`:` prompt active).
-    fn handle_command_input(state: &mut AppState, key: KeyEvent) {
+    fn handle_command_input(state: &mut AppState, key: CrosstermKeyEvent) {
         match key.code {
             KeyCode::Esc => {
                 state.input_mode = InputMode::Normal;
@@ -112,7 +191,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
     }
 
     /// Handle keystrokes while in diff search mode (`/` prompt active).
-    fn handle_diff_search_input(state: &mut AppState, key: KeyEvent) {
+    fn handle_diff_search_input(state: &mut AppState, key: CrosstermKeyEvent) {
         match key.code {
             KeyCode::Esc => {
                 state.input_mode = InputMode::Normal;
@@ -257,7 +336,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
     // ---------------------------------------------------------------------------
 
     /// Handle keystrokes when the search results overlay is visible.
-    fn handle_search_results_key(state: &mut AppState, key: KeyEvent) {
+    fn handle_search_results_key(state: &mut AppState, key: CrosstermKeyEvent) {
         let results = state.search_results.as_mut().unwrap();
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
@@ -299,7 +378,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
     }
 
     /// Handle keystrokes when the definition results overlay is visible.
-    fn handle_definition_results_key(state: &mut AppState, key: KeyEvent) {
+    fn handle_definition_results_key(state: &mut AppState, key: CrosstermKeyEvent) {
         let results = state.definition_results.as_mut().unwrap();
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
@@ -480,12 +559,18 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             return;
         }
         (KeyCode::Char(':'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            if dispatch_core_input(state, key) {
+                return;
+            }
             state.input_mode = InputMode::Command;
             state.command_input.clear();
             state.command_cursor = 0;
             return;
         }
         (KeyCode::Char('/'), KeyModifiers::NONE) => {
+            if dispatch_core_input(state, key) {
+                return;
+            }
             state.input_mode = InputMode::DiffSearch;
             state.diff_search_input.clear();
             state.diff_search_cursor = 0;
@@ -1230,7 +1315,7 @@ fn toggle_review(state: &mut AppState) {
 }
 
 /// File list pane keys.
-fn handle_file_list_key(state: &mut AppState, key: KeyEvent) {
+fn handle_file_list_key(state: &mut AppState, key: CrosstermKeyEvent) {
     match key.code {
         KeyCode::Enter => {
             if state.show_diff_pane {
@@ -1242,7 +1327,7 @@ fn handle_file_list_key(state: &mut AppState, key: KeyEvent) {
 }
 
 /// Diff pane keys.
-fn handle_diff_key(state: &mut AppState, key: KeyEvent) {
+fn handle_diff_key(state: &mut AppState, key: CrosstermKeyEvent) {
     match key.code {
         KeyCode::Enter => {
             // Expand reviewed file diff or no-op.
@@ -1256,5 +1341,61 @@ fn handle_diff_key(state: &mut AppState, key: KeyEvent) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyEvent as CrosstermKeyEvent;
+
+    #[test]
+    fn translates_printable_key_to_core_input_event() {
+        let event = input_event_from_key(CrosstermKeyEvent::new(
+            KeyCode::Char(':'),
+            KeyModifiers::SHIFT,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            event,
+            InputEvent::Key(CoreKeyEvent {
+                kind: CoreKeyEventKind::Press,
+                key: CoreKey::Char(':'),
+                modifiers: InputModifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn translates_control_modifier_to_core_input_event() {
+        let event = input_event_from_key(CrosstermKeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            event,
+            InputEvent::Key(CoreKeyEvent {
+                kind: CoreKeyEventKind::Press,
+                key: CoreKey::Char('c'),
+                modifiers: InputModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn ignores_crossterm_keys_without_core_equivalent() {
+        assert!(
+            input_event_from_key(CrosstermKeyEvent::new(KeyCode::Null, KeyModifiers::NONE,))
+                .is_none()
+        );
     }
 }
