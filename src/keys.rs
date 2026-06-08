@@ -15,8 +15,9 @@ use crate::core::command::{self, Command, CommandParse};
 use crate::core::navigation::{self, Direction, FileNavigationScope};
 use crate::core::search as core_search;
 use crate::core::{
-    CoreEffect, DiffSearchEffect, InputEvent, InputModifiers, InteractionContext, Key as CoreKey,
-    KeyEvent as CoreKeyEvent, KeyEventKind as CoreKeyEventKind, PaneId, PromptKind,
+    CoreEffect, DefinitionResultsEffect, DiffSearchEffect, InputEvent, InputModifiers,
+    InteractionContext, Key as CoreKey, KeyEvent as CoreKeyEvent, KeyEventKind as CoreKeyEventKind,
+    PaneId, PromptKind, SearchResultsEffect,
 };
 use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
@@ -64,6 +65,8 @@ fn dispatch_core_input(state: &mut AppState, key: CrosstermKeyEvent) -> bool {
         event,
         &InteractionContext {
             help_visible: state.show_help,
+            search_results_visible: state.search_results.is_some(),
+            definition_results_visible: state.definition_results.is_some(),
             ..InteractionContext::default()
         },
     );
@@ -143,6 +146,12 @@ fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
             }
             CoreEffect::DiffSearch(DiffSearchEffect::Clear) => {
                 clear_diff_search(state);
+            }
+            CoreEffect::SearchResults(effect) => {
+                apply_search_results_effect(state, effect);
+            }
+            CoreEffect::DefinitionResults(effect) => {
+                apply_definition_results_effect(state, effect);
             }
             CoreEffect::Quit => {
                 state.should_quit = true;
@@ -330,6 +339,138 @@ fn clear_diff_search(state: &mut AppState) {
     state.diff_search_query = None;
     state.diff_search_matches.clear();
     state.diff_search_current = 0;
+}
+
+fn apply_search_results_effect(state: &mut AppState, effect: SearchResultsEffect) {
+    match effect {
+        SearchResultsEffect::Close => {
+            state.search_results = None;
+        }
+        SearchResultsEffect::SelectNext => {
+            let Some(results) = state.search_results.as_mut() else {
+                return;
+            };
+            if !results.matches.is_empty() {
+                results.selected = (results.selected + 1).min(results.matches.len() - 1);
+                if results.selected >= results.scroll + 20 {
+                    results.scroll = results.selected.saturating_sub(19);
+                }
+            }
+        }
+        SearchResultsEffect::SelectPrevious => {
+            let Some(results) = state.search_results.as_mut() else {
+                return;
+            };
+            results.selected = results.selected.saturating_sub(1);
+            if results.selected < results.scroll {
+                results.scroll = results.selected;
+            }
+        }
+        SearchResultsEffect::SelectFirst => {
+            let Some(results) = state.search_results.as_mut() else {
+                return;
+            };
+            results.selected = 0;
+            results.scroll = 0;
+        }
+        SearchResultsEffect::SelectLast => {
+            let Some(results) = state.search_results.as_mut() else {
+                return;
+            };
+            if !results.matches.is_empty() {
+                results.selected = results.matches.len() - 1;
+                results.scroll = results.selected.saturating_sub(19);
+            }
+        }
+        SearchResultsEffect::AcceptSelected => {
+            let selected = state
+                .search_results
+                .as_ref()
+                .and_then(|results| results.matches.get(results.selected).cloned());
+            state.search_results = None;
+            if let Some(search_match) = selected {
+                navigate_to_search_match(state, &search_match);
+            }
+        }
+    }
+}
+
+fn apply_definition_results_effect(state: &mut AppState, effect: DefinitionResultsEffect) {
+    match effect {
+        DefinitionResultsEffect::Close => {
+            state.definition_results = None;
+        }
+        DefinitionResultsEffect::SelectNext => {
+            let Some(results) = state.definition_results.as_mut() else {
+                return;
+            };
+            if !results.definitions.is_empty() {
+                results.selected = (results.selected + 1).min(results.definitions.len() - 1);
+            }
+        }
+        DefinitionResultsEffect::SelectPrevious => {
+            let Some(results) = state.definition_results.as_mut() else {
+                return;
+            };
+            results.selected = results.selected.saturating_sub(1);
+        }
+        DefinitionResultsEffect::AcceptSelected => {
+            let selected = state
+                .definition_results
+                .as_ref()
+                .and_then(|results| results.definitions.get(results.selected).cloned());
+            state.definition_results = None;
+            if let Some(definition) = selected {
+                navigate_to_definition(state, &definition);
+            }
+        }
+    }
+}
+
+fn navigate_to_search_match(state: &mut AppState, m: &crate::model::SearchMatch) {
+    let target = core_search::resolve_search_target(&state.files, m);
+    navigate_to_location_target(state, target);
+}
+
+fn navigate_to_definition(state: &mut AppState, def: &crate::model::DefinitionLocation) {
+    let target = core_search::resolve_definition_target(&state.files, def);
+    navigate_to_location_target(state, target);
+}
+
+fn navigate_to_location_target(state: &mut AppState, target: core_search::LocationTarget) {
+    match target {
+        core_search::LocationTarget::InDiff {
+            file_index,
+            line_number,
+        } => {
+            push_jump_stack(state);
+            state.selected_file = file_index;
+            on_file_changed(state);
+            state.diff_line_cursor = (line_number as usize).saturating_sub(1);
+            state.clamp_cursor_and_scroll();
+        }
+        core_search::LocationTarget::External {
+            file_path,
+            line_number,
+        } => {
+            push_jump_stack(state);
+            state.pending_command = Some(Command::ViewFile {
+                path: file_path,
+                line_number,
+            });
+        }
+    }
+}
+
+fn push_jump_stack(state: &mut AppState) {
+    use crate::app::JumpLocation;
+    state.jump_stack.push(JumpLocation {
+        file_index: state.selected_file,
+        diff_scroll: state.diff_scroll,
+        diff_line_cursor: state.diff_line_cursor,
+        content_mode: state.content_mode,
+        render_variant: state.render_variant,
+    });
 }
 
 fn toggle_pane_focus(state: &mut AppState) {
@@ -661,6 +802,10 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
 
     /// Handle keystrokes when the search results overlay is visible.
     fn handle_search_results_key(state: &mut AppState, key: CrosstermKeyEvent) {
+        if dispatch_core_input(state, key) {
+            return;
+        }
+
         let results = state.search_results.as_mut().unwrap();
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
@@ -703,6 +848,10 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
 
     /// Handle keystrokes when the definition results overlay is visible.
     fn handle_definition_results_key(state: &mut AppState, key: CrosstermKeyEvent) {
+        if dispatch_core_input(state, key) {
+            return;
+        }
+
         let results = state.definition_results.as_mut().unwrap();
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
@@ -724,59 +873,6 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
             }
             _ => {}
         }
-    }
-
-    // ---------------------------------------------------------------------------
-    // Navigation helpers
-    // ---------------------------------------------------------------------------
-
-    /// Navigate to a search match result.
-    fn navigate_to_search_match(state: &mut AppState, m: &crate::model::SearchMatch) {
-        let target = core_search::resolve_search_target(&state.files, m);
-        navigate_to_location_target(state, target);
-    }
-
-    /// Navigate to a definition location.
-    fn navigate_to_definition(state: &mut AppState, def: &crate::model::DefinitionLocation) {
-        let target = core_search::resolve_definition_target(&state.files, def);
-        navigate_to_location_target(state, target);
-    }
-
-    fn navigate_to_location_target(state: &mut AppState, target: core_search::LocationTarget) {
-        match target {
-            core_search::LocationTarget::InDiff {
-                file_index,
-                line_number,
-            } => {
-                push_jump_stack(state);
-                state.selected_file = file_index;
-                on_file_changed(state);
-                state.diff_line_cursor = (line_number as usize).saturating_sub(1);
-                state.clamp_cursor_and_scroll();
-            }
-            core_search::LocationTarget::External {
-                file_path,
-                line_number,
-            } => {
-                push_jump_stack(state);
-                state.pending_command = Some(Command::ViewFile {
-                    path: file_path,
-                    line_number,
-                });
-            }
-        }
-    }
-
-    /// Push current location onto the jump stack.
-    fn push_jump_stack(state: &mut AppState) {
-        use crate::app::JumpLocation;
-        state.jump_stack.push(JumpLocation {
-            file_index: state.selected_file,
-            diff_scroll: state.diff_scroll,
-            diff_line_cursor: state.diff_line_cursor,
-            content_mode: state.content_mode,
-            render_variant: state.render_variant,
-        });
     }
 
     // --- Global keys (work from any pane) ---

@@ -17,6 +17,8 @@ pub enum CoreEffect {
     ClearPrompt { id: PromptId },
     Command(CommandParse),
     DiffSearch(DiffSearchEffect),
+    SearchResults(SearchResultsEffect),
+    DefinitionResults(DefinitionResultsEffect),
     Quit,
     Suspend,
     ShowHelp,
@@ -46,6 +48,24 @@ pub enum DiffSearchEffect {
     Clear,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchResultsEffect {
+    Close,
+    SelectNext,
+    SelectPrevious,
+    SelectFirst,
+    SelectLast,
+    AcceptSelected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DefinitionResultsEffect {
+    Close,
+    SelectNext,
+    SelectPrevious,
+    AcceptSelected,
+}
+
 /// Connection lifecycle states for UI adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
@@ -62,6 +82,10 @@ pub struct InteractionContext {
     pub connection_state: Option<ConnectionState>,
     /// Whether the help overlay is currently visible in the adapter.
     pub help_visible: bool,
+    /// Search results overlay visibility, supplied by the adapter.
+    pub search_results_visible: bool,
+    /// Definition results overlay visibility, supplied by the adapter.
+    pub definition_results_visible: bool,
     /// Word under the cursor, supplied by the adapter for commands like `gd`.
     pub fallback_word: Option<String>,
 }
@@ -89,6 +113,21 @@ impl CoreInteractionEngine {
 
     /// Single core input entrypoint for UI adapters.
     pub fn handle_input(&mut self, event: InputEvent, context: &InteractionContext) -> CoreEffects {
+        if let InputEvent::Key(key) = &event {
+            if key.kind == KeyEventKind::Press {
+                if context.search_results_visible {
+                    if let Some(effect) = search_results_key_effect(key) {
+                        return vec![CoreEffect::SearchResults(effect)];
+                    }
+                }
+                if context.definition_results_visible {
+                    if let Some(effect) = definition_results_key_effect(key) {
+                        return vec![CoreEffect::DefinitionResults(effect)];
+                    }
+                }
+            }
+        }
+
         match event {
             InputEvent::Key(key)
                 if context.help_visible
@@ -334,6 +373,56 @@ fn help_dismiss_key(key: &super::input::KeyEvent) -> bool {
     }
 }
 
+fn search_results_key_effect(key: &super::input::KeyEvent) -> Option<SearchResultsEffect> {
+    match key.key {
+        Key::Escape if key_has_no_modifier(key.modifiers) => Some(SearchResultsEffect::Close),
+        Key::Char('q') if key_has_no_modifier(key.modifiers) => Some(SearchResultsEffect::Close),
+        Key::Char('j') if key_has_no_modifier(key.modifiers) => {
+            Some(SearchResultsEffect::SelectNext)
+        }
+        Key::Down if key_has_no_modifier(key.modifiers) => Some(SearchResultsEffect::SelectNext),
+        Key::Char('k') if key_has_no_modifier(key.modifiers) => {
+            Some(SearchResultsEffect::SelectPrevious)
+        }
+        Key::Up if key_has_no_modifier(key.modifiers) => Some(SearchResultsEffect::SelectPrevious),
+        Key::Char('g') if key_has_no_modifier(key.modifiers) => {
+            Some(SearchResultsEffect::SelectFirst)
+        }
+        Key::Char('G') if key_has_no_command_modifier(key.modifiers) => {
+            Some(SearchResultsEffect::SelectLast)
+        }
+        Key::Enter if key_has_no_modifier(key.modifiers) => {
+            Some(SearchResultsEffect::AcceptSelected)
+        }
+        _ => None,
+    }
+}
+
+fn definition_results_key_effect(key: &super::input::KeyEvent) -> Option<DefinitionResultsEffect> {
+    match key.key {
+        Key::Escape if key_has_no_modifier(key.modifiers) => Some(DefinitionResultsEffect::Close),
+        Key::Char('q') if key_has_no_modifier(key.modifiers) => {
+            Some(DefinitionResultsEffect::Close)
+        }
+        Key::Char('j') if key_has_no_modifier(key.modifiers) => {
+            Some(DefinitionResultsEffect::SelectNext)
+        }
+        Key::Down if key_has_no_modifier(key.modifiers) => {
+            Some(DefinitionResultsEffect::SelectNext)
+        }
+        Key::Char('k') if key_has_no_modifier(key.modifiers) => {
+            Some(DefinitionResultsEffect::SelectPrevious)
+        }
+        Key::Up if key_has_no_modifier(key.modifiers) => {
+            Some(DefinitionResultsEffect::SelectPrevious)
+        }
+        Key::Enter if key_has_no_modifier(key.modifiers) => {
+            Some(DefinitionResultsEffect::AcceptSelected)
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,6 +614,116 @@ mod tests {
         assert_eq!(q, vec![CoreEffect::DismissHelp]);
         assert_eq!(escape, vec![CoreEffect::DismissHelp]);
         assert_eq!(question, vec![CoreEffect::DismissHelp]);
+    }
+
+    #[test]
+    fn search_results_visible_routes_overlay_keys_before_global_actions() {
+        let mut engine = CoreInteractionEngine::new();
+        let context = InteractionContext {
+            search_results_visible: true,
+            ..InteractionContext::default()
+        };
+
+        let close = engine.handle_input(
+            key_event(Key::Char('q'), InputModifiers::default()),
+            &context,
+        );
+        let next = engine.handle_input(key_event(Key::Down, InputModifiers::default()), &context);
+        let previous = engine.handle_input(
+            key_event(Key::Char('k'), InputModifiers::default()),
+            &context,
+        );
+        let first = engine.handle_input(
+            key_event(Key::Char('g'), InputModifiers::default()),
+            &context,
+        );
+        let last = engine.handle_input(
+            key_event(
+                Key::Char('G'),
+                InputModifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            &context,
+        );
+        let accept =
+            engine.handle_input(key_event(Key::Enter, InputModifiers::default()), &context);
+
+        assert_eq!(
+            close,
+            vec![CoreEffect::SearchResults(SearchResultsEffect::Close)]
+        );
+        assert_eq!(
+            next,
+            vec![CoreEffect::SearchResults(SearchResultsEffect::SelectNext)]
+        );
+        assert_eq!(
+            previous,
+            vec![CoreEffect::SearchResults(
+                SearchResultsEffect::SelectPrevious
+            )]
+        );
+        assert_eq!(
+            first,
+            vec![CoreEffect::SearchResults(SearchResultsEffect::SelectFirst)]
+        );
+        assert_eq!(
+            last,
+            vec![CoreEffect::SearchResults(SearchResultsEffect::SelectLast)]
+        );
+        assert_eq!(
+            accept,
+            vec![CoreEffect::SearchResults(
+                SearchResultsEffect::AcceptSelected
+            )]
+        );
+    }
+
+    #[test]
+    fn definition_results_visible_routes_overlay_keys_before_global_actions() {
+        let mut engine = CoreInteractionEngine::new();
+        let context = InteractionContext {
+            definition_results_visible: true,
+            ..InteractionContext::default()
+        };
+
+        let close = engine.handle_input(
+            key_event(Key::Char('q'), InputModifiers::default()),
+            &context,
+        );
+        let next = engine.handle_input(
+            key_event(Key::Char('j'), InputModifiers::default()),
+            &context,
+        );
+        let previous = engine.handle_input(key_event(Key::Up, InputModifiers::default()), &context);
+        let accept =
+            engine.handle_input(key_event(Key::Enter, InputModifiers::default()), &context);
+
+        assert_eq!(
+            close,
+            vec![CoreEffect::DefinitionResults(
+                DefinitionResultsEffect::Close
+            )]
+        );
+        assert_eq!(
+            next,
+            vec![CoreEffect::DefinitionResults(
+                DefinitionResultsEffect::SelectNext
+            )]
+        );
+        assert_eq!(
+            previous,
+            vec![CoreEffect::DefinitionResults(
+                DefinitionResultsEffect::SelectPrevious
+            )]
+        );
+        assert_eq!(
+            accept,
+            vec![CoreEffect::DefinitionResults(
+                DefinitionResultsEffect::AcceptSelected
+            )]
+        );
     }
 
     #[test]

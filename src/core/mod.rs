@@ -21,8 +21,8 @@ pub use input::{
     PointerSemanticHit, TextAnchor,
 };
 pub use interaction::{
-    ConnectionState, CoreEffect, CoreEffects, CoreInteractionEngine, DiffSearchEffect,
-    InteractionContext,
+    ConnectionState, CoreEffect, CoreEffects, CoreInteractionEngine, DefinitionResultsEffect,
+    DiffSearchEffect, InteractionContext, SearchResultsEffect,
 };
 pub use prompt::{PromptId, PromptKind, PromptRequest};
 pub use render::{
