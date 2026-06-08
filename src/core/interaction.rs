@@ -4,6 +4,7 @@ use super::command::{self, CommandParse};
 use super::input::{InputEvent, Key, KeyEventKind};
 use super::navigation::Direction;
 use super::prompt::{PromptId, PromptKind, PromptRequest};
+use super::render::PaneId;
 use super::render::{RenderUpdate, StatusMessage};
 
 /// Core output effect stream.
@@ -21,6 +22,12 @@ pub enum CoreEffect {
     JumpHunk(Direction),
     GoToDefinition,
     PopJumpStack,
+    TogglePaneFocus,
+    TogglePaneVisibility(PaneId),
+    ToggleInlineDiff,
+    CycleViewMode,
+    CycleDiffAlgorithm,
+    ToggleDiffBase,
     Render(RenderUpdate),
     Status(StatusMessage),
     ConnectionState(ConnectionState),
@@ -154,6 +161,55 @@ impl CoreInteractionEngine {
                     && key.key == Key::Char('t') =>
             {
                 vec![CoreEffect::PopJumpStack]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_no_command_modifier(key.modifiers)
+                    && key.key == Key::Tab =>
+            {
+                vec![CoreEffect::TogglePaneFocus]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_no_modifier(key.modifiers)
+                    && key.key == Key::Char('1') =>
+            {
+                vec![CoreEffect::TogglePaneVisibility(PaneId::FileList)]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_no_modifier(key.modifiers)
+                    && key.key == Key::Char('2') =>
+            {
+                vec![CoreEffect::TogglePaneVisibility(PaneId::Diff)]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_no_modifier(key.modifiers)
+                    && key.key == Key::Char('i') =>
+            {
+                vec![CoreEffect::ToggleInlineDiff]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_no_modifier(key.modifiers)
+                    && key.key == Key::Char('s') =>
+            {
+                vec![CoreEffect::CycleViewMode]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_no_modifier(key.modifiers)
+                    && key.key == Key::Char('d') =>
+            {
+                vec![CoreEffect::CycleDiffAlgorithm]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_no_modifier(key.modifiers)
+                    && key.key == Key::Char('m') =>
+            {
+                vec![CoreEffect::ToggleDiffBase]
             }
             InputEvent::PromptSubmit { id, value } => {
                 let Some(active) = self.take_active_prompt(id) else {
@@ -458,6 +514,94 @@ mod tests {
         let effects = engine.handle_input(
             key_event(
                 Key::Char(']'),
+                InputModifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn tab_requests_pane_focus_toggle() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let normal = engine.handle_input(
+            key_event(Key::Tab, InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+        let shifted = engine.handle_input(
+            key_event(
+                Key::Tab,
+                InputModifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(normal, vec![CoreEffect::TogglePaneFocus]);
+        assert_eq!(shifted, vec![CoreEffect::TogglePaneFocus]);
+    }
+
+    #[test]
+    fn number_keys_request_pane_visibility_toggle() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let file_list = engine.handle_input(
+            key_event(Key::Char('1'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+        let diff = engine.handle_input(
+            key_event(Key::Char('2'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(
+            file_list,
+            vec![CoreEffect::TogglePaneVisibility(PaneId::FileList)]
+        );
+        assert_eq!(diff, vec![CoreEffect::TogglePaneVisibility(PaneId::Diff)]);
+    }
+
+    #[test]
+    fn view_keys_request_view_effects() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let inline = engine.handle_input(
+            key_event(Key::Char('i'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+        let view = engine.handle_input(
+            key_event(Key::Char('s'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+        let algorithm = engine.handle_input(
+            key_event(Key::Char('d'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+        let base = engine.handle_input(
+            key_event(Key::Char('m'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(inline, vec![CoreEffect::ToggleInlineDiff]);
+        assert_eq!(view, vec![CoreEffect::CycleViewMode]);
+        assert_eq!(algorithm, vec![CoreEffect::CycleDiffAlgorithm]);
+        assert_eq!(base, vec![CoreEffect::ToggleDiffBase]);
+    }
+
+    #[test]
+    fn shifted_view_key_does_not_request_view_effect() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(
+                Key::Char('i'),
                 InputModifiers {
                     shift: true,
                     ..Default::default()
