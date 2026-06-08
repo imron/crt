@@ -131,6 +131,10 @@ fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
             CoreEffect::DiffSearch(DiffSearchEffect::Submit { query }) => {
                 apply_diff_search(state, query);
             }
+            CoreEffect::ReviewToggle => {
+                toggle_review(state);
+                state.status_message = None;
+            }
             CoreEffect::Render(_)
             | CoreEffect::ConnectionState(_)
             | CoreEffect::TransientError(_) => {}
@@ -742,6 +746,9 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
             return;
         }
         (KeyCode::Char('r'), KeyModifiers::NONE) => {
+            if dispatch_core_input(state, key) {
+                return;
+            }
             toggle_review(state);
             state.status_message = None;
             return;
