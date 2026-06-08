@@ -80,6 +80,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
 - Routed the `r` review-toggle key through core input as a typed review effect.
 - Routed `Ctrl-n`/`Ctrl-p` file navigation through core input as typed
   navigation effects.
+- Routed hunk jumps, go-to-definition, and jump-stack pop through core input
+  as typed navigation effects.
 
 ## Acceptance Criteria
 

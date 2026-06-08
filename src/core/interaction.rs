@@ -18,6 +18,9 @@ pub enum CoreEffect {
     DiffSearch(DiffSearchEffect),
     ReviewToggle,
     NavigateFile(Direction),
+    JumpHunk(Direction),
+    GoToDefinition,
+    PopJumpStack,
     Render(RenderUpdate),
     Status(StatusMessage),
     ConnectionState(ConnectionState),
@@ -105,7 +108,7 @@ impl CoreInteractionEngine {
             }
             InputEvent::Key(key)
                 if key.kind == KeyEventKind::Press
-                    && key_has_no_command_modifier(key.modifiers)
+                    && key_has_no_modifier(key.modifiers)
                     && key.key == Key::Char('r') =>
             {
                 vec![CoreEffect::ReviewToggle]
@@ -123,6 +126,34 @@ impl CoreInteractionEngine {
                     && key.key == Key::Char('p') =>
             {
                 vec![CoreEffect::NavigateFile(Direction::Prev)]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_no_modifier(key.modifiers)
+                    && key.key == Key::Char(']') =>
+            {
+                vec![CoreEffect::JumpHunk(Direction::Next)]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_no_modifier(key.modifiers)
+                    && key.key == Key::Char('[') =>
+            {
+                vec![CoreEffect::JumpHunk(Direction::Prev)]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_control_modifier_only(key.modifiers)
+                    && key.key == Key::Char(']') =>
+            {
+                vec![CoreEffect::GoToDefinition]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_control_modifier_only(key.modifiers)
+                    && key.key == Key::Char('t') =>
+            {
+                vec![CoreEffect::PopJumpStack]
             }
             InputEvent::PromptSubmit { id, value } => {
                 let Some(active) = self.take_active_prompt(id) else {
@@ -174,6 +205,10 @@ impl CoreInteractionEngine {
 
 fn key_has_no_command_modifier(modifiers: super::input::InputModifiers) -> bool {
     !modifiers.ctrl && !modifiers.alt
+}
+
+fn key_has_no_modifier(modifiers: super::input::InputModifiers) -> bool {
+    !modifiers.ctrl && !modifiers.alt && !modifiers.shift
 }
 
 fn key_has_control_modifier_only(modifiers: super::input::InputModifiers) -> bool {
@@ -353,6 +388,77 @@ mod tests {
                 Key::Char('n'),
                 InputModifiers {
                     ctrl: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn bracket_keys_request_hunk_navigation() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let next = engine.handle_input(
+            key_event(Key::Char(']'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+        let prev = engine.handle_input(
+            key_event(Key::Char('['), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(next, vec![CoreEffect::JumpHunk(Direction::Next)]);
+        assert_eq!(prev, vec![CoreEffect::JumpHunk(Direction::Prev)]);
+    }
+
+    #[test]
+    fn control_bracket_requests_definition_navigation() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(
+                Key::Char(']'),
+                InputModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(effects, vec![CoreEffect::GoToDefinition]);
+    }
+
+    #[test]
+    fn control_t_requests_jump_stack_pop() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(
+                Key::Char('t'),
+                InputModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(effects, vec![CoreEffect::PopJumpStack]);
+    }
+
+    #[test]
+    fn shifted_bracket_does_not_request_hunk_navigation() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(
+                Key::Char(']'),
+                InputModifiers {
                     shift: true,
                     ..Default::default()
                 },
