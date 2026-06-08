@@ -23,6 +23,7 @@ use crate::config::StyleConfig;
 use crate::core::command::Command;
 use crate::core::diff;
 use crate::core::interaction::CoreInteractionEngine;
+use crate::core::prompt::PromptId;
 use crate::core::review;
 use crate::core::search as core_search;
 use crate::keys;
@@ -278,6 +279,8 @@ pub struct AppState {
     pub show_merge_base: bool,
     /// Core interaction entrypoint used by the TUI adapter for migrated input.
     pub core_interaction: CoreInteractionEngine,
+    /// Active core prompt requested by the interaction engine, if any.
+    pub active_core_prompt: Option<PromptId>,
 }
 
 impl AppState {
@@ -354,6 +357,7 @@ impl AppState {
             diff_search_current: 0,
             show_merge_base: false,
             core_interaction: CoreInteractionEngine::new(),
+            active_core_prompt: None,
         }
     }
 

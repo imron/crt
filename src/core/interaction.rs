@@ -1,5 +1,6 @@
 //! Core interaction entrypoint scaffold.
 
+use super::command::{self, CommandParse};
 use super::input::{InputEvent, Key, KeyEventKind};
 use super::prompt::{PromptId, PromptKind, PromptRequest};
 use super::render::{RenderUpdate, StatusMessage};
@@ -12,10 +13,17 @@ pub type CoreEffects = Vec<CoreEffect>;
 pub enum CoreEffect {
     RequestPrompt(PromptRequest),
     ClearPrompt { id: PromptId },
+    Command(CommandParse),
+    DiffSearch(DiffSearchEffect),
     Render(RenderUpdate),
     Status(StatusMessage),
     ConnectionState(ConnectionState),
     TransientError(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffSearchEffect {
+    Submit { query: String },
 }
 
 /// Connection lifecycle states for UI adapters.
@@ -32,6 +40,8 @@ pub enum ConnectionState {
 pub struct InteractionContext {
     /// Optional hint about current connection state.
     pub connection_state: Option<ConnectionState>,
+    /// Word under the cursor, supplied by the adapter for commands like `gd`.
+    pub fallback_word: Option<String>,
 }
 
 /// Stage-20 scaffold interaction engine.
@@ -41,7 +51,13 @@ pub struct InteractionContext {
 #[derive(Debug, Default)]
 pub struct CoreInteractionEngine {
     next_prompt_id: u64,
-    active_prompt: Option<PromptId>,
+    active_prompt: Option<ActivePrompt>,
+}
+
+#[derive(Debug, Clone)]
+struct ActivePrompt {
+    id: PromptId,
+    kind: PromptKind,
 }
 
 impl CoreInteractionEngine {
@@ -61,7 +77,7 @@ impl CoreInteractionEngine {
                     && key_has_no_command_modifier(key.modifiers)
                     && key.key == Key::Char(':') =>
             {
-                let id = self.next_prompt();
+                let id = self.next_prompt(PromptKind::CommandLine);
                 vec![CoreEffect::RequestPrompt(PromptRequest {
                     id,
                     kind: PromptKind::CommandLine,
@@ -75,7 +91,7 @@ impl CoreInteractionEngine {
                     && key_has_no_command_modifier(key.modifiers)
                     && key.key == Key::Char('/') =>
             {
-                let id = self.next_prompt();
+                let id = self.next_prompt(PromptKind::Search);
                 vec![CoreEffect::RequestPrompt(PromptRequest {
                     id,
                     kind: PromptKind::Search,
@@ -85,28 +101,50 @@ impl CoreInteractionEngine {
                 })]
             }
             InputEvent::PromptSubmit { id, value } => {
-                // Scaffold behavior: echo submit and close prompt.
-                self.active_prompt = None;
-                vec![
-                    CoreEffect::ClearPrompt { id },
-                    CoreEffect::Status(StatusMessage {
-                        text: format!("Input received: {value}"),
-                    }),
-                ]
+                let Some(active) = self.take_active_prompt(id) else {
+                    return Vec::new();
+                };
+
+                match active.kind {
+                    PromptKind::CommandLine => vec![
+                        CoreEffect::ClearPrompt { id },
+                        CoreEffect::Command(command::parse_command(
+                            &value,
+                            _context.fallback_word.as_deref(),
+                        )),
+                    ],
+                    PromptKind::Search => vec![
+                        CoreEffect::ClearPrompt { id },
+                        CoreEffect::DiffSearch(DiffSearchEffect::Submit { query: value }),
+                    ],
+                    PromptKind::Custom(_) => vec![CoreEffect::ClearPrompt { id }],
+                }
             }
             InputEvent::PromptCancel { id } => {
-                self.active_prompt = None;
-                vec![CoreEffect::ClearPrompt { id }]
+                if self.take_active_prompt(id).is_some() {
+                    vec![CoreEffect::ClearPrompt { id }]
+                } else {
+                    Vec::new()
+                }
             }
             _ => Vec::new(),
         }
     }
 
-    fn next_prompt(&mut self) -> PromptId {
+    fn next_prompt(&mut self, kind: PromptKind) -> PromptId {
         self.next_prompt_id = self.next_prompt_id.saturating_add(1);
         let id = PromptId(self.next_prompt_id);
-        self.active_prompt = Some(id);
+        self.active_prompt = Some(ActivePrompt { id, kind });
         id
+    }
+
+    fn take_active_prompt(&mut self, id: PromptId) -> Option<ActivePrompt> {
+        let active = self.active_prompt.clone()?;
+        if active.id != id {
+            return None;
+        }
+        self.active_prompt = None;
+        Some(active)
     }
 }
 
@@ -125,6 +163,13 @@ mod tests {
             key,
             modifiers,
         })
+    }
+
+    fn requested_prompt_id(effects: &[CoreEffect]) -> PromptId {
+        match effects {
+            [CoreEffect::RequestPrompt(PromptRequest { id, .. })] => *id,
+            _ => panic!("expected prompt request"),
+        }
     }
 
     #[test]
@@ -203,5 +248,109 @@ mod tests {
         );
 
         assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn command_prompt_submit_emits_parsed_command() {
+        let mut engine = CoreInteractionEngine::new();
+        let effects = engine.handle_input(
+            key_event(Key::Char(':'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+        let id = requested_prompt_id(&effects);
+
+        let effects = engine.handle_input(
+            InputEvent::PromptSubmit {
+                id,
+                value: "gr needle".to_string(),
+            },
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(
+            effects,
+            vec![
+                CoreEffect::ClearPrompt { id },
+                CoreEffect::Command(CommandParse::Parsed(command::Command::SearchAll {
+                    pattern: "needle".to_string()
+                }))
+            ]
+        );
+    }
+
+    #[test]
+    fn command_prompt_submit_uses_context_fallback_word() {
+        let mut engine = CoreInteractionEngine::new();
+        let effects = engine.handle_input(
+            key_event(Key::Char(':'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+        let id = requested_prompt_id(&effects);
+
+        let effects = engine.handle_input(
+            InputEvent::PromptSubmit {
+                id,
+                value: "gd".to_string(),
+            },
+            &InteractionContext {
+                fallback_word: Some("cursor_symbol".to_string()),
+                ..InteractionContext::default()
+            },
+        );
+
+        assert_eq!(
+            effects,
+            vec![
+                CoreEffect::ClearPrompt { id },
+                CoreEffect::Command(CommandParse::Parsed(command::Command::FindDefinition {
+                    symbol: "cursor_symbol".to_string()
+                }))
+            ]
+        );
+    }
+
+    #[test]
+    fn search_prompt_submit_emits_diff_search_effect() {
+        let mut engine = CoreInteractionEngine::new();
+        let effects = engine.handle_input(
+            key_event(Key::Char('/'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+        let id = requested_prompt_id(&effects);
+
+        let effects = engine.handle_input(
+            InputEvent::PromptSubmit {
+                id,
+                value: "needle".to_string(),
+            },
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(
+            effects,
+            vec![
+                CoreEffect::ClearPrompt { id },
+                CoreEffect::DiffSearch(DiffSearchEffect::Submit {
+                    query: "needle".to_string()
+                })
+            ]
+        );
+    }
+
+    #[test]
+    fn prompt_cancel_clears_active_prompt() {
+        let mut engine = CoreInteractionEngine::new();
+        let effects = engine.handle_input(
+            key_event(Key::Char(':'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+        let id = requested_prompt_id(&effects);
+
+        let effects = engine.handle_input(
+            InputEvent::PromptCancel { id },
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(effects, vec![CoreEffect::ClearPrompt { id }]);
     }
 }

@@ -75,6 +75,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
 - Routed `:` and `/` prompt-opening keys through `CoreInteractionEngine`
   while preserving local TUI prompt text editing and existing key behavior.
 - Added focused tests for core prompt requests and TUI key normalization.
+- Routed command and diff-search prompt submit/cancel through core
+  `PromptSubmit`/`PromptCancel` events, with typed effects applied by the TUI.
 
 ## Acceptance Criteria
 
