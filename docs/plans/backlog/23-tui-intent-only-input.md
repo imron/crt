@@ -86,6 +86,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   cursor instead of the first identifier on the line.
 - Routed pane focus, pane visibility, diff rendering, view mode, diff
   algorithm, and diff-base toggles through core input as typed effects.
+- Routed active diff-search next, previous, and clear actions through core
+  input as typed search effects.
 
 ## Acceptance Criteria
 
