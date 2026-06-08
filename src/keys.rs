@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{AppState, InputMode};
+use crate::core::command::{self, Command, CommandParse};
 use crate::core::navigation::{self, Direction, FileNavigationScope};
 use crate::core::search as core_search;
 use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
@@ -185,85 +186,68 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
 
     /// Parse and execute a command string (from the `:` prompt).
     fn execute_command(state: &mut AppState, cmd: &str) {
-        let cmd = cmd.trim();
-        if cmd.is_empty() {
-            return;
-        }
-
-        // Split into command name and arguments.
-        let (name, args) = match cmd.split_once(char::is_whitespace) {
-            Some((n, a)) => (n, a.trim()),
-            None => (cmd, ""),
-        };
-
-        match name {
-            "q" | "quit" => {
+        let fallback_word = extract_word_at_cursor(state);
+        match command::parse_command(cmd, fallback_word.as_deref()) {
+            CommandParse::Empty => {}
+            CommandParse::NeedsArgument { usage } | CommandParse::NeedsWord { usage } => {
+                state.status_message = Some((usage, Instant::now()));
+            }
+            CommandParse::Parsed(Command::Quit) => {
                 state.should_quit = true;
             }
-            "gr" => {
-                if args.is_empty() {
-                    state.status_message = Some(("Usage: :gr <regex>".to_string(), Instant::now()));
-                } else {
-                    // Set pending command for the async event loop to process.
-                    state.pending_command = Some(format!("gr {args}"));
-                }
+            CommandParse::Parsed(
+                cmd @ (Command::SearchAll { .. }
+                | Command::SearchDiff { .. }
+                | Command::FindDefinition { .. }),
+            ) => {
+                state.pending_command = Some(cmd);
             }
-            "grd" => {
-                if args.is_empty() {
-                    state.status_message =
-                        Some(("Usage: :grd <regex>".to_string(), Instant::now()));
-                } else {
-                    state.pending_command = Some(format!("grd {args}"));
-                }
+            CommandParse::Parsed(Command::SetBlame(true)) => {
+                state.show_blame = true;
+                state.load_blame();
+                state.status_message = Some(("Blame: shown".to_string(), Instant::now()));
             }
-            "gd" => {
-                if args.is_empty() {
-                    // No argument: use word under cursor.
-                    let word = extract_word_at_cursor(state);
-                    match word {
-                        Some(w) if !w.is_empty() => {
-                            state.pending_command = Some(format!("find_definition {w}"));
-                        }
-                        _ => {
-                            state.status_message =
-                                Some(("Usage: :gd <symbol>".to_string(), Instant::now()));
-                        }
-                    }
-                } else {
-                    state.pending_command = Some(format!("find_definition {args}"));
-                }
+            CommandParse::Parsed(Command::SetBlame(false)) => {
+                state.show_blame = false;
+                state.load_blame();
+                state.status_message = Some(("Blame: hidden".to_string(), Instant::now()));
             }
-            "set" => match args {
-                "blame" => {
-                    state.show_blame = true;
-                    state.load_blame();
-                    state.status_message = Some(("Blame: shown".to_string(), Instant::now()));
-                }
-                "noblame" => {
-                    state.show_blame = false;
-                    state.load_blame();
-                    state.status_message = Some(("Blame: hidden".to_string(), Instant::now()));
-                }
-                "whitespace" => {
-                    state.ignore_whitespace = false;
-                    state.reload_current_diff();
-                    state.status_message = Some(("Whitespace: shown".to_string(), Instant::now()));
-                }
-                "nowhitespace" => {
-                    state.ignore_whitespace = true;
-                    state.reload_current_diff();
-                    state.status_message =
-                        Some(("Whitespace: ignored".to_string(), Instant::now()));
-                }
-                _ => {
+            CommandParse::Parsed(Command::SetComments(show)) => {
+                state.show_comments = show;
+                let status = if show {
+                    "Comments: shown"
+                } else {
+                    "Comments: hidden"
+                };
+                state.status_message = Some((status.to_string(), Instant::now()));
+            }
+            CommandParse::Parsed(Command::SetWhitespaceIgnored(false)) => {
+                state.ignore_whitespace = false;
+                state.reload_current_diff();
+                state.status_message = Some(("Whitespace: shown".to_string(), Instant::now()));
+            }
+            CommandParse::Parsed(Command::SetWhitespaceIgnored(true)) => {
+                state.ignore_whitespace = true;
+                state.reload_current_diff();
+                state.status_message = Some(("Whitespace: ignored".to_string(), Instant::now()));
+            }
+            CommandParse::Parsed(Command::ViewFile { .. }) => {
+                state.status_message = Some((
+                    "Unsupported command from prompt".to_string(),
+                    Instant::now(),
+                ));
+            }
+            CommandParse::Parsed(Command::Unknown { name }) => {
+                if name == "set" || name.starts_with("set ") {
                     state.status_message = Some((
-                        "Unknown option. Use: blame, noblame, whitespace, nowhitespace".to_string(),
+                        "Unknown option. Use: blame, noblame, comments, nocomments, whitespace, nowhitespace"
+                            .to_string(),
                         Instant::now(),
                     ));
+                } else {
+                    state.status_message =
+                        Some((format!("Unknown command: {name}"), Instant::now()));
                 }
-            },
-            _ => {
-                state.status_message = Some((format!("Unknown command: {name}"), Instant::now()));
             }
         }
     }
@@ -372,7 +356,10 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
                 line_number,
             } => {
                 push_jump_stack(state);
-                state.pending_command = Some(format!("view_file {file_path} {line_number}"));
+                state.pending_command = Some(Command::ViewFile {
+                    path: file_path,
+                    line_number,
+                });
             }
         }
     }
@@ -422,7 +409,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             if word.is_empty() {
                 state.status_message = Some(("No word under cursor".to_string(), Instant::now()));
             } else {
-                state.pending_command = Some(format!("find_definition {word}"));
+                state.pending_command = Some(Command::FindDefinition { symbol: word });
             }
         } else {
             state.status_message = Some(("No word under cursor".to_string(), Instant::now()));

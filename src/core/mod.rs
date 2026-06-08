@@ -4,6 +4,7 @@
 //! UI adapters (TUI/GUI) translate native events into these types and render
 //! from these models without embedding business logic.
 
+pub mod command;
 pub mod diff;
 pub mod input;
 pub mod interaction;

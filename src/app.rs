@@ -20,6 +20,7 @@ use ratatui::layout::Rect;
 
 use crate::client::Client;
 use crate::config::StyleConfig;
+use crate::core::command::Command;
 use crate::core::diff;
 use crate::core::review;
 use crate::core::search as core_search;
@@ -259,7 +260,7 @@ pub struct AppState {
     pub jump_stack: Vec<JumpLocation>,
     /// Pending command to execute asynchronously (set by key handler,
     /// processed by async event loop).
-    pub pending_command: Option<String>,
+    pub pending_command: Option<Command>,
     /// Active diff search query (the confirmed search term).
     pub diff_search_query: Option<String>,
     /// In-progress diff search input (while typing in `/` prompt).
@@ -814,7 +815,7 @@ impl App {
             // Process pending command (search, definition, etc.).
             if self.state.pending_command.is_some() {
                 let cmd = self.state.pending_command.take().unwrap();
-                self.process_pending_command(&cmd).await;
+                self.process_pending_command(cmd).await;
             }
 
             // Check for server-pushed notifications (from other clients).
@@ -1067,24 +1068,19 @@ impl App {
     }
 
     /// Process a pending command set by the key handler.
-    async fn process_pending_command(&mut self, cmd: &str) {
-        let (name, args) = match cmd.split_once(char::is_whitespace) {
-            Some((n, a)) => (n, a.trim()),
-            None => (cmd, ""),
-        };
-
-        match name {
-            "gr" => {
+    async fn process_pending_command(&mut self, cmd: Command) {
+        match cmd {
+            Command::SearchAll { pattern } => {
                 self.state.status_message = Some(("Searching...".to_string(), Instant::now()));
                 // Force a re-render so the user sees the searching message.
                 let state = &mut self.state;
                 let _ = self.terminal.draw(|frame| ui::draw(frame, state));
 
-                match self.client.search_codebase(args, "all").await {
-                    Ok(result) => match core_search::search_outcome(args, false, result) {
+                match self.client.search_codebase(&pattern, "all").await {
+                    Ok(result) => match core_search::search_outcome(&pattern, false, result) {
                         core_search::SearchOutcome::NoMatches => {
                             self.state.status_message =
-                                Some((format!("No matches for /{args}/"), Instant::now()));
+                                Some((format!("No matches for /{pattern}/"), Instant::now()));
                         }
                         core_search::SearchOutcome::ShowResults {
                             query,
@@ -1107,17 +1103,19 @@ impl App {
                     }
                 }
             }
-            "grd" => {
+            Command::SearchDiff { pattern } => {
                 self.state.status_message =
                     Some(("Searching diff files...".to_string(), Instant::now()));
                 let state = &mut self.state;
                 let _ = self.terminal.draw(|frame| ui::draw(frame, state));
 
-                match self.client.search_codebase(args, "diff").await {
-                    Ok(result) => match core_search::search_outcome(args, true, result) {
+                match self.client.search_codebase(&pattern, "diff").await {
+                    Ok(result) => match core_search::search_outcome(&pattern, true, result) {
                         core_search::SearchOutcome::NoMatches => {
-                            self.state.status_message =
-                                Some((format!("No matches for /{args}/ in diff"), Instant::now()));
+                            self.state.status_message = Some((
+                                format!("No matches for /{pattern}/ in diff"),
+                                Instant::now(),
+                            ));
                         }
                         core_search::SearchOutcome::ShowResults {
                             query,
@@ -1140,7 +1138,7 @@ impl App {
                     }
                 }
             }
-            "find_definition" => {
+            Command::FindDefinition { symbol } => {
                 self.state.status_message =
                     Some(("Finding definition...".to_string(), Instant::now()));
                 let state = &mut self.state;
@@ -1152,14 +1150,14 @@ impl App {
                     .map(|e| e.change.path.clone());
                 match self
                     .client
-                    .find_definition(args, context_file.as_deref())
+                    .find_definition(&symbol, context_file.as_deref())
                     .await
                 {
                     Ok(result) => {
-                        match core_search::definition_outcome(args, result, &self.state.files) {
+                        match core_search::definition_outcome(&symbol, result, &self.state.files) {
                             core_search::DefinitionOutcome::NoDefinitions => {
                                 self.state.status_message = Some((
-                                    format!("No definitions found for '{args}'"),
+                                    format!("No definitions found for '{symbol}'"),
                                     Instant::now(),
                                 ));
                             }
@@ -1186,16 +1184,22 @@ impl App {
                     }
                 }
             }
-            "view_file" => {
+            Command::ViewFile { path, line_number } => {
                 // view_file <path> <line>
                 // For now, show a status message since read-only view
                 // for non-diff files would require a separate content mode.
-                self.state.status_message =
-                    Some((format!("File not in diff: {args}"), Instant::now()));
+                self.state.status_message = Some((
+                    format!("File not in diff: {path} {line_number}"),
+                    Instant::now(),
+                ));
             }
-            _ => {
+            Command::Quit
+            | Command::SetBlame(_)
+            | Command::SetComments(_)
+            | Command::SetWhitespaceIgnored(_)
+            | Command::Unknown { .. } => {
                 self.state.status_message =
-                    Some((format!("Unknown pending command: {name}"), Instant::now()));
+                    Some(("Unsupported pending command".to_string(), Instant::now()));
             }
         }
     }
