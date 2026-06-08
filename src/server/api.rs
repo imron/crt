@@ -42,14 +42,13 @@ pub async fn handle_init(
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let repo = git::Repo::open(&wt)?;
         let ctx = repo.context()?;
-        repo.resolve_commit(&br)?; // validate base ref
-        let base_ref_is_named_ref = repo.is_named_ref(&br);
+        let review_base = repo.resolve_review_base(&br)?;
         let merge_base = repo.merge_base(&br, "HEAD")?;
-        Ok((ctx, merge_base, base_ref_is_named_ref))
+        Ok((ctx, git::CommitId::new(merge_base), review_base))
     })
     .await;
 
-    let (git_ctx, merge_base, base_ref_is_named_ref) = match git_result {
+    let (git_ctx, merge_base, review_base) = match git_result {
         Ok(Ok(result)) => result,
         Ok(Err(e)) => {
             return JsonRpcResponse::error(id.clone(), ERR_INVALID_PARAMS, format!("{e:#}"));
@@ -96,19 +95,18 @@ pub async fn handle_init(
     let ctx = ConnectionContext {
         repo_root: git_ctx.repo_root.clone(),
         worktree: worktree_path.clone(),
-        base_ref: base_ref.clone(),
-        base_ref_is_named_ref,
+        review_base,
         merge_base: merge_base.clone(),
-        head_ref: git_ctx.head_ref.clone(),
+        head: git_ctx.head.clone(),
         db_path,
     };
 
     let result = model::ConnectionContext {
         repo_root: git_ctx.repo_root.to_string_lossy().into_owned(),
         worktree: worktree_path.to_string_lossy().into_owned(),
-        head_ref: git_ctx.head_ref.clone(),
-        merge_base: merge_base.clone(),
-        base_ref,
+        head_ref: git_ctx.head.display_name(),
+        merge_base: merge_base.to_string(),
+        base_ref: base_ref.clone(),
     };
 
     *conn_ctx = Some(ctx);
@@ -134,10 +132,12 @@ pub async fn handle_list_changed_files(
     db: &Arc<Mutex<Database>>,
     notify_tx: &broadcast::Sender<Notification>,
 ) -> JsonRpcResponse {
+    let head_ref = ctx.head_scope_key();
+
     // Load stored reviews from DB (async lock, then sync DB call).
     let reviews = {
         let db_guard = db.lock().await;
-        match db_guard.load_reviews(&ctx.merge_base, &ctx.head_ref) {
+        match db_guard.load_reviews(ctx.merge_base_key(), &head_ref) {
             Ok(r) => r,
             Err(e) => {
                 return JsonRpcResponse::error(
@@ -167,7 +167,7 @@ pub async fn handle_list_changed_files(
     };
 
     let worktree = ctx.worktree.clone();
-    let merge_base = ctx.merge_base.clone();
+    let merge_base = ctx.merge_base.to_string();
 
     // Git operations are blocking — run on the blocking thread pool.
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
@@ -240,20 +240,23 @@ async fn try_migrate_reviews(
 ) -> anyhow::Result<Option<std::collections::HashMap<String, crate::db::StoredReview>>> {
     use std::collections::HashMap;
 
-    if !ctx.base_ref_is_named_ref {
+    if !ctx.review_base.is_migration_eligible() {
         return Ok(None);
     }
+
+    let head_ref = ctx.head_scope_key();
+    let current_merge_base = ctx.merge_base.to_string();
 
     // 1. Find old-scope reviews for this head_ref.
     let old_scopes = {
         let db_guard = db.lock().await;
-        db_guard.load_reviews_by_head_ref(&ctx.head_ref)?
+        db_guard.load_reviews_by_head_ref(&head_ref)?
     };
 
     // Filter out the current merge_base (shouldn't have any, but be safe).
     let old_scopes: Vec<_> = old_scopes
         .into_iter()
-        .filter(|(mb, _)| mb != &ctx.merge_base)
+        .filter(|(mb, _)| mb != &current_merge_base)
         .collect();
 
     if old_scopes.is_empty() {
@@ -266,7 +269,7 @@ async fn try_migrate_reviews(
 
     // 3. Run the migration logic on a blocking thread (git operations).
     let worktree = ctx.worktree.clone();
-    let new_merge_base = ctx.merge_base.clone();
+    let new_merge_base = current_merge_base.clone();
     let old_mb = old_merge_base.clone();
 
     let migration_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
@@ -333,7 +336,7 @@ async fn try_migrate_reviews(
     if migrated_entries.is_empty() {
         // Nothing to migrate — clean up old scope anyway.
         let db_guard = db.lock().await;
-        db_guard.clear_reviews(&old_mb, &ctx.head_ref)?;
+        db_guard.clear_reviews(&old_mb, &head_ref)?;
         return Ok(None);
     }
 
@@ -345,8 +348,8 @@ async fn try_migrate_reviews(
         let db_guard = db.lock().await;
         for (file_path, diff_hash, reviewed_commit) in &migrated_entries {
             let review = db_guard.store_review(
-                &ctx.merge_base,
-                &ctx.head_ref,
+                &current_merge_base,
+                &head_ref,
                 file_path,
                 diff_hash,
                 reviewed_commit,
@@ -354,13 +357,13 @@ async fn try_migrate_reviews(
             new_reviews.insert(file_path.clone(), review);
         }
         // Delete old scope records.
-        db_guard.clear_reviews(&old_mb, &ctx.head_ref)?;
+        db_guard.clear_reviews(&old_mb, &head_ref)?;
     }
 
     // 5. Broadcast migration notification.
     let _ = notify_tx.send(Notification {
-        base_ref: ctx.merge_base.clone(),
-        head_ref: ctx.head_ref.clone(),
+        base_ref: current_merge_base,
+        head_ref: head_ref.clone(),
         kind: NotificationKind::ReviewsMigrated {
             count: migrated_count,
         },
@@ -396,7 +399,7 @@ pub async fn handle_get_file_diff(
     };
 
     let worktree = ctx.worktree.clone();
-    let merge_base = ctx.merge_base.clone();
+    let merge_base = ctx.merge_base.to_string();
     let file_path = diff_params.file_path;
 
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
@@ -446,7 +449,8 @@ pub async fn handle_mark_reviewed(
 
     // Compute the current diff hash.
     let worktree = ctx.worktree.clone();
-    let merge_base = ctx.merge_base.clone();
+    let merge_base = ctx.merge_base.to_string();
+    let head_ref = ctx.head_scope_key();
     let file_path = p.file_path.clone();
 
     let (diff_hash, reviewed_commit) = {
@@ -481,7 +485,7 @@ pub async fn handle_mark_reviewed(
         let db_guard = db.lock().await;
         match db_guard.store_review(
             &merge_base,
-            &ctx.head_ref,
+            &head_ref,
             &file_path,
             &diff_hash,
             &reviewed_commit,
@@ -500,7 +504,7 @@ pub async fn handle_mark_reviewed(
     // Broadcast notification.
     let _ = notify_tx.send(Notification {
         base_ref: merge_base,
-        head_ref: ctx.head_ref.clone(),
+        head_ref,
         kind: NotificationKind::ReviewChanged {
             file_path: file_path.clone(),
         },
@@ -547,9 +551,11 @@ pub async fn handle_unmark_reviewed(
     };
 
     // Remove the review from the database.
+    let merge_base = ctx.merge_base.to_string();
+    let head_ref = ctx.head_scope_key();
     {
         let db_guard = db.lock().await;
-        if let Err(e) = db_guard.remove_review(&ctx.merge_base, &ctx.head_ref, &p.file_path) {
+        if let Err(e) = db_guard.remove_review(&merge_base, &head_ref, &p.file_path) {
             return JsonRpcResponse::error(
                 id.clone(),
                 ERR_INTERNAL,
@@ -560,8 +566,8 @@ pub async fn handle_unmark_reviewed(
 
     // Broadcast notification.
     let _ = notify_tx.send(Notification {
-        base_ref: ctx.merge_base.clone(),
-        head_ref: ctx.head_ref.clone(),
+        base_ref: merge_base,
+        head_ref,
         kind: NotificationKind::ReviewChanged {
             file_path: p.file_path.clone(),
         },
@@ -592,9 +598,11 @@ pub async fn handle_reset_reviews(
     db: &Arc<Mutex<Database>>,
     notify_tx: &broadcast::Sender<Notification>,
 ) -> JsonRpcResponse {
+    let merge_base = ctx.merge_base.to_string();
+    let head_ref = ctx.head_scope_key();
     let cleared = {
         let db_guard = db.lock().await;
-        match db_guard.clear_reviews(&ctx.merge_base, &ctx.head_ref) {
+        match db_guard.clear_reviews(&merge_base, &head_ref) {
             Ok(n) => n,
             Err(e) => {
                 return JsonRpcResponse::error(
@@ -608,8 +616,8 @@ pub async fn handle_reset_reviews(
 
     // Broadcast notification.
     let _ = notify_tx.send(Notification {
-        base_ref: ctx.merge_base.clone(),
-        head_ref: ctx.head_ref.clone(),
+        base_ref: merge_base,
+        head_ref,
         kind: NotificationKind::ReviewsCleared,
     });
 
@@ -668,6 +676,7 @@ pub async fn handle_search_codebase(
     let repo_root = ctx.worktree.clone();
     let pattern = search_params.pattern.clone();
     let scope = search_params.scope.clone();
+    let merge_base = ctx.merge_base.to_string();
 
     // Get diff files if scope is "diff".
     let diff_files = if scope.as_deref() == Some("diff") {
@@ -681,7 +690,7 @@ pub async fn handle_search_codebase(
                 );
             }
         };
-        match repo.list_changed_files_workdir(&ctx.merge_base) {
+        match repo.list_changed_files_workdir(&merge_base) {
             Ok(files) => Some(files.iter().map(|f| f.path.clone()).collect::<Vec<_>>()),
             Err(e) => {
                 return JsonRpcResponse::error(

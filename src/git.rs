@@ -32,6 +32,116 @@ pub struct BlameLine {
     pub date: String,
 }
 
+/// A full commit object ID.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CommitId(String);
+
+impl CommitId {
+    pub fn new(oid: impl Into<String>) -> Self {
+        Self(oid.into())
+    }
+}
+
+impl AsRef<str> for CommitId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<CommitId> for String {
+    fn from(commit: CommitId) -> Self {
+        commit.0
+    }
+}
+
+impl std::fmt::Display for CommitId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A named ref class that can be used as a long-lived review base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamedRefKind {
+    Branch,
+    RemoteBranch,
+    Tag,
+    Other,
+}
+
+/// The review base ref provided by the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewBase {
+    /// A branch, remote branch, tag, or other named Git ref.
+    Named {
+        input: String,
+        resolved_commit: CommitId,
+        kind: NamedRefKind,
+    },
+    /// An explicit commit hash or rev expression.
+    Anonymous {
+        input: String,
+        resolved_commit: CommitId,
+    },
+}
+
+impl ReviewBase {
+    pub fn input(&self) -> &str {
+        match self {
+            Self::Named { input, .. } | Self::Anonymous { input, .. } => input,
+        }
+    }
+
+    pub fn resolved_commit(&self) -> &CommitId {
+        match self {
+            Self::Named {
+                resolved_commit, ..
+            }
+            | Self::Anonymous {
+                resolved_commit, ..
+            } => resolved_commit,
+        }
+    }
+
+    pub fn is_migration_eligible(&self) -> bool {
+        matches!(self, Self::Named { .. })
+    }
+}
+
+/// The identity of HEAD when a session is initialized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeadIdentity {
+    Branch {
+        name: String,
+        resolved_commit: CommitId,
+    },
+    Detached {
+        commit: CommitId,
+    },
+}
+
+impl HeadIdentity {
+    pub fn display_name(&self) -> String {
+        match self {
+            Self::Branch { name, .. } => name.clone(),
+            Self::Detached { commit } => short_hash(commit.as_ref()),
+        }
+    }
+
+    pub fn scope_key(&self) -> String {
+        self.display_name()
+    }
+
+    pub fn resolved_commit(&self) -> &CommitId {
+        match self {
+            Self::Branch {
+                resolved_commit, ..
+            } => resolved_commit,
+            Self::Detached { commit } => commit,
+        }
+    }
+}
+
 /// Resolved repository context from a working directory path.
 #[derive(Debug, Clone)]
 pub struct RepoContext {
@@ -39,10 +149,8 @@ pub struct RepoContext {
     pub repo_root: PathBuf,
     /// The worktree path where the command was run.
     pub worktree: PathBuf,
-    /// The branch name at HEAD (or short hash if detached).
-    pub head_ref: String,
-    /// Whether HEAD is detached.
-    pub is_detached: bool,
+    /// The resolved HEAD identity.
+    pub head: HeadIdentity,
 }
 
 // ---------------------------------------------------------------------------
@@ -80,15 +188,18 @@ impl Repo {
             .context("Bare repositories are not supported")?
             .to_path_buf();
 
-        let (head_ref, is_detached) = match self.inner.head() {
+        let head = match self.inner.head() {
             Ok(head) => {
+                let oid = head.target().context("HEAD has no target")?;
+                let commit = CommitId::new(oid.to_string());
                 if head.is_branch() {
                     let name = head.shorthand().unwrap_or("HEAD").to_string();
-                    (name, false)
+                    HeadIdentity::Branch {
+                        name,
+                        resolved_commit: commit,
+                    }
                 } else {
-                    let oid = head.target().context("HEAD has no target")?;
-                    let hash = oid.to_string();
-                    (short_hash(&hash), true)
+                    HeadIdentity::Detached { commit }
                 }
             }
             Err(e) => {
@@ -105,8 +216,7 @@ impl Repo {
         Ok(RepoContext {
             repo_root,
             worktree,
-            head_ref,
-            is_detached,
+            head,
         })
     }
 
@@ -124,30 +234,60 @@ impl Repo {
         Ok(commit.id().to_string())
     }
 
-    /// Whether a ref string resolves through a named branch, remote branch, or tag.
+    /// Resolve a user-provided review base and classify how it was written.
     ///
     /// Explicit commits and rev expressions like `HEAD~1` are valid refs for
     /// diffing, but they should not be treated like long-lived review bases
     /// for review-scope migration.
-    pub fn is_named_ref(&self, refspec: &str) -> bool {
+    pub fn resolve_review_base(&self, refspec: &str) -> Result<ReviewBase> {
+        let resolved_commit = CommitId::new(self.resolve_commit(refspec)?);
+
+        if let Some(kind) = self.named_ref_kind(refspec) {
+            return Ok(ReviewBase::Named {
+                input: refspec.to_string(),
+                resolved_commit,
+                kind,
+            });
+        }
+
+        Ok(ReviewBase::Anonymous {
+            input: refspec.to_string(),
+            resolved_commit,
+        })
+    }
+
+    fn named_ref_kind(&self, refspec: &str) -> Option<NamedRefKind> {
         let candidates = [
-            refspec.to_string(),
-            format!("refs/heads/{refspec}"),
-            format!("refs/remotes/{refspec}"),
-            format!("refs/tags/{refspec}"),
+            (refspec.to_string(), NamedRefKind::Other),
+            (format!("refs/heads/{refspec}"), NamedRefKind::Branch),
+            (
+                format!("refs/remotes/{refspec}"),
+                NamedRefKind::RemoteBranch,
+            ),
+            (format!("refs/tags/{refspec}"), NamedRefKind::Tag),
         ];
 
-        if candidates
-            .iter()
-            .any(|candidate| self.inner.find_reference(candidate).is_ok())
-        {
-            return true;
+        for (candidate, kind) in &candidates {
+            if self.inner.find_reference(candidate).is_ok() {
+                return Some(*kind);
+            }
         }
 
         self.inner
             .revparse_ext(refspec)
-            .map(|(_, reference)| reference.is_some())
-            .unwrap_or(false)
+            .ok()
+            .and_then(|(_, reference)| reference)
+            .map(|reference| {
+                if reference.is_branch() {
+                    NamedRefKind::Branch
+                } else if reference.is_remote() {
+                    NamedRefKind::RemoteBranch
+                } else if reference.is_tag() {
+                    NamedRefKind::Tag
+                } else {
+                    NamedRefKind::Other
+                }
+            })
     }
 
     /// Compute the merge-base (common ancestor) of two refs.
@@ -1050,7 +1190,7 @@ mod tests {
         let (_dir, repo) = setup_test_repo();
         let ctx = repo.context().unwrap();
 
-        assert!(!ctx.head_ref.is_empty());
+        assert!(!ctx.head.display_name().is_empty());
         assert!(ctx.repo_root.exists());
         assert!(ctx.worktree.exists());
     }
@@ -1066,19 +1206,38 @@ mod tests {
     }
 
     #[test]
-    fn test_is_named_ref() {
+    fn test_resolve_review_base_classifies_named_and_anonymous_refs() {
         let (_dir, repo) = setup_test_repo();
         let oid = repo.resolve_commit("base").unwrap();
 
-        assert!(repo.is_named_ref("base"), "tag should be a named ref");
-        assert!(
-            !repo.is_named_ref(&oid),
-            "explicit commit hash should not be a named ref"
-        );
-        assert!(
-            !repo.is_named_ref("HEAD~1"),
-            "rev expression should not be a named ref"
-        );
+        match repo.resolve_review_base("base").unwrap() {
+            ReviewBase::Named {
+                input,
+                resolved_commit,
+                kind,
+            } => {
+                assert_eq!(input, "base");
+                assert_eq!(resolved_commit.as_ref(), oid);
+                assert_eq!(kind, NamedRefKind::Tag);
+            }
+            ReviewBase::Anonymous { .. } => panic!("tag should be a named review base"),
+        }
+
+        match repo.resolve_review_base(&oid).unwrap() {
+            ReviewBase::Anonymous {
+                input,
+                resolved_commit,
+            } => {
+                assert_eq!(input, oid);
+                assert_eq!(resolved_commit.as_ref(), oid);
+            }
+            ReviewBase::Named { .. } => panic!("commit hash should be anonymous"),
+        }
+
+        assert!(matches!(
+            repo.resolve_review_base("HEAD~1").unwrap(),
+            ReviewBase::Anonymous { .. }
+        ));
     }
 
     #[test]
