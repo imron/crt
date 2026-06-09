@@ -98,6 +98,7 @@ clean reuse in GUI and increases coupling to TUI-only state.
   effects.
 - Routed Ctrl-C quit confirmation through core input using adapter-supplied
   confirmation context.
+- Moved active diff-search navigation/clear gating into core input context.
 
 ## Acceptance Criteria
 

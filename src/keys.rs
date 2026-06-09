@@ -71,6 +71,9 @@ fn dispatch_core_input(state: &mut AppState, key: CrosstermKeyEvent) -> bool {
                 PaneFocus::FileList => PaneId::FileList,
                 PaneFocus::Diff => PaneId::Diff,
             }),
+            diff_search_active: state.diff_search_query.is_some(),
+            diff_search_has_matches: state.diff_search_query.is_some()
+                && !state.diff_search_matches.is_empty(),
             quit_confirmation_active: quit_confirmation_active(state),
             ..InteractionContext::default()
         },
@@ -1072,36 +1075,6 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
             state.diff_search_input.clear();
             state.diff_search_cursor = 0;
             return;
-        }
-        (KeyCode::Char('n'), KeyModifiers::NONE) => {
-            if state.diff_search_query.is_some() && !state.diff_search_matches.is_empty() {
-                if dispatch_core_input(state, key) {
-                    return;
-                }
-                navigate_diff_search_match(state, Direction::Next);
-                return;
-            }
-            // Fall through if no active search — `n` might be used elsewhere.
-        }
-        (KeyCode::Char('N'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
-            if state.diff_search_query.is_some() && !state.diff_search_matches.is_empty() {
-                if dispatch_core_input(state, key) {
-                    return;
-                }
-                navigate_diff_search_match(state, Direction::Prev);
-                return;
-            }
-            // Fall through if no active search.
-        }
-        (KeyCode::Esc, KeyModifiers::NONE) => {
-            // Escape clears search highlights.
-            if state.diff_search_query.is_some() {
-                if dispatch_core_input(state, key) {
-                    return;
-                }
-                clear_diff_search(state);
-                return;
-            }
         }
         (KeyCode::Tab, KeyModifiers::NONE | KeyModifiers::SHIFT) => {
             if dispatch_core_input(state, key) {

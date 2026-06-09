@@ -121,6 +121,10 @@ pub struct InteractionContext {
     pub definition_results_visible: bool,
     /// Currently focused pane, supplied by the adapter.
     pub focused_pane: Option<PaneId>,
+    /// Whether a diff-search query is active and can be cleared.
+    pub diff_search_active: bool,
+    /// Whether active diff-search navigation has matches.
+    pub diff_search_has_matches: bool,
     /// Whether the adapter still has an active quit confirmation prompt.
     pub quit_confirmation_active: bool,
     /// Word under the cursor, supplied by the adapter for commands like `gd`.
@@ -340,21 +344,24 @@ impl CoreInteractionEngine {
                 vec![CoreEffect::ToggleDiffBase]
             }
             InputEvent::Key(key)
-                if key.kind == KeyEventKind::Press
+                if context.diff_search_has_matches
+                    && key.kind == KeyEventKind::Press
                     && key_has_no_modifier(key.modifiers)
                     && key.key == Key::Char('n') =>
             {
                 vec![CoreEffect::DiffSearch(DiffSearchEffect::NextMatch)]
             }
             InputEvent::Key(key)
-                if key.kind == KeyEventKind::Press
+                if context.diff_search_has_matches
+                    && key.kind == KeyEventKind::Press
                     && key_has_no_command_modifier(key.modifiers)
                     && key.key == Key::Char('N') =>
             {
                 vec![CoreEffect::DiffSearch(DiffSearchEffect::PreviousMatch)]
             }
             InputEvent::Key(key)
-                if key.kind == KeyEventKind::Press
+                if context.diff_search_active
+                    && key.kind == KeyEventKind::Press
                     && key_has_no_modifier(key.modifiers)
                     && key.key == Key::Escape =>
             {
@@ -1376,10 +1383,15 @@ mod tests {
     #[test]
     fn diff_search_navigation_keys_request_search_effects() {
         let mut engine = CoreInteractionEngine::new();
+        let context = InteractionContext {
+            diff_search_active: true,
+            diff_search_has_matches: true,
+            ..InteractionContext::default()
+        };
 
         let next = engine.handle_input(
             key_event(Key::Char('n'), InputModifiers::default()),
-            &InteractionContext::default(),
+            &context,
         );
         let previous = engine.handle_input(
             key_event(
@@ -1389,12 +1401,10 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            &InteractionContext::default(),
+            &context,
         );
-        let clear = engine.handle_input(
-            key_event(Key::Escape, InputModifiers::default()),
-            &InteractionContext::default(),
-        );
+        let clear =
+            engine.handle_input(key_event(Key::Escape, InputModifiers::default()), &context);
 
         assert_eq!(
             next,
@@ -1405,6 +1415,23 @@ mod tests {
             vec![CoreEffect::DiffSearch(DiffSearchEffect::PreviousMatch)]
         );
         assert_eq!(clear, vec![CoreEffect::DiffSearch(DiffSearchEffect::Clear)]);
+    }
+
+    #[test]
+    fn inactive_diff_search_keys_do_not_request_search_effects() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let next = engine.handle_input(
+            key_event(Key::Char('n'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+        let clear = engine.handle_input(
+            key_event(Key::Escape, InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+
+        assert!(next.is_empty());
+        assert!(clear.is_empty());
     }
 
     #[test]
