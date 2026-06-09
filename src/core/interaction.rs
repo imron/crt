@@ -156,15 +156,23 @@ impl CoreInteractionEngine {
     pub fn handle_input(&mut self, event: InputEvent, context: &InteractionContext) -> CoreEffects {
         if let InputEvent::Key(key) = &event {
             if key.kind == KeyEventKind::Press {
+                if context.help_visible {
+                    if help_dismiss_key(key) {
+                        return vec![CoreEffect::DismissHelp];
+                    }
+                    return Vec::new();
+                }
                 if context.search_results_visible {
                     if let Some(effect) = search_results_key_effect(key) {
                         return vec![CoreEffect::SearchResults(effect)];
                     }
+                    return Vec::new();
                 }
                 if context.definition_results_visible {
                     if let Some(effect) = definition_results_key_effect(key) {
                         return vec![CoreEffect::DefinitionResults(effect)];
                     }
+                    return Vec::new();
                 }
                 if let Some(effect) = pane_key_effect(key, context.focused_pane) {
                     return vec![CoreEffect::Pane(effect)];
@@ -176,13 +184,6 @@ impl CoreInteractionEngine {
         }
 
         match event {
-            InputEvent::Key(key)
-                if context.help_visible
-                    && key.kind == KeyEventKind::Press
-                    && help_dismiss_key(&key) =>
-            {
-                vec![CoreEffect::DismissHelp]
-            }
             InputEvent::Key(key)
                 if key.kind == KeyEventKind::Press
                     && key_has_control_modifier_only(key.modifiers)
@@ -785,6 +786,22 @@ mod tests {
     }
 
     #[test]
+    fn help_visible_swallows_non_dismiss_keys() {
+        let mut engine = CoreInteractionEngine::new();
+        let context = InteractionContext {
+            help_visible: true,
+            ..InteractionContext::default()
+        };
+
+        let effects = engine.handle_input(
+            key_event(Key::Char('j'), InputModifiers::default()),
+            &context,
+        );
+
+        assert!(effects.is_empty());
+    }
+
+    #[test]
     fn search_results_visible_routes_overlay_keys_before_global_actions() {
         let mut engine = CoreInteractionEngine::new();
         let context = InteractionContext {
@@ -849,6 +866,22 @@ mod tests {
     }
 
     #[test]
+    fn search_results_visible_swallows_non_overlay_keys() {
+        let mut engine = CoreInteractionEngine::new();
+        let context = InteractionContext {
+            search_results_visible: true,
+            ..InteractionContext::default()
+        };
+
+        let effects = engine.handle_input(
+            key_event(Key::Char('h'), InputModifiers::default()),
+            &context,
+        );
+
+        assert!(effects.is_empty());
+    }
+
+    #[test]
     fn definition_results_visible_routes_overlay_keys_before_global_actions() {
         let mut engine = CoreInteractionEngine::new();
         let context = InteractionContext {
@@ -892,6 +925,22 @@ mod tests {
                 DefinitionResultsEffect::AcceptSelected
             )]
         );
+    }
+
+    #[test]
+    fn definition_results_visible_swallows_non_overlay_keys() {
+        let mut engine = CoreInteractionEngine::new();
+        let context = InteractionContext {
+            definition_results_visible: true,
+            ..InteractionContext::default()
+        };
+
+        let effects = engine.handle_input(
+            key_event(Key::Char('l'), InputModifiers::default()),
+            &context,
+        );
+
+        assert!(effects.is_empty());
     }
 
     #[test]
