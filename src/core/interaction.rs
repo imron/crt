@@ -20,6 +20,7 @@ pub enum CoreEffect {
     DiffCursor(DiffCursorEffect),
     SearchResults(SearchResultsEffect),
     DefinitionResults(DefinitionResultsEffect),
+    Pane(PaneEffect),
     Quit,
     Suspend,
     ShowHelp,
@@ -92,6 +93,12 @@ pub enum DefinitionResultsEffect {
     AcceptSelected,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaneEffect {
+    ActivateFileListSelection,
+    ActivateDiffSelection,
+}
+
 /// Connection lifecycle states for UI adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
@@ -112,6 +119,8 @@ pub struct InteractionContext {
     pub search_results_visible: bool,
     /// Definition results overlay visibility, supplied by the adapter.
     pub definition_results_visible: bool,
+    /// Currently focused pane, supplied by the adapter.
+    pub focused_pane: Option<PaneId>,
     /// Word under the cursor, supplied by the adapter for commands like `gd`.
     pub fallback_word: Option<String>,
 }
@@ -150,6 +159,9 @@ impl CoreInteractionEngine {
                     if let Some(effect) = definition_results_key_effect(key) {
                         return vec![CoreEffect::DefinitionResults(effect)];
                     }
+                }
+                if let Some(effect) = pane_key_effect(key, context.focused_pane) {
+                    return vec![CoreEffect::Pane(effect)];
                 }
                 if let Some(effect) = diff_cursor_key_effect(key) {
                     return vec![CoreEffect::DiffCursor(effect)];
@@ -448,6 +460,21 @@ fn definition_results_key_effect(key: &super::input::KeyEvent) -> Option<Definit
         Key::Enter if key_has_no_modifier(key.modifiers) => {
             Some(DefinitionResultsEffect::AcceptSelected)
         }
+        _ => None,
+    }
+}
+
+fn pane_key_effect(
+    key: &super::input::KeyEvent,
+    focused_pane: Option<PaneId>,
+) -> Option<PaneEffect> {
+    if key.key != Key::Enter || !key_has_no_modifier(key.modifiers) {
+        return None;
+    }
+
+    match focused_pane {
+        Some(PaneId::FileList) => Some(PaneEffect::ActivateFileListSelection),
+        Some(PaneId::Diff) => Some(PaneEffect::ActivateDiffSelection),
         _ => None,
     }
 }
@@ -1027,6 +1054,47 @@ mod tests {
             bigword_backward,
             vec![CoreEffect::DiffCursor(DiffCursorEffect::BigWordBackward)]
         );
+    }
+
+    #[test]
+    fn pane_enter_requests_focused_pane_activation() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let file_list = engine.handle_input(
+            key_event(Key::Enter, InputModifiers::default()),
+            &InteractionContext {
+                focused_pane: Some(PaneId::FileList),
+                ..InteractionContext::default()
+            },
+        );
+        let diff = engine.handle_input(
+            key_event(Key::Enter, InputModifiers::default()),
+            &InteractionContext {
+                focused_pane: Some(PaneId::Diff),
+                ..InteractionContext::default()
+            },
+        );
+
+        assert_eq!(
+            file_list,
+            vec![CoreEffect::Pane(PaneEffect::ActivateFileListSelection)]
+        );
+        assert_eq!(
+            diff,
+            vec![CoreEffect::Pane(PaneEffect::ActivateDiffSelection)]
+        );
+    }
+
+    #[test]
+    fn enter_without_focused_pane_has_no_pane_action() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(Key::Enter, InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+
+        assert!(effects.is_empty());
     }
 
     #[test]

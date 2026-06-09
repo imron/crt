@@ -94,6 +94,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   accept-selected keys through core input as typed overlay effects.
 - Routed diff cursor line, page, viewport, horizontal, and word movement keys
   through core input as typed cursor effects.
+- Routed focused-pane `Enter` activation through core input as typed pane
+  effects.
 
 ## Acceptance Criteria
 

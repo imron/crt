@@ -17,7 +17,7 @@ use crate::core::search as core_search;
 use crate::core::{
     CoreEffect, DefinitionResultsEffect, DiffCursorEffect, DiffSearchEffect, InputEvent,
     InputModifiers, InteractionContext, Key as CoreKey, KeyEvent as CoreKeyEvent,
-    KeyEventKind as CoreKeyEventKind, PaneId, PromptKind, SearchResultsEffect,
+    KeyEventKind as CoreKeyEventKind, PaneEffect, PaneId, PromptKind, SearchResultsEffect,
 };
 use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
@@ -67,6 +67,10 @@ fn dispatch_core_input(state: &mut AppState, key: CrosstermKeyEvent) -> bool {
             help_visible: state.show_help,
             search_results_visible: state.search_results.is_some(),
             definition_results_visible: state.definition_results.is_some(),
+            focused_pane: Some(match state.pane_focus {
+                PaneFocus::FileList => PaneId::FileList,
+                PaneFocus::Diff => PaneId::Diff,
+            }),
             ..InteractionContext::default()
         },
     );
@@ -155,6 +159,9 @@ fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
             }
             CoreEffect::DefinitionResults(effect) => {
                 apply_definition_results_effect(state, effect);
+            }
+            CoreEffect::Pane(effect) => {
+                apply_pane_effect(state, effect);
             }
             CoreEffect::Quit => {
                 state.should_quit = true;
@@ -538,6 +545,26 @@ fn apply_definition_results_effect(state: &mut AppState, effect: DefinitionResul
             state.definition_results = None;
             if let Some(definition) = selected {
                 navigate_to_definition(state, &definition);
+            }
+        }
+    }
+}
+
+fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
+    match effect {
+        PaneEffect::ActivateFileListSelection => {
+            if state.show_diff_pane {
+                state.pane_focus = PaneFocus::Diff;
+            }
+        }
+        PaneEffect::ActivateDiffSelection => {
+            if let Some(entry) = state.selected_file_entry() {
+                if matches!(entry.status, ReviewStatus::Reviewed { .. })
+                    && !state.reviewed_diff_expanded
+                {
+                    state.reviewed_diff_expanded = true;
+                    state.diff_scroll = 0;
+                }
             }
         }
     }
@@ -1198,12 +1225,6 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
     if dispatch_core_input(state, key) {
         return;
     }
-
-    // --- Pane-specific keys ---
-    match state.pane_focus {
-        PaneFocus::FileList => handle_file_list_key(state, key),
-        PaneFocus::Diff => handle_diff_key(state, key),
-    }
 }
 
 /// Toggle visibility of a pane. At least one pane must remain visible.
@@ -1614,36 +1635,6 @@ fn navigate_file(state: &mut AppState, dir: Direction) {
 fn toggle_review(state: &mut AppState) {
     if state.files.get(state.selected_file).is_some() {
         state.pending_review_toggle = true;
-    }
-}
-
-/// File list pane keys.
-fn handle_file_list_key(state: &mut AppState, key: CrosstermKeyEvent) {
-    match key.code {
-        KeyCode::Enter => {
-            if state.show_diff_pane {
-                state.pane_focus = PaneFocus::Diff;
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Diff pane keys.
-fn handle_diff_key(state: &mut AppState, key: CrosstermKeyEvent) {
-    match key.code {
-        KeyCode::Enter => {
-            // Expand reviewed file diff or no-op.
-            if let Some(entry) = state.selected_file_entry() {
-                if matches!(entry.status, ReviewStatus::Reviewed { .. })
-                    && !state.reviewed_diff_expanded
-                {
-                    state.reviewed_diff_expanded = true;
-                    state.diff_scroll = 0;
-                }
-            }
-        }
-        _ => {}
     }
 }
 
