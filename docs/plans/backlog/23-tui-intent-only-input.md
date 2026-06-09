@@ -101,6 +101,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
 - Moved active diff-search navigation/clear gating into core input context.
 - Removed normal-mode and overlay key fallback semantics from the TUI adapter
   after routing those paths through core input.
+- Added TUI mouse-to-core input translation with pane-local positions and
+  semantic pane/text hits while preserving existing mouse behavior.
 
 ## Acceptance Criteria
 

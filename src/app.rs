@@ -26,6 +26,10 @@ use crate::core::interaction::CoreInteractionEngine;
 use crate::core::prompt::PromptId;
 use crate::core::review;
 use crate::core::search as core_search;
+use crate::core::{
+    InputEvent, InputModifiers, MouseButton as CoreMouseButton, MouseEvent as CoreMouseEvent,
+    MouseEventKind as CoreMouseEventKind, PaneId, PointerSemanticHit, TextAnchor,
+};
 use crate::keys;
 use crate::model::{
     ConnectionContext, ContentMode, DefinitionLocation, FileEntry, PaneFocus, RenderVariant,
@@ -474,6 +478,112 @@ impl AppState {
         }
     }
 
+    fn input_event_from_mouse(&self, mouse: &MouseEvent) -> Option<InputEvent> {
+        let (kind, button) = match mouse.kind {
+            MouseEventKind::Down(button) => {
+                (CoreMouseEventKind::Down, Some(core_mouse_button(button)?))
+            }
+            MouseEventKind::Up(button) => {
+                (CoreMouseEventKind::Up, Some(core_mouse_button(button)?))
+            }
+            MouseEventKind::Drag(button) => {
+                (CoreMouseEventKind::Drag, Some(core_mouse_button(button)?))
+            }
+            MouseEventKind::Moved => (CoreMouseEventKind::Move, None),
+            MouseEventKind::ScrollDown => (CoreMouseEventKind::ScrollDown, None),
+            MouseEventKind::ScrollUp => (CoreMouseEventKind::ScrollUp, None),
+            _ => return None,
+        };
+
+        let pane = self.pane_at(mouse.column, mouse.row);
+        let local_pos = pane.map(|pane| {
+            let area = self.area_for_pane(pane);
+            (
+                mouse.column.saturating_sub(area.x),
+                mouse.row.saturating_sub(area.y),
+            )
+        });
+
+        Some(InputEvent::Mouse(CoreMouseEvent {
+            kind,
+            button,
+            local_pos,
+            semantic_hit: pane.and_then(|pane| self.pointer_semantic_hit(pane, mouse)),
+            modifiers: InputModifiers {
+                ctrl: mouse.modifiers.contains(event::KeyModifiers::CONTROL),
+                alt: mouse.modifiers.contains(event::KeyModifiers::ALT),
+                shift: mouse.modifiers.contains(event::KeyModifiers::SHIFT),
+            },
+        }))
+    }
+
+    fn area_for_pane(&self, pane: PaneFocus) -> Rect {
+        match pane {
+            PaneFocus::FileList => self.file_list_area,
+            PaneFocus::Diff => self.diff_area,
+        }
+    }
+
+    fn pointer_semantic_hit(
+        &self,
+        pane: PaneFocus,
+        mouse: &MouseEvent,
+    ) -> Option<PointerSemanticHit> {
+        let area = self.area_for_pane(pane);
+        let inner_top = area.y.saturating_add(1);
+        let inner_left = area.x.saturating_add(1);
+        let inner_bottom = area.bottom().saturating_sub(1);
+
+        let pane_id = match pane {
+            PaneFocus::FileList => PaneId::FileList,
+            PaneFocus::Diff => PaneId::Diff,
+        };
+
+        let text_anchor = if mouse.row >= inner_top && mouse.row < inner_bottom {
+            match pane {
+                PaneFocus::FileList => Some(TextAnchor {
+                    line: self
+                        .file_list_scroll
+                        .saturating_add((mouse.row - inner_top) as usize),
+                    column: mouse.column.saturating_sub(inner_left) as usize,
+                }),
+                PaneFocus::Diff => Some(TextAnchor {
+                    line: self
+                        .diff_scroll
+                        .saturating_add((mouse.row - inner_top) as usize),
+                    column: (mouse.column as usize)
+                        .saturating_sub(inner_left as usize + self.diff_content_start_col()),
+                }),
+            }
+        } else {
+            None
+        };
+
+        Some(PointerSemanticHit {
+            pane_id,
+            region_id: self.pointer_region_id(pane, text_anchor),
+            text_anchor,
+        })
+    }
+
+    fn pointer_region_id(
+        &self,
+        pane: PaneFocus,
+        text_anchor: Option<TextAnchor>,
+    ) -> Option<String> {
+        let anchor = text_anchor?;
+        match pane {
+            PaneFocus::FileList => match self.file_list_row_to_file.get(anchor.line) {
+                Some(Some(file_idx)) => self
+                    .files
+                    .get(*file_idx)
+                    .map(|entry| format!("file:{}", entry.change.path)),
+                _ => Some(format!("file-list-row:{}", anchor.line)),
+            },
+            PaneFocus::Diff => Some(format!("diff-line:{}", anchor.line)),
+        }
+    }
+
     /// Load blame data for the currently selected file.
     pub fn load_blame(&mut self) {
         self.head_blame.clear();
@@ -917,6 +1027,13 @@ impl App {
 
     /// Handle mouse events: selection, scroll wheel, border drag.
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
+        if let Some(event) = self.state.input_event_from_mouse(&mouse) {
+            let _ = self
+                .state
+                .core_interaction
+                .handle_input(event, &Default::default());
+        }
+
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 // Check if the user clicked on the pane border to start resizing.
@@ -1446,6 +1563,14 @@ impl App {
     }
 }
 
+fn core_mouse_button(button: MouseButton) -> Option<CoreMouseButton> {
+    match button {
+        MouseButton::Left => Some(CoreMouseButton::Left),
+        MouseButton::Right => Some(CoreMouseButton::Right),
+        MouseButton::Middle => Some(CoreMouseButton::Middle),
+    }
+}
+
 fn is_identifier_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -1668,6 +1793,44 @@ fn restore_terminal_raw() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{ChangeKind, DiffContent, FileChange, FileEntry, ReviewStatus};
+
+    fn test_context() -> ConnectionContext {
+        ConnectionContext {
+            repo_root: "/repo".to_string(),
+            worktree: "/repo".to_string(),
+            base_ref: "main".to_string(),
+            head_ref: "feature".to_string(),
+            merge_base: "abc123".to_string(),
+        }
+    }
+
+    fn test_file(path: &str) -> FileEntry {
+        FileEntry {
+            change: FileChange {
+                path: path.to_string(),
+                old_path: None,
+                kind: ChangeKind::Modified,
+            },
+            status: ReviewStatus::Unreviewed,
+            diff: DiffContent {
+                hunks: Vec::new(),
+                is_binary: false,
+                diff_hash: format!("hash-{path}"),
+            },
+        }
+    }
+
+    fn test_state() -> AppState {
+        AppState::new(
+            StyleConfig::default(),
+            30,
+            crate::config::DiffAlgorithm::Myers,
+            None,
+            test_context(),
+            vec![test_file("src/lib.rs")],
+        )
+    }
 
     #[test]
     fn test_base64_encode() {
@@ -1703,6 +1866,81 @@ mod tests {
             word_selected: false,
         };
         assert_eq!(sel.normalized(), (5, 2, 10, 4));
+    }
+
+    #[test]
+    fn mouse_input_event_maps_file_list_hit() {
+        let mut state = test_state();
+        state.file_list_area = Rect::new(0, 0, 30, 10);
+        state.file_list_row_to_file = vec![Some(0)];
+
+        let event = state
+            .input_event_from_mouse(&MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 5,
+                row: 1,
+                modifiers: event::KeyModifiers::CONTROL,
+            })
+            .expect("expected mouse input");
+
+        assert_eq!(
+            event,
+            InputEvent::Mouse(CoreMouseEvent {
+                kind: CoreMouseEventKind::Down,
+                button: Some(CoreMouseButton::Left),
+                local_pos: Some((5, 1)),
+                semantic_hit: Some(PointerSemanticHit {
+                    pane_id: PaneId::FileList,
+                    region_id: Some("file:src/lib.rs".to_string()),
+                    text_anchor: Some(TextAnchor { line: 0, column: 4 }),
+                }),
+                modifiers: InputModifiers {
+                    ctrl: true,
+                    alt: false,
+                    shift: false,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn mouse_input_event_maps_diff_hit_to_content_anchor() {
+        let mut state = test_state();
+        state.show_file_list = false;
+        state.diff_area = Rect::new(0, 0, 80, 20);
+        state.diff_scroll = 10;
+        state.diff_gutter_cols = 4;
+
+        let event = state
+            .input_event_from_mouse(&MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 12,
+                row: 3,
+                modifiers: event::KeyModifiers::SHIFT,
+            })
+            .expect("expected mouse input");
+
+        assert_eq!(
+            event,
+            InputEvent::Mouse(CoreMouseEvent {
+                kind: CoreMouseEventKind::ScrollDown,
+                button: None,
+                local_pos: Some((12, 3)),
+                semantic_hit: Some(PointerSemanticHit {
+                    pane_id: PaneId::Diff,
+                    region_id: Some("diff-line:12".to_string()),
+                    text_anchor: Some(TextAnchor {
+                        line: 12,
+                        column: 4,
+                    }),
+                }),
+                modifiers: InputModifiers {
+                    ctrl: false,
+                    alt: false,
+                    shift: true,
+                },
+            })
+        );
     }
 
     #[test]
