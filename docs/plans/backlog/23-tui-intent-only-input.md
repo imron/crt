@@ -109,6 +109,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   semantic pane/cursor effects.
 - Migrated drag selection, double-click copy, and selection highlighting to
   semantic text anchors instead of raw terminal content coordinates.
+- Moved core-effect application and app-state update helpers out of `keys.rs`
+  into the App update step so key handling remains an input/prompt adapter.
 
 ## Acceptance Criteria
 

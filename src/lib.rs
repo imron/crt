@@ -5,6 +5,7 @@
 //! server.
 
 pub mod app;
+pub(crate) mod app_update;
 pub mod client;
 pub mod config;
 pub mod core;
