@@ -105,6 +105,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   semantic pane/text hits while preserving existing mouse behavior.
 - Routed diff-pane mouse-wheel scrolling through core input as semantic cursor
   effects.
+- Routed file-list and diff-pane left-click activation through core input as
+  semantic pane/cursor effects.
 
 ## Acceptance Criteria
 

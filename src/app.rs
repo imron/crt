@@ -1027,11 +1027,19 @@ impl App {
 
     /// Handle mouse events: selection, scroll wheel, border drag.
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
-        if let Some(event) = self.state.input_event_from_mouse(&mouse) {
-            let effects = self
-                .state
-                .core_interaction
-                .handle_input(event, &Default::default());
+        let mut pending_core_effects = Some(
+            self.state
+                .input_event_from_mouse(&mouse)
+                .map(|event| {
+                    self.state
+                        .core_interaction
+                        .handle_input(event, &Default::default())
+                })
+                .unwrap_or_default(),
+        );
+
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            let effects = pending_core_effects.take().unwrap_or_default();
             if keys::apply_core_effects(&mut self.state, effects) {
                 return;
             }
@@ -1069,14 +1077,10 @@ impl App {
                     return; // skip drag selection setup
                 }
 
-                if let Some(pane) = pane {
-                    // Click in the file list selects a file.
-                    if pane == PaneFocus::FileList {
-                        self.handle_file_list_click(mouse.column, mouse.row);
-                    } else {
-                        self.set_diff_cursor_from_mouse(mouse.column, mouse.row);
-                    }
+                let effects = pending_core_effects.take().unwrap_or_default();
+                keys::apply_core_effects(&mut self.state, effects);
 
+                if let Some(pane) = pane {
                     // Record mouse-down anchor; drag starts selection.
                     let pane_area = match pane {
                         PaneFocus::FileList => self.state.file_list_area,
@@ -1385,27 +1389,6 @@ impl App {
         self.state.on_file_changed();
     }
 
-    /// Move the diff cursor to the mouse position.
-    fn set_diff_cursor_from_mouse(&mut self, col: u16, row: u16) {
-        let area = self.state.diff_area;
-        let inner_top = area.y + 1;
-        let inner_left = area.x + 1;
-        let inner_bottom = area.bottom().saturating_sub(1);
-        if row < inner_top || row >= inner_bottom {
-            return;
-        }
-
-        let view_row = (row - inner_top) as usize;
-        let display_row = self.state.diff_scroll.saturating_add(view_row);
-        self.state.diff_line_cursor = display_row;
-
-        let content_start = inner_left as usize + self.state.diff_content_start_col();
-        self.state.diff_col_cursor = (col as usize).saturating_sub(content_start);
-
-        self.state.clamp_cursor_and_scroll();
-        self.state.clamp_col_cursor();
-    }
-
     /// Select the word under the given terminal position and copy to clipboard.
     ///
     /// In the diff pane, this maps through rendered diff text for stable
@@ -1522,24 +1505,6 @@ impl App {
                 let path = &entry.change.path;
                 copy_to_clipboard(path);
                 self.state.status_message = Some((format!("Copied: {path}"), Instant::now()));
-            }
-        }
-    }
-
-    /// Map a mouse click in the file list pane to a file selection.
-    fn handle_file_list_click(&mut self, _col: u16, row: u16) {
-        let area = self.state.file_list_area;
-        let inner_top = area.y + 1; // skip border
-
-        // Convert screen row to content row (accounting for scroll).
-        let content_row =
-            (row as usize).saturating_sub(inner_top as usize) + self.state.file_list_scroll;
-
-        // Look up which file (if any) this row corresponds to.
-        if let Some(&Some(file_idx)) = self.state.file_list_row_to_file.get(content_row) {
-            if file_idx < self.state.files.len() && file_idx != self.state.selected_file {
-                self.state.selected_file = file_idx;
-                self.state.on_file_changed();
             }
         }
     }
