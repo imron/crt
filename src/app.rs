@@ -1028,10 +1028,13 @@ impl App {
     /// Handle mouse events: selection, scroll wheel, border drag.
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
         if let Some(event) = self.state.input_event_from_mouse(&mouse) {
-            let _ = self
+            let effects = self
                 .state
                 .core_interaction
                 .handle_input(event, &Default::default());
+            if keys::apply_core_effects(&mut self.state, effects) {
+                return;
+            }
         }
 
         match mouse.kind {
@@ -1139,27 +1142,6 @@ impl App {
                     }
                     // Keep the selection visible until next keypress.
                     self.state.mouse_selection = Some(sel);
-                }
-            }
-            MouseEventKind::ScrollDown => {
-                if self.state.pane_at(mouse.column, mouse.row) == Some(PaneFocus::Diff) {
-                    self.state.diff_scroll = self.state.diff_scroll.saturating_add(3);
-                    self.state.clamp_diff_scroll();
-                    // Keep cursor visible in viewport.
-                    if self.state.diff_line_cursor < self.state.diff_scroll {
-                        self.state.diff_line_cursor = self.state.diff_scroll;
-                    }
-                }
-            }
-            MouseEventKind::ScrollUp => {
-                if self.state.pane_at(mouse.column, mouse.row) == Some(PaneFocus::Diff) {
-                    self.state.diff_scroll = self.state.diff_scroll.saturating_sub(3);
-                    // Keep cursor visible in viewport.
-                    let bottom =
-                        self.state.diff_scroll + self.state.diff_view_height.saturating_sub(1);
-                    if self.state.diff_line_cursor > bottom {
-                        self.state.diff_line_cursor = bottom;
-                    }
                 }
             }
             _ => {}

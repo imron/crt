@@ -1,7 +1,7 @@
 //! Core interaction entrypoint scaffold.
 
 use super::command::{self, CommandParse};
-use super::input::{InputEvent, Key, KeyEventKind};
+use super::input::{InputEvent, Key, KeyEventKind, MouseEventKind};
 use super::navigation::Direction;
 use super::prompt::{PromptId, PromptKind, PromptRequest};
 use super::render::PaneId;
@@ -60,6 +60,8 @@ pub enum DiffCursorEffect {
     HalfPageUp,
     ScrollDown,
     ScrollUp,
+    WheelDown,
+    WheelUp,
     Top,
     Bottom,
     ViewTop,
@@ -154,6 +156,12 @@ impl CoreInteractionEngine {
 
     /// Single core input entrypoint for UI adapters.
     pub fn handle_input(&mut self, event: InputEvent, context: &InteractionContext) -> CoreEffects {
+        if let InputEvent::Mouse(mouse) = &event {
+            if let Some(effect) = mouse_diff_cursor_effect(mouse) {
+                return vec![CoreEffect::DiffCursor(effect)];
+            }
+        }
+
         if let InputEvent::Key(key) = &event {
             if key.kind == KeyEventKind::Press {
                 if context.help_visible {
@@ -559,6 +567,18 @@ fn diff_cursor_key_effect(key: &super::input::KeyEvent) -> Option<DiffCursorEffe
         Key::Char('B') if key_has_no_command_modifier(key.modifiers) => {
             Some(DiffCursorEffect::BigWordBackward)
         }
+        _ => None,
+    }
+}
+
+fn mouse_diff_cursor_effect(mouse: &super::input::MouseEvent) -> Option<DiffCursorEffect> {
+    if mouse.semantic_hit.as_ref()?.pane_id != PaneId::Diff {
+        return None;
+    }
+
+    match mouse.kind {
+        MouseEventKind::ScrollDown => Some(DiffCursorEffect::WheelDown),
+        MouseEventKind::ScrollUp => Some(DiffCursorEffect::WheelUp),
         _ => None,
     }
 }
@@ -1154,6 +1174,68 @@ mod tests {
             bigword_backward,
             vec![CoreEffect::DiffCursor(DiffCursorEffect::BigWordBackward)]
         );
+    }
+
+    #[test]
+    fn semantic_diff_mouse_scroll_requests_cursor_effects() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let down = engine.handle_input(
+            InputEvent::Mouse(super::super::input::MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                button: None,
+                local_pos: Some((4, 2)),
+                semantic_hit: Some(super::super::input::PointerSemanticHit {
+                    pane_id: PaneId::Diff,
+                    region_id: Some("diff-line:8".to_string()),
+                    text_anchor: Some(super::super::input::TextAnchor { line: 8, column: 0 }),
+                }),
+                modifiers: InputModifiers::default(),
+            }),
+            &InteractionContext::default(),
+        );
+        let up = engine.handle_input(
+            InputEvent::Mouse(super::super::input::MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                button: None,
+                local_pos: Some((4, 2)),
+                semantic_hit: Some(super::super::input::PointerSemanticHit {
+                    pane_id: PaneId::Diff,
+                    region_id: Some("diff-line:8".to_string()),
+                    text_anchor: Some(super::super::input::TextAnchor { line: 8, column: 0 }),
+                }),
+                modifiers: InputModifiers::default(),
+            }),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(
+            down,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::WheelDown)]
+        );
+        assert_eq!(up, vec![CoreEffect::DiffCursor(DiffCursorEffect::WheelUp)]);
+    }
+
+    #[test]
+    fn non_diff_mouse_scroll_has_no_cursor_effect() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            InputEvent::Mouse(super::super::input::MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                button: None,
+                local_pos: Some((4, 2)),
+                semantic_hit: Some(super::super::input::PointerSemanticHit {
+                    pane_id: PaneId::FileList,
+                    region_id: Some("file-list-row:0".to_string()),
+                    text_anchor: Some(super::super::input::TextAnchor { line: 0, column: 0 }),
+                }),
+                modifiers: InputModifiers::default(),
+            }),
+            &InteractionContext::default(),
+        );
+
+        assert!(effects.is_empty());
     }
 
     #[test]
