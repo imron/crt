@@ -4,7 +4,6 @@
 //! on the right, with a status bar at the bottom. Either pane can be
 //! hidden to give the other full width.
 
-pub mod comments;
 pub mod diff_view;
 pub mod file_list;
 pub mod word_diff;
