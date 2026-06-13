@@ -20,9 +20,10 @@ use crate::app::{AppState, InputMode};
 use crate::config::{PanelStyle, StyleConfig};
 use crate::git;
 use crate::model::ReviewStatus;
+use crate::tui::TuiState;
 
 /// Draw the entire UI for the current state.
-pub fn draw(frame: &mut Frame, state: &mut AppState) {
+pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState) {
     // Fill the entire frame with the application background color.
     let bg_style = Style::default().bg(*state.styles.bg);
     frame.render_widget(Block::default().style(bg_style), frame.area());
@@ -46,7 +47,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) {
             state.file_list_area = panes[0];
             state.diff_area = panes[1];
             file_list::draw(frame, state, panes[0]);
-            diff_view::draw(frame, state, panes[1]);
+            diff_view::draw(frame, state, tui_state, panes[1]);
         }
         (true, false) => {
             state.file_list_area = main_area;
@@ -56,7 +57,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) {
         (false, true) => {
             state.file_list_area = Rect::default();
             state.diff_area = main_area;
-            diff_view::draw(frame, state, main_area);
+            diff_view::draw(frame, state, tui_state, main_area);
         }
         (false, false) => {
             // Should never happen — toggle logic prevents it.

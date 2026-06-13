@@ -236,9 +236,6 @@ pub struct AppState {
     /// Set to true when the terminal regains focus — triggers a full
     /// file list reload on the next event loop iteration.
     pub pending_refresh: bool,
-    /// Cached diff content — avoids rebuilding all `Line<'static>` on every
-    /// frame when only the scroll offset changed.
-    pub diff_cache: Option<crate::tui::render::diff_view::DiffCache>,
     /// Current input mode (Normal vs Command).
     pub input_mode: InputMode,
     /// Command-mode input buffer (the text after `:`).
@@ -333,7 +330,6 @@ impl AppState {
             should_suspend: false,
             should_quit: false,
             pending_refresh: false,
-            diff_cache: None,
             input_mode: InputMode::Normal,
             command_input: String::new(),
             command_cursor: 0,
@@ -633,8 +629,6 @@ impl AppState {
                 }
             }
         }
-        // Invalidate the diff cache so the view rebuilds.
-        self.diff_cache = None;
     }
 
     /// Reload the diff for the currently selected file, respecting
