@@ -147,7 +147,7 @@ fn cmd_review(base: Option<String>, reset: bool, standalone: bool) -> Result<()>
         }
 
         // Launch the TUI.
-        let mut tui = app::App::new(client, init)
+        let mut tui = tui::Tui::new(client, init)
             .await
             .context("Failed to initialize TUI")?;
         tui.run().await.context("TUI error")?;

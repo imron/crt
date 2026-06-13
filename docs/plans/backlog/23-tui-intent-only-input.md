@@ -112,6 +112,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
 - Moved core-effect application and app-state update helpers out of `keys.rs`
   into the App update step so key handling remains an input/prompt adapter.
 - Moved terminal input and rendering modules under the `tui` module boundary.
+- Moved the terminal runtime shell into `tui::Tui`, leaving the mixed
+  AppState/TUI state split for a later Stage 23 slice.
 
 ## Acceptance Criteria
 
