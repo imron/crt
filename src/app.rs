@@ -1057,23 +1057,13 @@ impl App {
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
         let input_event = self.state.input_event_from_mouse(&mouse);
         let semantic_content_hit = input_event.as_ref().and_then(mouse_content_hit);
-        let mut pending_core_effects = input_event
-            .clone()
+        let pending_core_effects = input_event
             .map(|event| {
                 self.state
                     .core_interaction
                     .handle_input(event, &Default::default())
             })
             .unwrap_or_default();
-
-        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-            if app_update::apply_core_effects(
-                &mut self.state,
-                std::mem::take(&mut pending_core_effects),
-            ) {
-                return;
-            }
-        }
 
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
@@ -1114,10 +1104,7 @@ impl App {
                     return; // skip drag selection setup
                 }
 
-                app_update::apply_core_effects(
-                    &mut self.state,
-                    std::mem::take(&mut pending_core_effects),
-                );
+                app_update::apply_core_effects(&mut self.state, pending_core_effects);
 
                 if let Some((pane, anchor)) = semantic_content_hit {
                     // Record mouse-down anchor; drag starts selection.
@@ -1125,64 +1112,73 @@ impl App {
                     self.state.mouse_down_anchor = Some((pane, anchor));
                 }
             }
-            MouseEventKind::Drag(MouseButton::Left) => {
-                if self.state.dragging_border {
-                    // Resize the file list pane. Minimum 10, maximum
-                    // terminal width minus 20.
-                    let min_w = 10u16;
-                    let max_w = self.state.file_list_area.width + self.state.diff_area.width - 20;
-                    let new_width = (mouse.column + 1).clamp(min_w, max_w);
-                    self.state.file_list_width = new_width;
+            _ => {
+                if app_update::apply_core_effects(&mut self.state, pending_core_effects) {
                     return;
                 }
-                let drag_content_hit = semantic_content_hit.or_else(|| {
-                    let (pane, _) = self.state.mouse_down_anchor?;
-                    self.state
-                        .pointer_text_anchor_for_pane(pane, mouse.column, mouse.row, true)
-                        .map(|anchor| (pane, anchor))
-                });
 
-                // Extend the selection in semantic coordinates, clamped to
-                // the originating pane when the pointer leaves its content.
-                if let Some((pane, anchor)) = drag_content_hit {
-                    if let Some(sel) = &mut self.state.mouse_selection {
-                        if sel.pane == pane {
-                            sel.end = anchor;
+                match mouse.kind {
+                    MouseEventKind::Drag(MouseButton::Left) => {
+                        if self.state.dragging_border {
+                            // Resize the file list pane. Minimum 10, maximum
+                            // terminal width minus 20.
+                            let min_w = 10u16;
+                            let max_w =
+                                self.state.file_list_area.width + self.state.diff_area.width - 20;
+                            let new_width = (mouse.column + 1).clamp(min_w, max_w);
+                            self.state.file_list_width = new_width;
+                            return;
                         }
-                    } else if let Some((start_pane, start)) = self.state.mouse_down_anchor {
-                        if start_pane == pane {
-                            self.state.mouse_selection = Some(MouseSelection {
-                                pane,
-                                start,
-                                end: anchor,
-                                word_selected: false,
-                            });
+                        let drag_content_hit = semantic_content_hit.or_else(|| {
+                            let (pane, _) = self.state.mouse_down_anchor?;
+                            self.state
+                                .pointer_text_anchor_for_pane(pane, mouse.column, mouse.row, true)
+                                .map(|anchor| (pane, anchor))
+                        });
+
+                        // Extend the selection in semantic coordinates, clamped to
+                        // the originating pane when the pointer leaves its content.
+                        if let Some((pane, anchor)) = drag_content_hit {
+                            if let Some(sel) = &mut self.state.mouse_selection {
+                                if sel.pane == pane {
+                                    sel.end = anchor;
+                                }
+                            } else if let Some((start_pane, start)) = self.state.mouse_down_anchor {
+                                if start_pane == pane {
+                                    self.state.mouse_selection = Some(MouseSelection {
+                                        pane,
+                                        start,
+                                        end: anchor,
+                                        word_selected: false,
+                                    });
+                                }
+                            }
                         }
                     }
-                }
-            }
-            MouseEventKind::Up(MouseButton::Left) => {
-                if self.state.dragging_border {
-                    self.state.dragging_border = false;
-                    self.save_file_list_width();
-                    return;
-                }
-                self.state.mouse_down_anchor = None;
-                // Finish selection: extract text and copy to clipboard.
-                if let Some(sel) = self.state.mouse_selection.take() {
-                    if !sel.word_selected {
-                        // Only re-extract for drag selections — word selections
-                        // were already copied by select_word_at().
-                        let text = extract_selected_text(&self.state, &sel);
-                        if !text.is_empty() {
-                            copy_to_clipboard(&text);
+                    MouseEventKind::Up(MouseButton::Left) => {
+                        if self.state.dragging_border {
+                            self.state.dragging_border = false;
+                            self.save_file_list_width();
+                            return;
+                        }
+                        self.state.mouse_down_anchor = None;
+                        // Finish selection: extract text and copy to clipboard.
+                        if let Some(sel) = self.state.mouse_selection.take() {
+                            if !sel.word_selected {
+                                // Only re-extract for drag selections — word selections
+                                // were already copied by select_word_at().
+                                let text = extract_selected_text(&self.state, &sel);
+                                if !text.is_empty() {
+                                    copy_to_clipboard(&text);
+                                }
+                            }
+                            // Keep the selection visible until next keypress.
+                            self.state.mouse_selection = Some(sel);
                         }
                     }
-                    // Keep the selection visible until next keypress.
-                    self.state.mouse_selection = Some(sel);
+                    _ => {}
                 }
             }
-            _ => {}
         }
     }
 
