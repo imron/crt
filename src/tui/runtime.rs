@@ -164,8 +164,7 @@ impl Tui {
             }
 
             // Process pending command (search, definition, etc.).
-            if self.state.pending_command.is_some() {
-                let cmd = self.state.pending_command.take().unwrap();
+            if let Some(cmd) = self.state.pending_command.take() {
                 self.process_pending_command(cmd).await;
             }
 

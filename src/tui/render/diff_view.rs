@@ -87,43 +87,40 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState, a
             .unwrap_or_default(),
     };
 
-    // Check if the cache is still valid.
-    let cache_hit = tui_state
-        .diff_cache
-        .as_ref()
-        .map_or(false, |c| c.key == new_key);
+    let (cache, cache_hit): (&DiffCache, bool) = match tui_state.diff_cache.as_ref() {
+        Some(cache) if cache.key == new_key => (cache, true),
+        _ => {
+            // Cache miss — rebuild everything.
+            let (_title, content, hunk_starts, hunk_ends, hunk_first_changes, gutter_w) =
+                build_content(state, inner_w);
 
-    if !cache_hit {
-        // Cache miss — rebuild everything.
-        let (_title, content, hunk_starts, hunk_ends, hunk_first_changes, gutter_w) =
-            build_content(state, inner_w);
+            // Pre-compute rendered text for clipboard.
+            let rendered_text: Vec<String> = content
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect();
 
-        // Pre-compute rendered text for clipboard.
-        let rendered_text: Vec<String> = content
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect();
-
-        tui_state.diff_cache = Some(DiffCache {
-            key: new_key,
-            lines: content,
-            hunk_starts,
-            hunk_ends,
-            hunk_first_changes,
-            gutter_w,
-            rendered_text,
-        });
-    }
+            let cache = tui_state.diff_cache.insert(DiffCache {
+                key: new_key,
+                lines: content,
+                hunk_starts,
+                hunk_ends,
+                hunk_first_changes,
+                gutter_w,
+                rendered_text,
+            });
+            (cache, false)
+        }
+    };
 
     // From here we know the cache is populated.
-    // Extract values we need, then drop the immutable borrow on state.
+    // Extract values we need without keeping state mutations tied to cache shape.
     let (hunk_starts, hunk_ends, hunk_first_changes, gutter_w, content_height) = {
-        let cache = tui_state.diff_cache.as_ref().unwrap();
         (
             cache.hunk_starts.clone(),
             cache.hunk_ends.clone(),
@@ -151,11 +148,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState, a
     // Store plain text for clipboard extraction.
     // Only update on cache miss — the value persists across frames.
     if !cache_hit {
-        let rendered_text = {
-            let cache = tui_state.diff_cache.as_ref().unwrap();
-            cache.rendered_text.clone()
-        };
-        state.diff_rendered_text = rendered_text;
+        state.diff_rendered_text = cache.rendered_text.clone();
     }
 
     // Update content/viewport dimensions for scroll clamping.
@@ -186,7 +179,6 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState, a
     let search_current_bg = *state.styles.diff.search_current_match_bg;
     let cursor_visible_idx = state.diff_line_cursor.saturating_sub(state.diff_scroll);
     let visible: Vec<Line> = {
-        let cache = tui_state.diff_cache.as_ref().unwrap();
         cache
             .lines
             .iter()
