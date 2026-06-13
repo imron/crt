@@ -111,6 +111,7 @@ clean reuse in GUI and increases coupling to TUI-only state.
   semantic text anchors instead of raw terminal content coordinates.
 - Moved core-effect application and app-state update helpers out of `keys.rs`
   into the App update step so key handling remains an input/prompt adapter.
+- Moved terminal input and rendering modules under the `tui` module boundary.
 
 ## Acceptance Criteria
 
