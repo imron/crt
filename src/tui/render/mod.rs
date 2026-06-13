@@ -16,11 +16,11 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::app::{AppState, InputMode};
+use crate::app::AppState;
 use crate::config::{PanelStyle, StyleConfig};
 use crate::git;
 use crate::model::ReviewStatus;
-use crate::tui::TuiState;
+use crate::tui::{InputMode, TuiState};
 
 /// Draw the entire UI for the current state.
 pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState) {
@@ -66,12 +66,12 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState) {
     }
 
     // Draw status bar or input prompt (command/search replace the status bar).
-    match state.input_mode {
+    match tui_state.input_mode {
         InputMode::Command => {
-            draw_command_input(frame, state, status_area);
+            draw_command_input(frame, state, tui_state, status_area);
         }
         InputMode::DiffSearch => {
-            draw_diff_search_input(frame, state, status_area);
+            draw_diff_search_input(frame, state, tui_state, status_area);
         }
         InputMode::Normal => {
             draw_status_bar(frame, state, status_area);
@@ -366,16 +366,16 @@ fn draw_help_overlay(frame: &mut Frame, styles: &StyleConfig) {
 // ---------------------------------------------------------------------------
 
 /// Draw the `:` command input line, replacing the status bar.
-fn draw_command_input(frame: &mut Frame, state: &AppState, area: Rect) {
+fn draw_command_input(frame: &mut Frame, state: &AppState, tui_state: &TuiState, area: Rect) {
     let ss = &state.styles.status;
-    let input = format!(":{}", state.command_input);
+    let input = format!(":{}", tui_state.command_input);
     let bar_style = Style::default().bg(*ss.bar_bg).fg(*ss.bar_fg);
     let input_line = Paragraph::new(input.clone()).style(bar_style);
     frame.render_widget(input_line, area);
 
     // Place cursor at the correct position within the command input.
     // The `:` prefix is 1 char, so cursor_x = area.x + 1 + command_cursor.
-    let cursor_x = area.x + 1 + state.command_cursor as u16;
+    let cursor_x = area.x + 1 + tui_state.command_cursor as u16;
     let cursor_y = area.y;
     frame.set_cursor_position(Position {
         x: cursor_x,
@@ -384,15 +384,15 @@ fn draw_command_input(frame: &mut Frame, state: &AppState, area: Rect) {
 }
 
 /// Draw the `/` diff search input line, replacing the status bar.
-fn draw_diff_search_input(frame: &mut Frame, state: &AppState, area: Rect) {
+fn draw_diff_search_input(frame: &mut Frame, state: &AppState, tui_state: &TuiState, area: Rect) {
     let ss = &state.styles.status;
-    let input = format!("/{}", state.diff_search_input);
+    let input = format!("/{}", tui_state.diff_search_input);
     let bar_style = Style::default().bg(*ss.bar_bg).fg(*ss.bar_fg);
     let input_line = Paragraph::new(input.clone()).style(bar_style);
     frame.render_widget(input_line, area);
 
     // Place cursor at the correct position within the search input.
-    let cursor_x = area.x + 1 + state.diff_search_cursor as u16;
+    let cursor_x = area.x + 1 + tui_state.diff_search_cursor as u16;
     let cursor_y = area.y;
     frame.set_cursor_position(Position {
         x: cursor_x,

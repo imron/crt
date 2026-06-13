@@ -6,13 +6,13 @@
 
 use std::time::{Duration, Instant};
 
-use crate::app::{AppState, InputMode, JumpLocation};
+use crate::app::{AppState, JumpLocation};
 use crate::core::command::{self, Command, CommandParse};
 use crate::core::navigation::{self, Direction, FileNavigationScope};
 use crate::core::search as core_search;
 use crate::core::{
     CoreEffect, DefinitionResultsEffect, DiffCursorEffect, DiffSearchEffect, InteractionContext,
-    PaneEffect, PaneId, PromptKind, SearchResultsEffect,
+    PaneEffect, PaneId, SearchResultsEffect,
 };
 use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
@@ -48,34 +48,11 @@ pub(crate) fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>)
     for effect in effects {
         handled = true;
         match effect {
-            CoreEffect::RequestPrompt(prompt) => match prompt.kind {
-                PromptKind::CommandLine => {
-                    state.active_core_prompt = Some(prompt.id);
-                    state.input_mode = InputMode::Command;
-                    state.command_input = prompt.initial_value;
-                    state.command_cursor = state.command_input.len();
-                }
-                PromptKind::Search => {
-                    state.active_core_prompt = Some(prompt.id);
-                    state.input_mode = InputMode::DiffSearch;
-                    state.diff_search_input = prompt.initial_value;
-                    state.diff_search_cursor = state.diff_search_input.len();
-                }
-                PromptKind::Custom(_) => {}
-            },
+            CoreEffect::RequestPrompt(_) => {}
             CoreEffect::Status(status) => {
                 state.status_message = Some((status.text, Instant::now()));
             }
-            CoreEffect::ClearPrompt { id } => {
-                if state.active_core_prompt == Some(id) {
-                    state.active_core_prompt = None;
-                }
-                state.input_mode = InputMode::Normal;
-                state.command_input.clear();
-                state.command_cursor = 0;
-                state.diff_search_input.clear();
-                state.diff_search_cursor = 0;
-            }
+            CoreEffect::ClearPrompt { .. } => {}
             CoreEffect::Command(command) => {
                 apply_command(state, command);
             }
@@ -171,16 +148,10 @@ pub(crate) fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>)
 }
 
 pub(crate) fn apply_unscoped_command_prompt(state: &mut AppState, command_text: String) {
-    state.input_mode = InputMode::Normal;
-    state.command_input.clear();
-    state.command_cursor = 0;
     apply_command(state, command::parse_command(&command_text, None));
 }
 
 pub(crate) fn apply_unscoped_diff_search_prompt(state: &mut AppState, query: String) {
-    state.input_mode = InputMode::Normal;
-    state.diff_search_input.clear();
-    state.diff_search_cursor = 0;
     apply_diff_search(state, query);
 }
 
