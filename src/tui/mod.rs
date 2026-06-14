@@ -8,4 +8,4 @@ mod state;
 
 pub(crate) use effects::apply_core_effects;
 pub(crate) use runtime::Tui;
-pub(crate) use state::{InputMode, TuiState};
+pub(crate) use state::{InputMode, LastPointerClick, MouseSelection, TuiState};

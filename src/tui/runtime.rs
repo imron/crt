@@ -16,9 +16,7 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use crate::app::{
-    AppState, DefinitionResults, JumpLocation, LastPointerClick, MouseSelection, SearchResults,
-};
+use crate::app::{AppState, DefinitionResults, JumpLocation, SearchResults};
 use crate::client::Client;
 use crate::core::command::Command;
 use crate::core::diff;
@@ -26,7 +24,7 @@ use crate::core::review;
 use crate::core::search as core_search;
 use crate::core::{InputEvent, PaneId, TextAnchor};
 use crate::model::{ConnectionContext, PaneFocus, ReviewStatus};
-use crate::tui::{TuiState, apply_core_effects, input, render};
+use crate::tui::{LastPointerClick, MouseSelection, TuiState, apply_core_effects, input, render};
 
 /// The terminal UI runtime. Owns the terminal, client connection, and state.
 pub struct Tui {
@@ -197,8 +195,8 @@ impl Tui {
         match ev {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 // Any keypress clears mouse selection.
-                self.state.mouse_selection = None;
-                self.state.mouse_down_anchor = None;
+                self.tui_state.mouse_selection = None;
+                self.tui_state.mouse_down_anchor = None;
                 input::handle_key_event(&mut self.state, &mut self.tui_state, key);
             }
             Event::Mouse(mouse) => {
@@ -271,19 +269,19 @@ impl Tui {
             MouseEventKind::Down(MouseButton::Left) => {
                 // Check if the user clicked on the pane border to start resizing.
                 if self.is_on_pane_border(mouse.column, mouse.row) {
-                    self.state.dragging_border = true;
+                    self.tui_state.dragging_border = true;
                     return;
                 }
 
                 // Double-click detection: select the word under cursor.
                 let is_double_click = semantic_content_hit.is_some_and(|(pane, anchor)| {
-                    self.state.last_click.as_ref().is_some_and(|last| {
+                    self.tui_state.last_click.as_ref().is_some_and(|last| {
                         last.when.elapsed() < Duration::from_millis(400)
                             && last.pane == pane
                             && last.anchor == anchor
                     })
                 });
-                self.state.last_click =
+                self.tui_state.last_click =
                     semantic_content_hit.map(|(pane, anchor)| LastPointerClick {
                         when: Instant::now(),
                         pane,
@@ -293,8 +291,8 @@ impl Tui {
                 if is_double_click {
                     // Clear any selection from the first click so the
                     // subsequent Up event doesn't overwrite the clipboard.
-                    self.state.mouse_selection = None;
-                    self.state.mouse_down_anchor = None;
+                    self.tui_state.mouse_selection = None;
+                    self.tui_state.mouse_down_anchor = None;
                     if let Some((pane, anchor)) = semantic_content_hit {
                         if pane == PaneFocus::FileList {
                             self.copy_file_path_at(anchor.line);
@@ -302,7 +300,7 @@ impl Tui {
                             self.select_word_at(pane, anchor);
                         }
                     }
-                    self.state.last_click = None; // prevent triple-click
+                    self.tui_state.last_click = None; // prevent triple-click
                     return; // skip drag selection setup
                 }
 
@@ -310,8 +308,8 @@ impl Tui {
 
                 if let Some((pane, anchor)) = semantic_content_hit {
                     // Record mouse-down anchor; drag starts selection.
-                    self.state.mouse_selection = None;
-                    self.state.mouse_down_anchor = Some((pane, anchor));
+                    self.tui_state.mouse_selection = None;
+                    self.tui_state.mouse_down_anchor = Some((pane, anchor));
                 }
             }
             _ => {
@@ -321,7 +319,7 @@ impl Tui {
 
                 match mouse.kind {
                     MouseEventKind::Drag(MouseButton::Left) => {
-                        if self.state.dragging_border {
+                        if self.tui_state.dragging_border {
                             // Resize the file list pane. Minimum 10, maximum
                             // terminal width minus 20.
                             let min_w = 10u16;
@@ -332,7 +330,7 @@ impl Tui {
                             return;
                         }
                         let drag_content_hit = semantic_content_hit.or_else(|| {
-                            let (pane, _) = self.state.mouse_down_anchor?;
+                            let (pane, _) = self.tui_state.mouse_down_anchor?;
                             self.state
                                 .pointer_text_anchor_for_pane(pane, mouse.column, mouse.row, true)
                                 .map(|anchor| (pane, anchor))
@@ -341,13 +339,15 @@ impl Tui {
                         // Extend the selection in semantic coordinates, clamped to
                         // the originating pane when the pointer leaves its content.
                         if let Some((pane, anchor)) = drag_content_hit {
-                            if let Some(sel) = &mut self.state.mouse_selection {
+                            if let Some(sel) = &mut self.tui_state.mouse_selection {
                                 if sel.pane == pane {
                                     sel.end = anchor;
                                 }
-                            } else if let Some((start_pane, start)) = self.state.mouse_down_anchor {
+                            } else if let Some((start_pane, start)) =
+                                self.tui_state.mouse_down_anchor
+                            {
                                 if start_pane == pane {
-                                    self.state.mouse_selection = Some(MouseSelection {
+                                    self.tui_state.mouse_selection = Some(MouseSelection {
                                         pane,
                                         start,
                                         end: anchor,
@@ -358,14 +358,14 @@ impl Tui {
                         }
                     }
                     MouseEventKind::Up(MouseButton::Left) => {
-                        if self.state.dragging_border {
-                            self.state.dragging_border = false;
+                        if self.tui_state.dragging_border {
+                            self.tui_state.dragging_border = false;
                             self.save_file_list_width();
                             return;
                         }
-                        self.state.mouse_down_anchor = None;
+                        self.tui_state.mouse_down_anchor = None;
                         // Finish selection: extract text and copy to clipboard.
-                        if let Some(sel) = self.state.mouse_selection.take() {
+                        if let Some(sel) = self.tui_state.mouse_selection.take() {
                             if !sel.word_selected {
                                 // Only re-extract for drag selections — word selections
                                 // were already copied by select_word_at().
@@ -375,7 +375,7 @@ impl Tui {
                                 }
                             }
                             // Keep the selection visible until next keypress.
-                            self.state.mouse_selection = Some(sel);
+                            self.tui_state.mouse_selection = Some(sel);
                         }
                     }
                     _ => {}
@@ -666,7 +666,7 @@ impl Tui {
             line: anchor.line,
             column: end.saturating_sub(base_col),
         };
-        self.state.mouse_selection = Some(MouseSelection {
+        self.tui_state.mouse_selection = Some(MouseSelection {
             pane,
             start: start_anchor,
             end: end_anchor,

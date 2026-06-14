@@ -1,6 +1,10 @@
 //! TUI-owned presentation state.
 
+use std::time::Instant;
+
 use crate::core::PromptId;
+use crate::core::TextAnchor;
+use crate::model::PaneFocus;
 use crate::tui::render::diff_view::DiffCache;
 
 /// Current terminal input mode.
@@ -14,9 +18,53 @@ pub(crate) enum InputMode {
     DiffSearch,
 }
 
+/// An in-progress or completed text selection via mouse drag.
+#[derive(Debug, Clone)]
+pub(crate) struct MouseSelection {
+    /// Which pane the selection is confined to.
+    pub pane: PaneFocus,
+    /// Start position in pane semantic text coordinates.
+    pub start: TextAnchor,
+    /// Current end position in pane semantic text coordinates.
+    pub end: TextAnchor,
+    /// Set when selection was created by double-click word selection.
+    /// The Up event should not re-extract text (it was already copied).
+    pub word_selected: bool,
+}
+
+impl MouseSelection {
+    /// Normalize so start is before end (handles upward/leftward drags).
+    pub fn normalized(&self) -> (TextAnchor, TextAnchor) {
+        if self.start.line < self.end.line
+            || (self.start.line == self.end.line && self.start.column <= self.end.column)
+        {
+            (self.start, self.end)
+        } else {
+            (self.end, self.start)
+        }
+    }
+}
+
+/// Last semantic content click, used for double-click detection.
+#[derive(Debug, Clone)]
+pub(crate) struct LastPointerClick {
+    pub when: Instant,
+    pub pane: PaneFocus,
+    pub anchor: TextAnchor,
+}
+
 #[derive(Default)]
 pub(crate) struct TuiState {
     pub diff_cache: Option<DiffCache>,
+    /// Active mouse text selection, if any.
+    pub mouse_selection: Option<MouseSelection>,
+    /// Mouse down anchor used to start a drag selection only after the pointer
+    /// actually moves.
+    pub mouse_down_anchor: Option<(PaneFocus, TextAnchor)>,
+    /// Last semantic content click, for double-click detection.
+    pub last_click: Option<LastPointerClick>,
+    /// True while the user is dragging the file list / diff pane border.
+    pub dragging_border: bool,
     /// Current input mode (Normal vs Command).
     pub input_mode: InputMode,
     /// Command-mode input buffer (the text after `:`).
@@ -91,5 +139,48 @@ mod tests {
         assert_eq!(state.command_cursor, 0);
         assert!(state.diff_search_input.is_empty());
         assert_eq!(state.diff_search_cursor, 0);
+    }
+
+    #[test]
+    fn mouse_selection_normalizes_drag_direction() {
+        let forward = MouseSelection {
+            pane: PaneFocus::Diff,
+            start: TextAnchor { line: 2, column: 5 },
+            end: TextAnchor {
+                line: 4,
+                column: 10,
+            },
+            word_selected: false,
+        };
+        assert_eq!(
+            forward.normalized(),
+            (
+                TextAnchor { line: 2, column: 5 },
+                TextAnchor {
+                    line: 4,
+                    column: 10,
+                }
+            )
+        );
+
+        let backward = MouseSelection {
+            pane: PaneFocus::Diff,
+            start: TextAnchor {
+                line: 4,
+                column: 10,
+            },
+            end: TextAnchor { line: 2, column: 5 },
+            word_selected: false,
+        };
+        assert_eq!(
+            backward.normalized(),
+            (
+                TextAnchor { line: 2, column: 5 },
+                TextAnchor {
+                    line: 4,
+                    column: 10,
+                }
+            )
+        );
     }
 }
