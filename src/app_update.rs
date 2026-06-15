@@ -19,7 +19,7 @@ use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 /// How long the "Press Ctrl-C again" prompt stays active.
 const CTRL_C_TIMEOUT: Duration = Duration::from_secs(3);
 
-pub(crate) fn interaction_context(state: &AppState) -> InteractionContext {
+pub fn interaction_context(state: &AppState) -> InteractionContext {
     InteractionContext {
         help_visible: state.show_help,
         search_results_visible: state.search_results.is_some(),
@@ -36,14 +36,14 @@ pub(crate) fn interaction_context(state: &AppState) -> InteractionContext {
     }
 }
 
-pub(crate) fn prompt_submit_context(state: &AppState) -> InteractionContext {
+pub fn prompt_submit_context(state: &AppState) -> InteractionContext {
     InteractionContext {
         fallback_word: extract_word_at_cursor(state),
         ..InteractionContext::default()
     }
 }
 
-pub(crate) fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
+pub fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
     let mut handled = false;
     for effect in effects {
         handled = true;
@@ -147,11 +147,11 @@ pub(crate) fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>)
     handled
 }
 
-pub(crate) fn apply_unscoped_command_prompt(state: &mut AppState, command_text: String) {
+pub fn apply_unscoped_command_prompt(state: &mut AppState, command_text: String) {
     apply_command(state, command::parse_command(&command_text, None));
 }
 
-pub(crate) fn apply_unscoped_diff_search_prompt(state: &mut AppState, query: String) {
+pub fn apply_unscoped_diff_search_prompt(state: &mut AppState, query: String) {
     apply_diff_search(state, query);
 }
 

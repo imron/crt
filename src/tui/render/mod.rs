@@ -5,8 +5,8 @@
 //! hidden to give the other full width.
 
 pub mod diff_view;
-pub mod file_list;
-pub mod word_diff;
+mod file_list;
+mod word_diff;
 
 use std::time::Duration;
 
@@ -16,11 +16,11 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
+use super::state::{InputMode, TuiState};
 use crate::app::AppState;
 use crate::config::{PanelStyle, StyleConfig};
 use crate::git;
 use crate::model::ReviewStatus;
-use crate::tui::{InputMode, TuiState};
 
 /// Draw the entire UI for the current state.
 pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState) {

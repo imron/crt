@@ -5,7 +5,7 @@
 //! server.
 
 pub mod app;
-pub(crate) mod app_update;
+mod app_update;
 pub mod client;
 pub mod config;
 pub mod core;
@@ -147,13 +147,9 @@ fn cmd_review(base: Option<String>, reset: bool, standalone: bool) -> Result<()>
         }
 
         // Launch the TUI.
-        let mut tui = tui::Tui::new(client, init)
-            .await
-            .context("Failed to initialize TUI")?;
-        tui.run().await.context("TUI error")?;
+        tui::run(client, init).await.context("TUI error")?;
 
         // Clean shutdown of embedded server if we started one.
-        drop(tui);
         shutdown_embedded(cancel_guard).await;
         Ok(())
     })

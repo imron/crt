@@ -196,7 +196,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub(crate) fn new(
+    pub fn new(
         styles: StyleConfig,
         file_list_width: u16,
         diff_algorithm: crate::config::DiffAlgorithm,
@@ -375,7 +375,7 @@ impl AppState {
         }
     }
 
-    pub(crate) fn input_event_from_mouse(&self, mouse: &MouseEvent) -> Option<InputEvent> {
+    pub fn input_event_from_mouse(&self, mouse: &MouseEvent) -> Option<InputEvent> {
         let (kind, button) = match mouse.kind {
             MouseEventKind::Down(button) => {
                 (CoreMouseEventKind::Down, Some(core_mouse_button(button)?))
@@ -440,7 +440,7 @@ impl AppState {
         })
     }
 
-    pub(crate) fn pointer_text_anchor_for_pane(
+    pub fn pointer_text_anchor_for_pane(
         &self,
         pane: PaneFocus,
         column: u16,
@@ -525,7 +525,7 @@ impl AppState {
     /// Refresh the diff for the currently selected file from the working tree,
     /// using the current diff algorithm and whitespace settings. Updates the
     /// cached diff in place without changing cursor position.
-    pub(crate) fn refresh_current_file_diff(&mut self) {
+    pub fn refresh_current_file_diff(&mut self) {
         if let Some(entry) = self.files.get(self.selected_file) {
             let path = entry.change.path.clone();
             let diff_base = self.effective_diff_base().to_string();

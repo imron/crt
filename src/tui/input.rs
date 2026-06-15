@@ -7,15 +7,16 @@ use crossterm::event::{
     KeyCode, KeyEvent as CrosstermKeyEvent, KeyEventKind as CrosstermKeyEventKind, KeyModifiers,
 };
 
+use super::effects::apply_core_effects;
+use super::state::{InputMode, TuiState};
 use crate::app::AppState;
 use crate::app_update;
 use crate::core::{
     InputEvent, InputModifiers, Key as CoreKey, KeyEvent as CoreKeyEvent,
     KeyEventKind as CoreKeyEventKind,
 };
-use crate::tui::{InputMode, TuiState, apply_core_effects};
 
-pub(crate) fn input_event_from_key(key: CrosstermKeyEvent) -> Option<InputEvent> {
+fn input_event_from_key(key: CrosstermKeyEvent) -> Option<InputEvent> {
     Some(InputEvent::Key(CoreKeyEvent {
         kind: match key.kind {
             CrosstermKeyEventKind::Press => CoreKeyEventKind::Press,

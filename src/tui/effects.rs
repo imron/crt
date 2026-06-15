@@ -1,11 +1,11 @@
 //! TUI-side application of core effects.
 
+use super::state::TuiState;
 use crate::app::AppState;
 use crate::app_update;
 use crate::core::{CoreEffect, PromptKind};
-use crate::tui::TuiState;
 
-pub(crate) fn apply_core_effects(
+pub fn apply_core_effects(
     state: &mut AppState,
     tui_state: &mut TuiState,
     effects: Vec<CoreEffect>,
