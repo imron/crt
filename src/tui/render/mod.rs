@@ -94,7 +94,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState) {
     }
 
     // Help overlay on top of everything else.
-    if state.show_help {
+    if tui_state.show_help {
         draw_help_overlay(frame, &state.styles);
     }
 }

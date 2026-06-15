@@ -30,6 +30,12 @@ pub fn apply_core_effects(
                     tui_state.clear_prompt();
                 }
             }
+            CoreEffect::ShowHelp => {
+                tui_state.show_help = true;
+            }
+            CoreEffect::DismissHelp => {
+                tui_state.show_help = false;
+            }
             effect => app_effects.push(effect),
         }
     }

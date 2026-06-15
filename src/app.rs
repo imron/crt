@@ -146,8 +146,6 @@ pub struct AppState {
     /// Transient status bar message (e.g. "Press Ctrl-C again to quit").
     /// Cleared after a timeout or on next keypress.
     pub status_message: Option<(String, Instant)>,
-    /// Whether the help overlay is visible.
-    pub show_help: bool,
     /// Current diff algorithm.
     pub diff_algorithm: crate::config::DiffAlgorithm,
     /// The default diff algorithm (from git config or fallback). Used to
@@ -239,7 +237,6 @@ impl AppState {
             file_list_area: Rect::default(),
             diff_area: Rect::default(),
             status_message: None,
-            show_help: false,
             diff_algorithm,
             default_diff_algorithm: diff_algorithm,
             ignore_whitespace: false,
