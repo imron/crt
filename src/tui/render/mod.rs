@@ -42,7 +42,10 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState) {
         (true, true) => {
             let panes = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Max(state.file_list_width), Constraint::Min(1)])
+                .constraints([
+                    Constraint::Max(tui_state.file_list_width),
+                    Constraint::Min(1),
+                ])
                 .split(main_area);
             state.file_list_area = panes[0];
             state.diff_area = panes[1];

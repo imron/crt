@@ -1,5 +1,6 @@
 //! TUI-owned presentation state.
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::render::diff_view::DiffCache;
@@ -57,6 +58,10 @@ pub struct LastPointerClick {
 
 #[derive(Default)]
 pub struct TuiState {
+    /// Current file list pane width (configurable, resizable by drag).
+    pub file_list_width: u16,
+    /// Path to the config file (for persisting TUI layout changes).
+    pub config_path: Option<PathBuf>,
     pub diff_cache: Option<DiffCache>,
     /// Active mouse text selection, if any.
     pub mouse_selection: Option<MouseSelection>,
@@ -102,6 +107,14 @@ impl Default for InputMode {
 }
 
 impl TuiState {
+    pub fn new(file_list_width: u16, config_path: Option<PathBuf>) -> Self {
+        Self {
+            file_list_width,
+            config_path,
+            ..Self::default()
+        }
+    }
+
     pub fn set_status_message(&mut self, message: impl Into<String>) {
         self.status_message = Some((message.into(), Instant::now()));
     }
@@ -193,6 +206,14 @@ mod tests {
     }
 
     #[test]
+    fn layout_config_is_tui_owned() {
+        let state = TuiState::new(48, Some(PathBuf::from("/tmp/crt.toml")));
+
+        assert_eq!(state.file_list_width, 48);
+        assert_eq!(state.config_path, Some(PathBuf::from("/tmp/crt.toml")));
+    }
+
+    #[test]
     fn clear_prompt_resets_all_prompt_buffers() {
         let mut state = TuiState::default();
         state.open_diff_search_prompt(PromptId(8), "needle".to_string());
@@ -236,6 +257,7 @@ mod tests {
             pending_command: Some(Command::SearchAll {
                 pattern: "needle".to_string(),
             }),
+            save_layout: false,
         });
 
         assert!(state.has_status_message());

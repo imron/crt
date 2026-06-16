@@ -74,10 +74,6 @@ pub struct JumpLocation {
 pub struct AppState {
     /// Visual styling configuration (loaded from config.toml).
     pub styles: StyleConfig,
-    /// Current file list pane width (configurable, resizable by drag).
-    pub file_list_width: u16,
-    /// Path to the config file (for persisting layout changes).
-    pub config_path: Option<std::path::PathBuf>,
     /// Resolved context from the server (repo root, worktree, refs).
     pub context: ConnectionContext,
     /// All files changed in base..HEAD, with their review status and diffs.
@@ -177,9 +173,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(
         styles: StyleConfig,
-        file_list_width: u16,
         diff_algorithm: crate::config::DiffAlgorithm,
-        config_path: Option<std::path::PathBuf>,
         context: ConnectionContext,
         mut files: Vec<FileEntry>,
     ) -> Self {
@@ -187,8 +181,6 @@ impl AppState {
 
         Self {
             styles,
-            file_list_width,
-            config_path,
             context,
             files,
             // Index 0 is the first unreviewed file (due to sort order).
@@ -733,9 +725,7 @@ mod tests {
     fn test_state() -> AppState {
         AppState::new(
             StyleConfig::default(),
-            30,
             crate::config::DiffAlgorithm::Myers,
-            None,
             test_context(),
             vec![test_file("src/lib.rs")],
         )

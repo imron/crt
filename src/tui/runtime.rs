@@ -56,14 +56,7 @@ impl Tui {
             diff::resolve_diff_algorithm(&context.worktree, cfg.layout.diff_algorithm);
 
         let config_path = crate::config::config_path();
-        let mut state = AppState::new(
-            cfg.style,
-            cfg.layout.file_list_width,
-            diff_algorithm,
-            config_path,
-            context,
-            files,
-        );
+        let mut state = AppState::new(cfg.style, diff_algorithm, context, files);
         // Refresh the first file's diff using the correct base (e.g.
         // reviewed_commit for previously-reviewed files).  The server always
         // computes diffs from merge_base, so we recompute locally here.
@@ -72,7 +65,7 @@ impl Tui {
 
         Ok(Self {
             state,
-            tui_state: TuiState::default(),
+            tui_state: TuiState::new(cfg.layout.file_list_width, config_path),
             client,
             terminal,
         })
@@ -246,9 +239,9 @@ impl Tui {
 
     /// Persist the current file list width to the config file.
     fn save_file_list_width(&self) {
-        if let Some(path) = &self.state.config_path {
+        if let Some(path) = &self.tui_state.config_path {
             let layout = crate::config::LayoutConfig {
-                file_list_width: self.state.file_list_width,
+                file_list_width: self.tui_state.file_list_width,
                 diff_algorithm: Some(self.state.diff_algorithm),
             };
             crate::config::save_layout(path, &layout);
@@ -328,7 +321,7 @@ impl Tui {
                             let max_w =
                                 self.state.file_list_area.width + self.state.diff_area.width - 20;
                             let new_width = (mouse.column + 1).clamp(min_w, max_w);
-                            self.state.file_list_width = new_width;
+                            self.tui_state.file_list_width = new_width;
                             return;
                         }
                         let drag_content_hit = semantic_content_hit.or_else(|| {
@@ -938,9 +931,7 @@ mod tests {
     fn test_state() -> AppState {
         AppState::new(
             StyleConfig::default(),
-            30,
             crate::config::DiffAlgorithm::Myers,
-            None,
             test_context(),
             vec![test_file("src/lib.rs")],
         )
