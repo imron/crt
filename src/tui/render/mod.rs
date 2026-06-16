@@ -87,13 +87,13 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState) {
     }
 
     // Search results overlay.
-    if state.search_results.is_some() {
-        draw_search_results_overlay(frame, state);
+    if tui_state.search_results.is_some() {
+        draw_search_results_overlay(frame, state, tui_state);
     }
 
     // Definition results overlay.
-    if state.definition_results.is_some() {
-        draw_definition_results_overlay(frame, state);
+    if tui_state.definition_results.is_some() {
+        draw_definition_results_overlay(frame, state, tui_state);
     }
 
     // Help overlay on top of everything else.
@@ -404,8 +404,8 @@ fn draw_diff_search_input(frame: &mut Frame, state: &AppState, tui_state: &TuiSt
 // ---------------------------------------------------------------------------
 
 /// Draw the search results overlay as a centered popup.
-fn draw_search_results_overlay(frame: &mut Frame, state: &AppState) {
-    let results = match &state.search_results {
+fn draw_search_results_overlay(frame: &mut Frame, state: &AppState, tui_state: &TuiState) {
+    let results = match &tui_state.search_results {
         Some(r) => r,
         None => return,
     };
@@ -494,8 +494,8 @@ fn draw_search_results_overlay(frame: &mut Frame, state: &AppState) {
 // ---------------------------------------------------------------------------
 
 /// Draw the definition results overlay as a centered popup.
-fn draw_definition_results_overlay(frame: &mut Frame, state: &AppState) {
-    let results = match &state.definition_results {
+fn draw_definition_results_overlay(frame: &mut Frame, state: &AppState, tui_state: &TuiState) {
+    let results = match &tui_state.definition_results {
         Some(r) => r,
         None => return,
     };

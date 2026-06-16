@@ -71,6 +71,8 @@ fn dispatch_core_input(
 fn interaction_context(state: &AppState, tui_state: &TuiState) -> InteractionContext {
     InteractionContext {
         help_visible: tui_state.show_help,
+        search_results_visible: tui_state.search_results.is_some(),
+        definition_results_visible: tui_state.definition_results.is_some(),
         quit_confirmation_active: tui_state.quit_confirmation_active(CTRL_C_TIMEOUT),
         ..app_update::interaction_context(state)
     }
@@ -109,12 +111,12 @@ pub fn handle_key_event(state: &mut AppState, tui_state: &mut TuiState, key: Cro
         return;
     }
 
-    if state.search_results.is_some() {
+    if tui_state.search_results.is_some() {
         dispatch_core_input(state, tui_state, key);
         return;
     }
 
-    if state.definition_results.is_some() {
+    if tui_state.definition_results.is_some() {
         dispatch_core_input(state, tui_state, key);
         return;
     }

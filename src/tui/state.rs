@@ -8,7 +8,7 @@ use crate::app_update::{AppUpdate, StatusUpdate};
 use crate::core::PromptId;
 use crate::core::TextAnchor;
 use crate::core::command::Command;
-use crate::model::PaneFocus;
+use crate::model::{DefinitionLocation, PaneFocus, SearchMatch};
 
 /// Current terminal input mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +56,32 @@ pub struct LastPointerClick {
     pub anchor: TextAnchor,
 }
 
+/// Search results displayed in a TUI overlay.
+#[derive(Debug, Clone)]
+pub struct SearchResults {
+    /// The query that produced these results.
+    pub query: String,
+    /// Whether this was a `:grd` (diff-only) search.
+    pub diff_only: bool,
+    /// Matches from a codebase search.
+    pub matches: Vec<SearchMatch>,
+    /// Selected index in the results list.
+    pub selected: usize,
+    /// Scroll offset for the results list.
+    pub scroll: usize,
+}
+
+/// Definition lookup results displayed in a TUI overlay.
+#[derive(Debug, Clone)]
+pub struct DefinitionResults {
+    /// The symbol that was looked up.
+    pub symbol: String,
+    /// Definition locations found.
+    pub definitions: Vec<DefinitionLocation>,
+    /// Selected index.
+    pub selected: usize,
+}
+
 #[derive(Default)]
 pub struct TuiState {
     /// Current file list pane width (configurable, resizable by drag).
@@ -86,6 +112,10 @@ pub struct TuiState {
     pub pending_refresh: bool,
     /// Pending command to execute asynchronously in the TUI runtime.
     pub pending_command: Option<Command>,
+    /// Active search results overlay, if any.
+    pub search_results: Option<SearchResults>,
+    /// Active definition results overlay, if any.
+    pub definition_results: Option<DefinitionResults>,
     /// Current input mode (Normal vs Command).
     pub input_mode: InputMode,
     /// Command-mode input buffer (the text after `:`).

@@ -17,9 +17,9 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use super::effects::apply_core_effects;
-use super::state::{LastPointerClick, MouseSelection, TuiState};
+use super::state::{DefinitionResults, LastPointerClick, MouseSelection, SearchResults, TuiState};
 use super::{input, render};
-use crate::app::{AppState, DefinitionResults, JumpLocation, SearchResults};
+use crate::app::{AppState, JumpLocation};
 use crate::client::Client;
 use crate::core::command::Command;
 use crate::core::diff;
@@ -428,7 +428,7 @@ impl Tui {
                             diff_only,
                             matches,
                         } => {
-                            self.state.search_results = Some(SearchResults {
+                            self.tui_state.search_results = Some(SearchResults {
                                 query,
                                 diff_only,
                                 matches,
@@ -463,7 +463,7 @@ impl Tui {
                             diff_only,
                             matches,
                         } => {
-                            self.state.search_results = Some(SearchResults {
+                            self.tui_state.search_results = Some(SearchResults {
                                 query,
                                 diff_only,
                                 matches,
@@ -515,7 +515,7 @@ impl Tui {
                                 symbol,
                                 definitions,
                             } => {
-                                self.state.definition_results = Some(DefinitionResults {
+                                self.tui_state.definition_results = Some(DefinitionResults {
                                     symbol,
                                     definitions,
                                     selected: 0,

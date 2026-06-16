@@ -11,40 +11,7 @@ use crate::core::{
     InputEvent, InputModifiers, MouseButton as CoreMouseButton, MouseEvent as CoreMouseEvent,
     MouseEventKind as CoreMouseEventKind, PaneId, PointerSemanticHit, TextAnchor,
 };
-use crate::model::{
-    ConnectionContext, ContentMode, DefinitionLocation, FileEntry, PaneFocus, RenderVariant,
-    SearchMatch,
-};
-
-// ---------------------------------------------------------------------------
-// Search results overlay
-// ---------------------------------------------------------------------------
-
-/// Search/definition results displayed in an overlay.
-#[derive(Debug, Clone)]
-pub struct SearchResults {
-    /// The query that produced these results.
-    pub query: String,
-    /// Whether this was a `:grd` (diff-only) search.
-    pub diff_only: bool,
-    /// Matches from a codebase search.
-    pub matches: Vec<SearchMatch>,
-    /// Selected index in the results list.
-    pub selected: usize,
-    /// Scroll offset for the results list.
-    pub scroll: usize,
-}
-
-/// Definition lookup results.
-#[derive(Debug, Clone)]
-pub struct DefinitionResults {
-    /// The symbol that was looked up.
-    pub symbol: String,
-    /// Definition locations found.
-    pub definitions: Vec<DefinitionLocation>,
-    /// Selected index.
-    pub selected: usize,
-}
+use crate::model::{ConnectionContext, ContentMode, FileEntry, PaneFocus, RenderVariant};
 
 // ---------------------------------------------------------------------------
 // Jump stack
@@ -150,10 +117,6 @@ pub struct AppState {
     pub head_blame: Vec<crate::git::BlameLine>,
     /// Blame data for the base version of the current file.
     pub base_blame: Vec<crate::git::BlameLine>,
-    /// Active search results overlay, if any.
-    pub search_results: Option<SearchResults>,
-    /// Active definition results overlay, if any.
-    pub definition_results: Option<DefinitionResults>,
     /// Jump stack for Ctrl-] / Ctrl-t navigation.
     pub jump_stack: Vec<JumpLocation>,
     /// Active diff search query (the confirmed search term).
@@ -215,8 +178,6 @@ impl AppState {
             show_blame: false,
             head_blame: Vec::new(),
             base_blame: Vec::new(),
-            search_results: None,
-            definition_results: None,
             jump_stack: Vec::new(),
             diff_search_query: None,
             diff_search_matches: Vec::new(),
