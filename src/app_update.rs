@@ -1,10 +1,8 @@
 //! AppState update step for core interaction effects.
 //!
 //! Input adapters feed `InputEvent`s to core interaction. The resulting
-//! `CoreEffect`s are applied here to mutate the current app state or enqueue
-//! async work for the app loop.
-
-use std::time::{Duration, Instant};
+//! `CoreEffect`s are applied here to mutate the current app state, enqueue
+//! async work for the app loop, or report presentation updates to the UI.
 
 use crate::app::{AppState, JumpLocation};
 use crate::core::command::{self, Command, CommandParse};
@@ -16,8 +14,34 @@ use crate::core::{
 };
 use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
-/// How long the "Press Ctrl-C again" prompt stays active.
-const CTRL_C_TIMEOUT: Duration = Duration::from_secs(3);
+#[derive(Debug, Default)]
+pub struct AppUpdate {
+    pub handled: bool,
+    pub status: Option<StatusUpdate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StatusUpdate {
+    Set(String),
+    Clear,
+}
+
+impl AppUpdate {
+    fn handled() -> Self {
+        Self {
+            handled: true,
+            status: None,
+        }
+    }
+
+    fn set_status(&mut self, message: impl Into<String>) {
+        self.status = Some(StatusUpdate::Set(message.into()));
+    }
+
+    fn clear_status(&mut self) {
+        self.status = Some(StatusUpdate::Clear);
+    }
+}
 
 pub fn interaction_context(state: &AppState) -> InteractionContext {
     InteractionContext {
@@ -30,7 +54,6 @@ pub fn interaction_context(state: &AppState) -> InteractionContext {
         diff_search_active: state.diff_search_query.is_some(),
         diff_search_has_matches: state.diff_search_query.is_some()
             && !state.diff_search_matches.is_empty(),
-        quit_confirmation_active: quit_confirmation_active(state),
         ..InteractionContext::default()
     }
 }
@@ -42,27 +65,27 @@ pub fn prompt_submit_context(state: &AppState) -> InteractionContext {
     }
 }
 
-pub fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
-    let mut handled = false;
+pub fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> AppUpdate {
+    let mut update = AppUpdate::default();
     for effect in effects {
-        handled = true;
+        update.handled = true;
         match effect {
             CoreEffect::RequestPrompt(_) => {}
             CoreEffect::Status(status) => {
-                state.status_message = Some((status.text, Instant::now()));
+                update.set_status(status.text);
             }
             CoreEffect::ClearPrompt { .. } => {}
             CoreEffect::Command(command) => {
-                apply_command(state, command);
+                apply_command(state, &mut update, command);
             }
             CoreEffect::DiffSearch(DiffSearchEffect::Submit { query }) => {
-                apply_diff_search(state, query);
+                apply_diff_search(state, &mut update, query);
             }
             CoreEffect::DiffSearch(DiffSearchEffect::NextMatch) => {
-                navigate_diff_search_match(state, Direction::Next);
+                navigate_diff_search_match(state, &mut update, Direction::Next);
             }
             CoreEffect::DiffSearch(DiffSearchEffect::PreviousMatch) => {
-                navigate_diff_search_match(state, Direction::Prev);
+                navigate_diff_search_match(state, &mut update, Direction::Prev);
             }
             CoreEffect::DiffSearch(DiffSearchEffect::Clear) => {
                 clear_diff_search(state);
@@ -88,80 +111,82 @@ pub fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> boo
             CoreEffect::ShowHelp | CoreEffect::DismissHelp => {}
             CoreEffect::ReviewToggle => {
                 toggle_review(state);
-                state.status_message = None;
+                update.clear_status();
             }
             CoreEffect::NavigateFile(direction) => {
                 navigate_file(state, direction);
-                state.status_message = None;
+                update.clear_status();
             }
             CoreEffect::JumpHunk(Direction::Next) => {
                 jump_to_next_hunk(state);
-                state.status_message = None;
+                update.clear_status();
             }
             CoreEffect::JumpHunk(Direction::Prev) => {
                 jump_to_prev_hunk(state);
-                state.status_message = None;
+                update.clear_status();
             }
             CoreEffect::GoToDefinition => {
-                request_go_to_definition(state);
+                request_go_to_definition(state, &mut update);
             }
             CoreEffect::PopJumpStack => {
-                pop_jump_stack(state);
+                pop_jump_stack(state, &mut update);
             }
             CoreEffect::TogglePaneFocus => {
                 toggle_pane_focus(state);
+                update.clear_status();
             }
             CoreEffect::TogglePaneVisibility(PaneId::FileList) => {
                 toggle_pane_visibility(state, PaneFocus::FileList);
-                state.status_message = None;
+                update.clear_status();
             }
             CoreEffect::TogglePaneVisibility(PaneId::Diff) => {
                 toggle_pane_visibility(state, PaneFocus::Diff);
-                state.status_message = None;
+                update.clear_status();
             }
             CoreEffect::TogglePaneVisibility(_) => {}
             CoreEffect::ToggleInlineDiff => {
-                toggle_inline_diff(state);
+                toggle_inline_diff(state, &mut update);
             }
             CoreEffect::CycleViewMode => {
-                state.status_message = None;
+                update.clear_status();
                 cycle_view_mode(state);
             }
             CoreEffect::CycleDiffAlgorithm => {
-                cycle_diff_algorithm(state);
+                cycle_diff_algorithm(state, &mut update);
             }
             CoreEffect::ToggleDiffBase => {
-                toggle_diff_base(state);
+                toggle_diff_base(state, &mut update);
             }
             CoreEffect::Render(_)
             | CoreEffect::ConnectionState(_)
             | CoreEffect::TransientError(_) => {}
         }
     }
-    handled
+    update
 }
 
-pub fn apply_unscoped_command_prompt(state: &mut AppState, command_text: String) {
-    apply_command(state, command::parse_command(&command_text, None));
+pub fn apply_unscoped_command_prompt(state: &mut AppState, command_text: String) -> AppUpdate {
+    let mut update = AppUpdate::handled();
+    apply_command(
+        state,
+        &mut update,
+        command::parse_command(&command_text, None),
+    );
+    update
 }
 
-pub fn apply_unscoped_diff_search_prompt(state: &mut AppState, query: String) {
-    apply_diff_search(state, query);
-}
-
-fn quit_confirmation_active(state: &AppState) -> bool {
-    state
-        .status_message
-        .as_ref()
-        .is_some_and(|(msg, when)| msg.contains("Ctrl-C") && when.elapsed() < CTRL_C_TIMEOUT)
+pub fn apply_unscoped_diff_search_prompt(state: &mut AppState, query: String) -> AppUpdate {
+    let mut update = AppUpdate::handled();
+    apply_diff_search(state, &mut update, query);
+    update
 }
 
 /// Apply a parsed command emitted by the core interaction engine.
-fn apply_command(state: &mut AppState, command: CommandParse) {
+fn apply_command(state: &mut AppState, update: &mut AppUpdate, command: CommandParse) {
     match command {
         CommandParse::Empty => {}
         CommandParse::NeedsArgument { usage } | CommandParse::NeedsWord { usage } => {
-            state.status_message = Some((usage, Instant::now()));
+            update.set_status(usage);
         }
         CommandParse::Parsed(Command::Quit) => {
             state.should_quit = true;
@@ -176,12 +201,12 @@ fn apply_command(state: &mut AppState, command: CommandParse) {
         CommandParse::Parsed(Command::SetBlame(true)) => {
             state.show_blame = true;
             state.load_blame();
-            state.status_message = Some(("Blame: shown".to_string(), Instant::now()));
+            update.set_status("Blame: shown");
         }
         CommandParse::Parsed(Command::SetBlame(false)) => {
             state.show_blame = false;
             state.load_blame();
-            state.status_message = Some(("Blame: hidden".to_string(), Instant::now()));
+            update.set_status("Blame: hidden");
         }
         CommandParse::Parsed(Command::SetComments(show)) => {
             state.show_comments = show;
@@ -190,39 +215,34 @@ fn apply_command(state: &mut AppState, command: CommandParse) {
             } else {
                 "Comments: hidden"
             };
-            state.status_message = Some((status.to_string(), Instant::now()));
+            update.set_status(status);
         }
         CommandParse::Parsed(Command::SetWhitespaceIgnored(false)) => {
             state.ignore_whitespace = false;
             state.reload_current_diff();
-            state.status_message = Some(("Whitespace: shown".to_string(), Instant::now()));
+            update.set_status("Whitespace: shown");
         }
         CommandParse::Parsed(Command::SetWhitespaceIgnored(true)) => {
             state.ignore_whitespace = true;
             state.reload_current_diff();
-            state.status_message = Some(("Whitespace: ignored".to_string(), Instant::now()));
+            update.set_status("Whitespace: ignored");
         }
         CommandParse::Parsed(Command::ViewFile { .. }) => {
-            state.status_message = Some((
-                "Unsupported command from prompt".to_string(),
-                Instant::now(),
-            ));
+            update.set_status("Unsupported command from prompt");
         }
         CommandParse::Parsed(Command::Unknown { name }) => {
             if name == "set" || name.starts_with("set ") {
-                state.status_message = Some((
-                    "Unknown option. Use: blame, noblame, comments, nocomments, whitespace, nowhitespace"
-                        .to_string(),
-                    Instant::now(),
-                ));
+                update.set_status(
+                    "Unknown option. Use: blame, noblame, comments, nocomments, whitespace, nowhitespace",
+                );
             } else {
-                state.status_message = Some((format!("Unknown command: {name}"), Instant::now()));
+                update.set_status(format!("Unknown command: {name}"));
             }
         }
     }
 }
 
-fn apply_diff_search(state: &mut AppState, query: String) {
+fn apply_diff_search(state: &mut AppState, update: &mut AppUpdate, query: String) {
     if query.is_empty() {
         state.diff_search_query = None;
         state.diff_search_matches.clear();
@@ -231,19 +251,19 @@ fn apply_diff_search(state: &mut AppState, query: String) {
         state.diff_search_query = Some(query);
         if let Some(err) = state.recompute_diff_search_matches() {
             state.diff_search_query = None;
-            state.status_message = Some((err, Instant::now()));
+            update.set_status(err);
         } else if state.diff_search_matches.is_empty() {
-            state.status_message = Some(("No matches".to_string(), Instant::now()));
+            update.set_status("No matches");
         } else {
             state.diff_search_jump_to_current();
             let total = state.diff_search_matches.len();
             let cur = state.diff_search_current + 1;
-            state.status_message = Some((format!("{cur}/{total}"), Instant::now()));
+            update.set_status(format!("{cur}/{total}"));
         }
     }
 }
 
-fn navigate_diff_search_match(state: &mut AppState, direction: Direction) {
+fn navigate_diff_search_match(state: &mut AppState, update: &mut AppUpdate, direction: Direction) {
     if state.diff_search_query.is_none() || state.diff_search_matches.is_empty() {
         return;
     }
@@ -268,7 +288,7 @@ fn navigate_diff_search_match(state: &mut AppState, direction: Direction) {
     state.diff_line_cursor = row;
     state.clamp_cursor_and_scroll();
     let cur = idx + 1;
-    state.status_message = Some((format!("{cur}/{len}"), Instant::now()));
+    update.set_status(format!("{cur}/{len}"));
 }
 
 fn clear_diff_search(state: &mut AppState) {
@@ -578,26 +598,22 @@ fn toggle_pane_focus(state: &mut AppState) {
             PaneFocus::Diff => PaneFocus::FileList,
         };
     }
-    state.status_message = None;
 }
 
-fn toggle_inline_diff(state: &mut AppState) {
+fn toggle_inline_diff(state: &mut AppState, update: &mut AppUpdate) {
     if state.content_mode == ContentMode::Diff {
         state.render_variant = match state.render_variant {
             RenderVariant::Inline => RenderVariant::SideBySide,
             other => other,
         };
     }
-    state.status_message = None;
+    update.clear_status();
 }
 
-fn cycle_diff_algorithm(state: &mut AppState) {
+fn cycle_diff_algorithm(state: &mut AppState, update: &mut AppUpdate) {
     state.diff_algorithm = state.diff_algorithm.next();
     state.reload_current_diff();
-    state.status_message = Some((
-        format!("Diff algorithm: {}", state.diff_algorithm.label()),
-        Instant::now(),
-    ));
+    update.set_status(format!("Diff algorithm: {}", state.diff_algorithm.label()));
     if let Some(path) = &state.config_path {
         let layout = crate::config::LayoutConfig {
             file_list_width: state.file_list_width,
@@ -607,7 +623,7 @@ fn cycle_diff_algorithm(state: &mut AppState) {
     }
 }
 
-fn toggle_diff_base(state: &mut AppState) {
+fn toggle_diff_base(state: &mut AppState, update: &mut AppUpdate) {
     let has_reviewed_commit = state.selected_file_entry().is_some_and(|e| {
         matches!(
             &e.status,
@@ -628,14 +644,14 @@ fn toggle_diff_base(state: &mut AppState) {
         } else {
             "Diff base: since review"
         };
-        state.status_message = Some((label.to_string(), Instant::now()));
+        update.set_status(label);
     } else {
-        state.status_message = Some(("File not yet reviewed".to_string(), Instant::now()));
+        update.set_status("File not yet reviewed");
     }
 }
 
 /// Pop the jump stack and restore the previous location.
-fn pop_jump_stack(state: &mut AppState) {
+fn pop_jump_stack(state: &mut AppState, update: &mut AppUpdate) {
     if let Some(loc) = state.jump_stack.pop() {
         if loc.file_index != state.selected_file && loc.file_index < state.files.len() {
             state.selected_file = loc.file_index;
@@ -646,26 +662,23 @@ fn pop_jump_stack(state: &mut AppState) {
         state.content_mode = loc.content_mode;
         state.render_variant = loc.render_variant;
         state.clamp_cursor_and_scroll();
-        state.status_message = Some((
-            format!("Jump stack: {} remaining", state.jump_stack.len()),
-            Instant::now(),
-        ));
+        update.set_status(format!("Jump stack: {} remaining", state.jump_stack.len()));
     } else {
-        state.status_message = Some(("Jump stack empty".to_string(), Instant::now()));
+        update.set_status("Jump stack empty");
     }
 }
 
 /// Request go-to-definition for the word under the cursor.
-fn request_go_to_definition(state: &mut AppState) {
+fn request_go_to_definition(state: &mut AppState, update: &mut AppUpdate) {
     let word = extract_word_at_cursor(state);
     if let Some(word) = word {
         if word.is_empty() {
-            state.status_message = Some(("No word under cursor".to_string(), Instant::now()));
+            update.set_status("No word under cursor");
         } else {
             state.pending_command = Some(Command::FindDefinition { symbol: word });
         }
     } else {
-        state.status_message = Some(("No word under cursor".to_string(), Instant::now()));
+        update.set_status("No word under cursor");
     }
 }
 

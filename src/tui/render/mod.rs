@@ -74,7 +74,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState) {
             draw_diff_search_input(frame, state, tui_state, status_area);
         }
         InputMode::Normal => {
-            draw_status_bar(frame, state, status_area);
+            draw_status_bar(frame, state, tui_state, status_area);
         }
     }
 
@@ -182,15 +182,11 @@ fn saturating_u16(value: usize) -> u16 {
 /// Status message timeout.
 const STATUS_MSG_TIMEOUT: Duration = Duration::from_secs(3);
 
-fn draw_status_bar(frame: &mut Frame, state: &mut AppState, area: Rect) {
+fn draw_status_bar(frame: &mut Frame, state: &AppState, tui_state: &mut TuiState, area: Rect) {
     let ss = &state.styles.status;
 
     // Expire old status messages.
-    if let Some((_, when)) = &state.status_message {
-        if when.elapsed() > STATUS_MSG_TIMEOUT {
-            state.status_message = None;
-        }
-    }
+    tui_state.expire_status_message(STATUS_MSG_TIMEOUT);
 
     let reviewed_count = state
         .files
@@ -207,7 +203,7 @@ fn draw_status_bar(frame: &mut Frame, state: &mut AppState, area: Rect) {
     );
 
     // Ctrl-C warning takes over the full bar.
-    if let Some((msg, _)) = &state.status_message {
+    if let Some((msg, _)) = &tui_state.status_message {
         if msg.contains("Ctrl-C") {
             let bar = format!(" {msg} ");
             let status =
@@ -218,7 +214,7 @@ fn draw_status_bar(frame: &mut Frame, state: &mut AppState, area: Rect) {
     }
 
     // Right side: transient message or default hint.
-    let (right, right_style) = if let Some((msg, _)) = &state.status_message {
+    let (right, right_style) = if let Some((msg, _)) = &tui_state.status_message {
         (
             format!(" {msg} "),
             Style::default().bg(*ss.message_bg).fg(*ss.message_fg),

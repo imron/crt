@@ -1,7 +1,5 @@
 //! Application state and input dispatch.
 
-use std::time::Instant;
-
 use crossterm::event::{self, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
@@ -143,9 +141,6 @@ pub struct AppState {
     pub file_list_area: Rect,
     /// Screen area of the diff pane (set during render, for mouse hit testing).
     pub diff_area: Rect,
-    /// Transient status bar message (e.g. "Press Ctrl-C again to quit").
-    /// Cleared after a timeout or on next keypress.
-    pub status_message: Option<(String, Instant)>,
     /// Current diff algorithm.
     pub diff_algorithm: crate::config::DiffAlgorithm,
     /// The default diff algorithm (from git config or fallback). Used to
@@ -236,7 +231,6 @@ impl AppState {
             file_list_scroll: 0,
             file_list_area: Rect::default(),
             diff_area: Rect::default(),
-            status_message: None,
             diff_algorithm,
             default_diff_algorithm: diff_algorithm,
             ignore_whitespace: false,
