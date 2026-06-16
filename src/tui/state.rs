@@ -3,9 +3,10 @@
 use std::time::{Duration, Instant};
 
 use super::render::diff_view::DiffCache;
-use crate::app_update::StatusUpdate;
+use crate::app_update::{AppUpdate, StatusUpdate};
 use crate::core::PromptId;
 use crate::core::TextAnchor;
+use crate::core::command::Command;
 use crate::model::PaneFocus;
 
 /// Current terminal input mode.
@@ -70,6 +71,16 @@ pub struct TuiState {
     pub show_help: bool,
     /// Transient status bar message (e.g. "Press Ctrl-C again to quit").
     pub status_message: Option<(String, Instant)>,
+    /// Set when the runtime should toggle the selected file review state.
+    pub pending_review_toggle: bool,
+    /// Set to true to suspend the process (Ctrl-Z).
+    pub should_suspend: bool,
+    /// Set to true to exit the event loop.
+    pub should_quit: bool,
+    /// Set to true when the terminal regains focus.
+    pub pending_refresh: bool,
+    /// Pending command to execute asynchronously in the TUI runtime.
+    pub pending_command: Option<Command>,
     /// Current input mode (Normal vs Command).
     pub input_mode: InputMode,
     /// Command-mode input buffer (the text after `:`).
@@ -108,6 +119,16 @@ impl TuiState {
                 self.clear_status_message();
             }
             None => {}
+        }
+    }
+
+    pub fn apply_app_update(&mut self, update: AppUpdate) {
+        self.apply_status_update(update.status);
+        self.pending_review_toggle |= update.pending_review_toggle;
+        self.should_suspend |= update.should_suspend;
+        self.should_quit |= update.should_quit;
+        if let Some(command) = update.pending_command {
+            self.pending_command = Some(command);
         }
     }
 
@@ -200,6 +221,31 @@ mod tests {
         state.apply_status_update(Some(StatusUpdate::Clear));
 
         assert!(!state.has_status_message());
+    }
+
+    #[test]
+    fn app_updates_set_tui_runtime_intents() {
+        let mut state = TuiState::default();
+
+        state.apply_app_update(AppUpdate {
+            handled: true,
+            status: Some(StatusUpdate::Set("Searching...".to_string())),
+            pending_review_toggle: true,
+            should_suspend: true,
+            should_quit: true,
+            pending_command: Some(Command::SearchAll {
+                pattern: "needle".to_string(),
+            }),
+        });
+
+        assert!(state.has_status_message());
+        assert!(state.pending_review_toggle);
+        assert!(state.should_suspend);
+        assert!(state.should_quit);
+        assert!(matches!(
+            state.pending_command,
+            Some(Command::SearchAll { ref pattern }) if pattern == "needle"
+        ));
     }
 
     #[test]

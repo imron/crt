@@ -125,6 +125,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
 - Moved transient status bar messages into TUI-owned state, with app updates
   returning status presentation changes instead of storing timestamps in
   AppState.
+- Moved event-loop runtime intents for review toggles, pending commands,
+  suspend, quit, and focus refresh into TUI-owned state.
 
 ## Acceptance Criteria
 

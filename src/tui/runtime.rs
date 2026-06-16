@@ -156,13 +156,13 @@ impl Tui {
             }
 
             // Process pending review toggle.
-            if self.state.pending_review_toggle {
-                self.state.pending_review_toggle = false;
+            if self.tui_state.pending_review_toggle {
+                self.tui_state.pending_review_toggle = false;
                 self.process_review_toggle().await;
             }
 
             // Process pending command (search, definition, etc.).
-            if let Some(cmd) = self.state.pending_command.take() {
+            if let Some(cmd) = self.tui_state.pending_command.take() {
                 self.process_pending_command(cmd).await;
             }
 
@@ -170,17 +170,17 @@ impl Tui {
             self.process_notifications().await;
 
             // Refresh file list on focus gain.
-            if self.state.pending_refresh {
-                self.state.pending_refresh = false;
+            if self.tui_state.pending_refresh {
+                self.tui_state.pending_refresh = false;
                 self.reload_file_list().await;
             }
 
-            if self.state.should_suspend {
-                self.state.should_suspend = false;
+            if self.tui_state.should_suspend {
+                self.tui_state.should_suspend = false;
                 self.suspend()?;
             }
 
-            if self.state.should_quit {
+            if self.tui_state.should_quit {
                 break;
             }
         }
@@ -209,7 +209,7 @@ impl Tui {
             }
             Event::FocusGained => {
                 // Terminal regained focus — schedule a full refresh.
-                self.state.pending_refresh = true;
+                self.tui_state.pending_refresh = true;
             }
             _ => {}
         }
