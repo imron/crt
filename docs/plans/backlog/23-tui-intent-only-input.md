@@ -131,6 +131,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   updates requesting layout persistence through the TUI boundary.
 - Moved search and definition overlay result state into TUI-owned state while
   keeping accepted-result navigation in app update helpers.
+- Moved pane visibility into TUI-owned state, with pane focus adjustments
+  handled at the TUI effect boundary.
 
 ## Acceptance Criteria
 

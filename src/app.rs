@@ -86,10 +86,6 @@ pub struct AppState {
     pub diff_view_height: usize,
     /// Whether inline comments are visible in the diff pane.
     pub show_comments: bool,
-    /// Whether the file list pane is visible.
-    pub show_file_list: bool,
-    /// Whether the diff pane is visible.
-    pub show_diff_pane: bool,
     /// Plain text of rendered diff lines (set during render, for clipboard).
     pub diff_rendered_text: Vec<String>,
     /// Plain text of rendered file list lines (set during render, for clipboard).
@@ -164,8 +160,6 @@ impl AppState {
             diff_content_height: 0,
             diff_view_height: 0,
             show_comments: false,
-            show_file_list: true,
-            show_diff_pane: true,
             diff_rendered_text: Vec::new(),
             file_list_rendered_text: Vec::new(),
             file_list_row_to_file: Vec::new(),
@@ -290,17 +284,28 @@ impl AppState {
     }
 
     /// Determine which pane a terminal coordinate falls in.
-    fn pane_at(&self, col: u16, row: u16) -> Option<PaneFocus> {
-        if self.show_file_list && self.file_list_area.contains((col, row).into()) {
+    fn pane_at(
+        &self,
+        col: u16,
+        row: u16,
+        show_file_list: bool,
+        show_diff_pane: bool,
+    ) -> Option<PaneFocus> {
+        if show_file_list && self.file_list_area.contains((col, row).into()) {
             Some(PaneFocus::FileList)
-        } else if self.show_diff_pane && self.diff_area.contains((col, row).into()) {
+        } else if show_diff_pane && self.diff_area.contains((col, row).into()) {
             Some(PaneFocus::Diff)
         } else {
             None
         }
     }
 
-    pub fn input_event_from_mouse(&self, mouse: &MouseEvent) -> Option<InputEvent> {
+    pub fn input_event_from_mouse(
+        &self,
+        mouse: &MouseEvent,
+        show_file_list: bool,
+        show_diff_pane: bool,
+    ) -> Option<InputEvent> {
         let (kind, button) = match mouse.kind {
             MouseEventKind::Down(button) => {
                 (CoreMouseEventKind::Down, Some(core_mouse_button(button)?))
@@ -317,7 +322,7 @@ impl AppState {
             _ => return None,
         };
 
-        let pane = self.pane_at(mouse.column, mouse.row);
+        let pane = self.pane_at(mouse.column, mouse.row, show_file_list, show_diff_pane);
         let local_pos = pane.map(|pane| {
             let area = self.area_for_pane(pane);
             (
@@ -699,12 +704,16 @@ mod tests {
         state.file_list_row_to_file = vec![Some(0)];
 
         let event = state
-            .input_event_from_mouse(&MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: 5,
-                row: 1,
-                modifiers: event::KeyModifiers::CONTROL,
-            })
+            .input_event_from_mouse(
+                &MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 5,
+                    row: 1,
+                    modifiers: event::KeyModifiers::CONTROL,
+                },
+                true,
+                true,
+            )
             .expect("expected mouse input");
 
         assert_eq!(
@@ -730,18 +739,21 @@ mod tests {
     #[test]
     fn mouse_input_event_maps_diff_hit_to_content_anchor() {
         let mut state = test_state();
-        state.show_file_list = false;
         state.diff_area = Rect::new(0, 0, 80, 20);
         state.diff_scroll = 10;
         state.diff_gutter_cols = 4;
 
         let event = state
-            .input_event_from_mouse(&MouseEvent {
-                kind: MouseEventKind::ScrollDown,
-                column: 12,
-                row: 3,
-                modifiers: event::KeyModifiers::SHIFT,
-            })
+            .input_event_from_mouse(
+                &MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    column: 12,
+                    row: 3,
+                    modifiers: event::KeyModifiers::SHIFT,
+                },
+                false,
+                true,
+            )
             .expect("expected mouse input");
 
         assert_eq!(

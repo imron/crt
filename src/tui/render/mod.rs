@@ -38,7 +38,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState) {
     let status_area = vertical[1];
 
     // Compute pane layout based on visibility.
-    match (state.show_file_list, state.show_diff_pane) {
+    match (tui_state.show_file_list, tui_state.show_diff_pane) {
         (true, true) => {
             let panes = Layout::default()
                 .direction(Direction::Horizontal)

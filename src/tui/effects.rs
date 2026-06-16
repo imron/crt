@@ -3,7 +3,10 @@
 use super::state::TuiState;
 use crate::app::AppState;
 use crate::app_update;
-use crate::core::{CoreEffect, DefinitionResultsEffect, PromptKind, SearchResultsEffect};
+use crate::core::{
+    CoreEffect, DefinitionResultsEffect, PaneEffect, PaneId, PromptKind, SearchResultsEffect,
+};
+use crate::model::PaneFocus;
 
 pub fn apply_core_effects(
     state: &mut AppState,
@@ -42,6 +45,24 @@ pub fn apply_core_effects(
             CoreEffect::DefinitionResults(effect) => {
                 apply_definition_results_effect(state, tui_state, effect);
             }
+            CoreEffect::TogglePaneFocus => {
+                toggle_pane_focus(state, tui_state);
+                tui_state.clear_status_message();
+            }
+            CoreEffect::TogglePaneVisibility(PaneId::FileList) => {
+                toggle_pane_visibility(state, tui_state, PaneFocus::FileList);
+                tui_state.clear_status_message();
+            }
+            CoreEffect::TogglePaneVisibility(PaneId::Diff) => {
+                toggle_pane_visibility(state, tui_state, PaneFocus::Diff);
+                tui_state.clear_status_message();
+            }
+            CoreEffect::TogglePaneVisibility(_) => {}
+            CoreEffect::Pane(PaneEffect::ActivateFileListSelection) => {
+                if tui_state.show_diff_pane {
+                    state.pane_focus = PaneFocus::Diff;
+                }
+            }
             effect => app_effects.push(effect),
         }
     }
@@ -54,6 +75,41 @@ pub fn apply_core_effects(
         save_layout_config(state, tui_state);
     }
     app_handled || handled
+}
+
+fn toggle_pane_focus(state: &mut AppState, tui_state: &TuiState) {
+    if tui_state.show_file_list && tui_state.show_diff_pane {
+        state.pane_focus = match state.pane_focus {
+            PaneFocus::FileList => PaneFocus::Diff,
+            PaneFocus::Diff => PaneFocus::FileList,
+        };
+    }
+}
+
+/// Toggle visibility of a pane. At least one pane must remain visible.
+fn toggle_pane_visibility(state: &mut AppState, tui_state: &mut TuiState, pane: PaneFocus) {
+    match pane {
+        PaneFocus::FileList => {
+            if tui_state.show_file_list {
+                if tui_state.show_diff_pane {
+                    tui_state.show_file_list = false;
+                    state.pane_focus = PaneFocus::Diff;
+                }
+            } else {
+                tui_state.show_file_list = true;
+            }
+        }
+        PaneFocus::Diff => {
+            if tui_state.show_diff_pane {
+                if tui_state.show_file_list {
+                    tui_state.show_diff_pane = false;
+                    state.pane_focus = PaneFocus::FileList;
+                }
+            } else {
+                tui_state.show_diff_pane = true;
+            }
+        }
+    }
 }
 
 fn apply_search_results_effect(

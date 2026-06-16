@@ -82,12 +82,15 @@ pub struct DefinitionResults {
     pub selected: usize,
 }
 
-#[derive(Default)]
 pub struct TuiState {
     /// Current file list pane width (configurable, resizable by drag).
     pub file_list_width: u16,
     /// Path to the config file (for persisting TUI layout changes).
     pub config_path: Option<PathBuf>,
+    /// Whether the file list pane is visible.
+    pub show_file_list: bool,
+    /// Whether the diff pane is visible.
+    pub show_diff_pane: bool,
     pub diff_cache: Option<DiffCache>,
     /// Active mouse text selection, if any.
     pub mouse_selection: Option<MouseSelection>,
@@ -133,6 +136,37 @@ pub struct TuiState {
 impl Default for InputMode {
     fn default() -> Self {
         Self::Normal
+    }
+}
+
+impl Default for TuiState {
+    fn default() -> Self {
+        Self {
+            file_list_width: 0,
+            config_path: None,
+            show_file_list: true,
+            show_diff_pane: true,
+            diff_cache: None,
+            mouse_selection: None,
+            mouse_down_anchor: None,
+            last_click: None,
+            dragging_border: false,
+            show_help: false,
+            status_message: None,
+            pending_review_toggle: false,
+            should_suspend: false,
+            should_quit: false,
+            pending_refresh: false,
+            pending_command: None,
+            search_results: None,
+            definition_results: None,
+            input_mode: InputMode::default(),
+            command_input: String::new(),
+            command_cursor: 0,
+            diff_search_input: String::new(),
+            diff_search_cursor: 0,
+            active_core_prompt: None,
+        }
     }
 }
 
@@ -241,6 +275,8 @@ mod tests {
 
         assert_eq!(state.file_list_width, 48);
         assert_eq!(state.config_path, Some(PathBuf::from("/tmp/crt.toml")));
+        assert!(state.show_file_list);
+        assert!(state.show_diff_pane);
     }
 
     #[test]
