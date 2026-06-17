@@ -133,6 +133,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   keeping accepted-result navigation in app update helpers.
 - Moved pane visibility into TUI-owned state, with pane focus adjustments
   handled at the TUI effect boundary.
+- Moved the inline-comments display toggle into TUI-owned state, with command
+  handling returning a presentation update.
 
 ## Acceptance Criteria
 

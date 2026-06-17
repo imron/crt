@@ -22,6 +22,7 @@ pub struct AppUpdate {
     pub should_quit: bool,
     pub pending_command: Option<Command>,
     pub save_layout: bool,
+    pub show_comments: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +65,10 @@ impl AppUpdate {
 
     fn request_layout_save(&mut self) {
         self.save_layout = true;
+    }
+
+    fn set_comments_visible(&mut self, show: bool) {
+        self.show_comments = Some(show);
     }
 }
 
@@ -214,7 +219,7 @@ fn apply_command(state: &mut AppState, update: &mut AppUpdate, command: CommandP
             update.set_status("Blame: hidden");
         }
         CommandParse::Parsed(Command::SetComments(show)) => {
-            state.show_comments = show;
+            update.set_comments_visible(show);
             let status = if show {
                 "Comments: shown"
             } else {

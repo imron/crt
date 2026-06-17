@@ -84,8 +84,6 @@ pub struct AppState {
     pub diff_content_height: usize,
     /// Visible lines in the diff pane (set during render).
     pub diff_view_height: usize,
-    /// Whether inline comments are visible in the diff pane.
-    pub show_comments: bool,
     /// Plain text of rendered diff lines (set during render, for clipboard).
     pub diff_rendered_text: Vec<String>,
     /// Plain text of rendered file list lines (set during render, for clipboard).
@@ -159,7 +157,6 @@ impl AppState {
             diff_gutter_cols: 0,
             diff_content_height: 0,
             diff_view_height: 0,
-            show_comments: false,
             diff_rendered_text: Vec::new(),
             file_list_rendered_text: Vec::new(),
             file_list_row_to_file: Vec::new(),
