@@ -56,7 +56,7 @@ impl Tui {
             diff::resolve_diff_algorithm(&context.worktree, cfg.layout.diff_algorithm);
 
         let config_path = crate::config::config_path();
-        let mut state = AppState::new(cfg.style, diff_algorithm, context, files);
+        let mut state = AppState::new(diff_algorithm, context, files);
         // Refresh the first file's diff using the correct base (e.g.
         // reviewed_commit for previously-reviewed files).  The server always
         // computes diffs from merge_base, so we recompute locally here.
@@ -65,7 +65,7 @@ impl Tui {
 
         Ok(Self {
             state,
-            tui_state: TuiState::new(cfg.layout.file_list_width, config_path),
+            tui_state: TuiState::new(cfg.style, cfg.layout.file_list_width, config_path),
             client,
             terminal,
         })
@@ -903,7 +903,6 @@ fn restore_terminal_raw() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::StyleConfig;
     use crate::model::{ChangeKind, DiffContent, FileChange, FileEntry, ReviewStatus};
 
     fn test_context() -> ConnectionContext {
@@ -934,7 +933,6 @@ mod tests {
 
     fn test_state() -> AppState {
         AppState::new(
-            StyleConfig::default(),
             crate::config::DiffAlgorithm::Myers,
             test_context(),
             vec![test_file("src/lib.rs")],
