@@ -12,9 +12,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use super::super::state::TuiState;
-use crate::app::model::{
-    AppModel, BlameLineModel, DiffHunkModel, DiffPanelModel, ReviewStatusModel,
-};
+use crate::app::model::{AppModel, BlameLine, DiffHunk, DiffPanel, ReviewStatus};
 use crate::config::{DiffStyle, StyleConfig};
 use crate::model::{ContentMode, LineKind, PaneFocus, RenderVariant};
 
@@ -282,7 +280,7 @@ struct BuiltContent {
 }
 
 fn build_content(
-    diff: &DiffPanelModel,
+    diff: &DiffPanel,
     styles: &StyleConfig,
     inner_w: usize,
 ) -> (
@@ -310,11 +308,11 @@ fn build_content(
     };
 
     // Reviewed file summary mode.
-    if matches!(diff.review_status, Some(ReviewStatusModel::Reviewed { .. }))
+    if matches!(diff.review_status, Some(ReviewStatus::Reviewed { .. }))
         && !diff.reviewed_diff_expanded
     {
         let at = match &diff.review_status {
-            Some(ReviewStatusModel::Reviewed { at, .. }) => at.as_str(),
+            Some(ReviewStatus::Reviewed { at, .. }) => at.as_str(),
             _ => "",
         };
         let title = format!(" {path} ");
@@ -351,13 +349,13 @@ fn build_content(
         );
     }
 
-    let empty_blame: Vec<BlameLineModel> = Vec::new();
-    let head_blame: &[BlameLineModel] = if diff.show_blame {
+    let empty_blame: Vec<BlameLine> = Vec::new();
+    let head_blame: &[BlameLine] = if diff.show_blame {
         &diff.head_blame
     } else {
         &empty_blame
     };
-    let base_blame: &[BlameLineModel] = if diff.show_blame {
+    let base_blame: &[BlameLine] = if diff.show_blame {
         &diff.base_blame
     } else {
         &empty_blame
@@ -420,7 +418,7 @@ fn build_content(
 }
 
 /// Build the border title with hunk navigation context.
-fn build_title(diff: &DiffPanelModel, tui_state: &TuiState, total_hunks: usize) -> String {
+fn build_title(diff: &DiffPanel, tui_state: &TuiState, total_hunks: usize) -> String {
     let path = diff.path.as_deref().unwrap_or("Diff");
 
     let mode_label: String = match diff.content_mode {
@@ -451,11 +449,11 @@ fn build_title(diff: &DiffPanelModel, tui_state: &TuiState, total_hunks: usize) 
     // Show diff base indicator for reviewed files when not using merge base.
     let base_label = if !diff.show_merge_base {
         let has_reviewed_commit = match &diff.review_status {
-            Some(ReviewStatusModel::Reviewed {
+            Some(ReviewStatus::Reviewed {
                 reviewed_commit: Some(_),
                 ..
             })
-            | Some(ReviewStatusModel::Changed {
+            | Some(ReviewStatus::Changed {
                 reviewed_commit: Some(_),
                 ..
             }) => true,
@@ -488,10 +486,10 @@ fn build_title(diff: &DiffPanelModel, tui_state: &TuiState, total_hunks: usize) 
 fn build_inline_diff(
     ds: &DiffStyle,
     default_bg: Color,
-    hunks: &[DiffHunkModel],
+    hunks: &[DiffHunk],
     head_content: Option<&str>,
-    head_blame: &[BlameLineModel],
-    base_blame: &[BlameLineModel],
+    head_blame: &[BlameLine],
+    base_blame: &[BlameLine],
     inner_w: usize,
 ) -> BuiltContent {
     let head_lines: Vec<&str> = head_content
@@ -563,10 +561,10 @@ fn build_inline_diff(
     let blame_fg = *ds.blame_fg;
 
     // Blame lookups: line numbers are 1-indexed, blame vecs are 0-indexed.
-    let hblame = |lineno: Option<u32>| -> Option<&BlameLineModel> {
+    let hblame = |lineno: Option<u32>| -> Option<&BlameLine> {
         lineno.and_then(|n| head_blame.get((n as usize).wrapping_sub(1)))
     };
-    let bblame = |lineno: Option<u32>| -> Option<&BlameLineModel> {
+    let bblame = |lineno: Option<u32>| -> Option<&BlameLine> {
         lineno.and_then(|n| base_blame.get((n as usize).wrapping_sub(1)))
     };
 
@@ -817,10 +815,10 @@ fn build_inline_diff(
 fn build_side_by_side_diff(
     ds: &DiffStyle,
     default_bg: Color,
-    hunks: &[DiffHunkModel],
+    hunks: &[DiffHunk],
     head_content: Option<&str>,
-    head_blame: &[BlameLineModel],
-    base_blame: &[BlameLineModel],
+    head_blame: &[BlameLine],
+    base_blame: &[BlameLine],
     inner_w: usize,
 ) -> BuiltContent {
     let head_lines: Vec<&str> = head_content
@@ -875,10 +873,10 @@ fn build_side_by_side_diff(
     let divider_style = Style::default().fg(*ds.gutter_fg);
 
     // Blame lookups.
-    let hblame = |lineno: Option<u32>| -> Option<&BlameLineModel> {
+    let hblame = |lineno: Option<u32>| -> Option<&BlameLine> {
         lineno.and_then(|n| head_blame.get((n as usize).wrapping_sub(1)))
     };
-    let bblame = |lineno: Option<u32>| -> Option<&BlameLineModel> {
+    let bblame = |lineno: Option<u32>| -> Option<&BlameLine> {
         lineno.and_then(|n| base_blame.get((n as usize).wrapping_sub(1)))
     };
 
@@ -894,7 +892,7 @@ fn build_side_by_side_diff(
                      content: &str,
                      style: Style,
                      emphasis: Option<(&[super::word_diff::DiffSpan<'_>], Style)>,
-                     blame: Option<&BlameLineModel>|
+                     blame: Option<&BlameLine>|
      -> Vec<Span<'static>> {
         let bg = style.bg.unwrap_or(default_bg);
         let gutter_style = Style::default().fg(gutter_fg).bg(bg);
@@ -1173,9 +1171,9 @@ fn build_side_by_side_diff(
 fn build_full_file_head(
     ds: &DiffStyle,
     default_bg: Color,
-    hunks: &[DiffHunkModel],
+    hunks: &[DiffHunk],
     head_content: Option<&str>,
-    blame: &[BlameLineModel],
+    blame: &[BlameLine],
     inner_w: usize,
 ) -> BuiltContent {
     let content = match head_content {
@@ -1303,9 +1301,9 @@ fn build_full_file_head(
 fn build_full_file_base(
     ds: &DiffStyle,
     default_bg: Color,
-    hunks: &[DiffHunkModel],
+    hunks: &[DiffHunk],
     base_content: Option<&str>,
-    blame: &[BlameLineModel],
+    blame: &[BlameLine],
     inner_w: usize,
 ) -> BuiltContent {
     let content = match base_content {
@@ -1430,7 +1428,7 @@ fn build_full_file_base(
 const BLAME_COL_WIDTH: usize = 30;
 
 /// Format a blame annotation for display, padded/truncated to `BLAME_COL_WIDTH`.
-fn format_blame(blame: Option<&BlameLineModel>) -> String {
+fn format_blame(blame: Option<&BlameLine>) -> String {
     match blame {
         Some(bl) => {
             // "abc1234 2024-03-15 Author" — hash(7) + space + date(10) + space + author.
@@ -1460,7 +1458,7 @@ fn make_line(
     default_bg: Color,
     gutter_w: usize,
     inner_w: usize,
-    blame: Option<&BlameLineModel>,
+    blame: Option<&BlameLine>,
 ) -> Line<'static> {
     let bg = content_style.bg.unwrap_or(default_bg);
     let gutter_style = Style::default().fg(gutter_fg).bg(bg);
@@ -1518,7 +1516,7 @@ fn make_line_with_emphasis(
     default_bg: Color,
     gutter_w: usize,
     inner_w: usize,
-    blame: Option<&BlameLineModel>,
+    blame: Option<&BlameLine>,
 ) -> Line<'static> {
     let bg = base_style.bg.unwrap_or(default_bg);
     let gutter_style = Style::default().fg(gutter_fg).bg(bg);

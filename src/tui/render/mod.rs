@@ -17,7 +17,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::state::{InputMode, TuiState};
-use crate::app::model::{AppModel, ReviewStatusModel};
+use crate::app::model::{AppModel, ReviewStatus};
 use crate::config::{PanelStyle, StyleConfig};
 use crate::git;
 
@@ -206,7 +206,7 @@ fn draw_status_bar(
         .sections
         .iter()
         .flat_map(|section| &section.rows)
-        .filter(|row| matches!(row.review_status, ReviewStatusModel::Reviewed { .. }))
+        .filter(|row| matches!(row.review_status, ReviewStatus::Reviewed { .. }))
         .count();
     let total = model.file_list_row_count();
 

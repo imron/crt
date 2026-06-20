@@ -8,24 +8,25 @@ use crate::app::AppState;
 use crate::config::DiffAlgorithm;
 use crate::core::{PromptId, PromptKind, TextAnchor};
 use crate::model::{
-    ChangeKind, ConnectionContext, ContentMode, LineKind, PaneFocus, RenderVariant, ReviewStatus,
+    ChangeKind, ConnectionContext, ContentMode, LineKind, PaneFocus, RenderVariant,
+    ReviewStatus as DomainReviewStatus,
 };
 
 #[derive(Debug, Clone)]
 pub struct AppModel {
     pub context: ConnectionContext,
-    pub file_list: FileListModel,
-    pub diff: DiffPanelModel,
+    pub file_list: FileList,
+    pub diff: DiffPanel,
     pub focus: PaneFocus,
-    pub prompt: Option<PromptModel>,
-    pub overlays: Vec<OverlayModel>,
-    pub status: Option<StatusModel>,
-    pub selection: Option<SemanticSelectionModel>,
+    pub prompt: Option<Prompt>,
+    pub overlays: Vec<Overlay>,
+    pub status: Option<Status>,
+    pub selection: Option<SemanticSelection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileListModel {
-    pub sections: Vec<FileListSectionModel>,
+pub struct FileList {
+    pub sections: Vec<FileListSection>,
     pub selected_file_id: Option<String>,
     pub selected_file_index: Option<usize>,
     pub scroll: usize,
@@ -38,24 +39,24 @@ pub enum FileListSectionKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileListSectionModel {
+pub struct FileListSection {
     pub kind: FileListSectionKind,
-    pub rows: Vec<FileListRowModel>,
+    pub rows: Vec<FileListRow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FileListRowModel {
+pub struct FileListRow {
     pub file_index: usize,
     pub file_id: String,
     pub path: String,
     pub old_path: Option<String>,
     pub change_kind: ChangeKind,
-    pub review_status: ReviewStatusModel,
+    pub review_status: ReviewStatus,
     pub selected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReviewStatusModel {
+pub enum ReviewStatus {
     Unreviewed,
     Reviewed {
         at: String,
@@ -68,11 +69,11 @@ pub enum ReviewStatusModel {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiffPanelModel {
+pub struct DiffPanel {
     pub selected_file_index: Option<usize>,
     pub file_id: Option<String>,
     pub path: Option<String>,
-    pub review_status: Option<ReviewStatusModel>,
+    pub review_status: Option<ReviewStatus>,
     pub content_mode: ContentMode,
     pub render_variant: RenderVariant,
     pub diff_algorithm: DiffAlgorithm,
@@ -83,30 +84,30 @@ pub struct DiffPanelModel {
     pub reviewed_diff_expanded: bool,
     pub is_binary: bool,
     pub diff_hash: Option<String>,
-    pub hunks: Vec<DiffHunkModel>,
+    pub hunks: Vec<DiffHunk>,
     pub head_content: Option<String>,
     pub base_content: Option<String>,
-    pub head_blame: Vec<BlameLineModel>,
-    pub base_blame: Vec<BlameLineModel>,
+    pub head_blame: Vec<BlameLine>,
+    pub base_blame: Vec<BlameLine>,
     pub scroll: usize,
     pub cursor: TextAnchor,
     pub search_query: Option<String>,
-    pub search_highlights: Vec<TextRangeModel>,
+    pub search_highlights: Vec<TextRange>,
     pub current_search_highlight: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiffHunkModel {
+pub struct DiffHunk {
     pub header: String,
     pub old_start: u32,
     pub old_lines: u32,
     pub new_start: u32,
     pub new_lines: u32,
-    pub lines: Vec<DiffLineModel>,
+    pub lines: Vec<DiffLine>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiffLineModel {
+pub struct DiffLine {
     pub kind: LineKind,
     pub content: String,
     pub old_lineno: Option<u32>,
@@ -114,31 +115,31 @@ pub struct DiffLineModel {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BlameLineModel {
+pub struct BlameLine {
     pub hash: String,
     pub author: String,
     pub date: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TextRangeModel {
+pub struct TextRange {
     pub line: usize,
     pub column_start: usize,
     pub column_end: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PromptModel {
+pub struct Prompt {
     pub id: PromptId,
     pub kind: PromptKind,
     pub value: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OverlayModel {
+pub struct Overlay {
     pub kind: OverlayKind,
     pub title: String,
-    pub items: Vec<OverlayItemModel>,
+    pub items: Vec<OverlayItem>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,19 +150,19 @@ pub enum OverlayKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OverlayItemModel {
+pub struct OverlayItem {
     pub id: String,
     pub label: String,
     pub selected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatusModel {
+pub struct Status {
     pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SemanticSelectionModel {
+pub struct SemanticSelection {
     pub pane: PaneFocus,
     pub start: TextAnchor,
     pub end: TextAnchor,
@@ -190,7 +191,7 @@ impl AppModel {
     }
 }
 
-fn file_list_model(state: &AppState) -> FileListModel {
+fn file_list_model(state: &AppState) -> FileList {
     let unreviewed_count = state.unreviewed_count();
     let selected_file_id = state
         .selected_file_entry()
@@ -211,13 +212,13 @@ fn file_list_model(state: &AppState) -> FileListModel {
         .map(|(index, entry)| file_row_model(index, state.selected_file, entry))
         .collect();
 
-    FileListModel {
+    FileList {
         sections: vec![
-            FileListSectionModel {
+            FileListSection {
                 kind: FileListSectionKind::Unreviewed,
                 rows: unreviewed_rows,
             },
-            FileListSectionModel {
+            FileListSection {
                 kind: FileListSectionKind::Reviewed,
                 rows: reviewed_rows,
             },
@@ -235,19 +236,19 @@ fn file_row_model(
     index: usize,
     selected_file: usize,
     entry: &crate::model::FileEntry,
-) -> FileListRowModel {
-    FileListRowModel {
+) -> FileListRow {
+    FileListRow {
         file_index: index,
         file_id: entry.change.path.clone(),
         path: entry.change.path.clone(),
         old_path: entry.change.old_path.clone(),
         change_kind: entry.change.kind,
-        review_status: ReviewStatusModel::from(&entry.status),
+        review_status: ReviewStatus::from(&entry.status),
         selected: index == selected_file,
     }
 }
 
-fn diff_panel_model(state: &AppState) -> DiffPanelModel {
+fn diff_panel_model(state: &AppState) -> DiffPanel {
     let selected = state.selected_file_entry();
     let hunks = selected
         .map(|entry| {
@@ -255,7 +256,7 @@ fn diff_panel_model(state: &AppState) -> DiffPanelModel {
                 .diff
                 .hunks
                 .iter()
-                .map(|hunk| DiffHunkModel {
+                .map(|hunk| DiffHunk {
                     header: hunk.header.clone(),
                     old_start: hunk.old_start,
                     old_lines: hunk.old_lines,
@@ -264,7 +265,7 @@ fn diff_panel_model(state: &AppState) -> DiffPanelModel {
                     lines: hunk
                         .lines
                         .iter()
-                        .map(|line| DiffLineModel {
+                        .map(|line| DiffLine {
                             kind: line.kind,
                             content: line.content.clone(),
                             old_lineno: line.old_lineno,
@@ -276,11 +277,11 @@ fn diff_panel_model(state: &AppState) -> DiffPanelModel {
         })
         .unwrap_or_default();
 
-    DiffPanelModel {
+    DiffPanel {
         selected_file_index: selected.map(|_| state.selected_file),
         file_id: selected.map(|entry| entry.change.path.clone()),
         path: selected.map(|entry| entry.change.path.clone()),
-        review_status: selected.map(|entry| ReviewStatusModel::from(&entry.status)),
+        review_status: selected.map(|entry| ReviewStatus::from(&entry.status)),
         content_mode: state.content_mode,
         render_variant: state.render_variant,
         diff_algorithm: state.diff_algorithm,
@@ -294,8 +295,8 @@ fn diff_panel_model(state: &AppState) -> DiffPanelModel {
         hunks,
         head_content: state.head_content.clone(),
         base_content: state.base_content.clone(),
-        head_blame: state.head_blame.iter().map(BlameLineModel::from).collect(),
-        base_blame: state.base_blame.iter().map(BlameLineModel::from).collect(),
+        head_blame: state.head_blame.iter().map(BlameLine::from).collect(),
+        base_blame: state.base_blame.iter().map(BlameLine::from).collect(),
         scroll: state.diff_scroll,
         cursor: TextAnchor {
             line: state.diff_line_cursor,
@@ -305,7 +306,7 @@ fn diff_panel_model(state: &AppState) -> DiffPanelModel {
         search_highlights: state
             .diff_search_matches
             .iter()
-            .map(|(line, start, end)| TextRangeModel {
+            .map(|(line, start, end)| TextRange {
                 line: *line,
                 column_start: *start,
                 column_end: *end,
@@ -318,18 +319,18 @@ fn diff_panel_model(state: &AppState) -> DiffPanelModel {
     }
 }
 
-impl From<&ReviewStatus> for ReviewStatusModel {
-    fn from(status: &ReviewStatus) -> Self {
+impl From<&DomainReviewStatus> for ReviewStatus {
+    fn from(status: &DomainReviewStatus) -> Self {
         match status {
-            ReviewStatus::Unreviewed => Self::Unreviewed,
-            ReviewStatus::Reviewed {
+            DomainReviewStatus::Unreviewed => Self::Unreviewed,
+            DomainReviewStatus::Reviewed {
                 at,
                 reviewed_commit,
             } => Self::Reviewed {
                 at: at.clone(),
                 reviewed_commit: reviewed_commit.clone(),
             },
-            ReviewStatus::Changed {
+            DomainReviewStatus::Changed {
                 at,
                 reviewed_commit,
             } => Self::Changed {
@@ -340,7 +341,7 @@ impl From<&ReviewStatus> for ReviewStatusModel {
     }
 }
 
-impl From<&crate::git::BlameLine> for BlameLineModel {
+impl From<&crate::git::BlameLine> for BlameLine {
     fn from(line: &crate::git::BlameLine) -> Self {
         Self {
             hash: line.hash.clone(),
@@ -356,7 +357,8 @@ mod tests {
     use crate::app::App;
     use crate::config::Config;
     use crate::model::{
-        ChangeKind, DiffContent, DiffHunk, DiffLine, FileChange, FileEntry, LineKind,
+        ChangeKind, DiffContent, DiffHunk as DomainDiffHunk, DiffLine as DomainDiffLine,
+        FileChange, FileEntry, LineKind, ReviewStatus as DomainReviewStatus,
     };
 
     fn test_context() -> ConnectionContext {
@@ -369,7 +371,7 @@ mod tests {
         }
     }
 
-    fn file(path: &str, status: ReviewStatus, hunks: Vec<DiffHunk>) -> FileEntry {
+    fn file(path: &str, status: DomainReviewStatus, hunks: Vec<DomainDiffHunk>) -> FileEntry {
         FileEntry {
             change: FileChange {
                 path: path.to_string(),
@@ -385,21 +387,21 @@ mod tests {
         }
     }
 
-    fn hunk() -> DiffHunk {
-        DiffHunk {
+    fn hunk() -> DomainDiffHunk {
+        DomainDiffHunk {
             old_start: 1,
             old_lines: 2,
             new_start: 1,
             new_lines: 2,
             header: "@@ -1,2 +1,2 @@".to_string(),
             lines: vec![
-                DiffLine {
+                DomainDiffLine {
                     kind: LineKind::Context,
                     content: "fn main() {".to_string(),
                     old_lineno: Some(1),
                     new_lineno: Some(1),
                 },
-                DiffLine {
+                DomainDiffLine {
                     kind: LineKind::Addition,
                     content: "    run();".to_string(),
                     old_lineno: None,
@@ -409,15 +411,15 @@ mod tests {
         }
     }
 
-    fn reviewed() -> ReviewStatus {
-        ReviewStatus::Reviewed {
+    fn reviewed() -> DomainReviewStatus {
+        DomainReviewStatus::Reviewed {
             at: "2026-01-01T00:00:00Z".to_string(),
             reviewed_commit: Some("abc".to_string()),
         }
     }
 
-    fn changed() -> ReviewStatus {
-        ReviewStatus::Changed {
+    fn changed() -> DomainReviewStatus {
+        DomainReviewStatus::Changed {
             at: "2026-01-01T00:00:00Z".to_string(),
             reviewed_commit: Some("def".to_string()),
         }
@@ -431,7 +433,7 @@ mod tests {
             vec![
                 file("c.rs", reviewed(), Vec::new()),
                 file("b.rs", changed(), Vec::new()),
-                file("a.rs", ReviewStatus::Unreviewed, Vec::new()),
+                file("a.rs", DomainReviewStatus::Unreviewed, Vec::new()),
             ],
         );
         app.state.selected_file = app
@@ -467,7 +469,7 @@ mod tests {
         assert_eq!(model.file_list.sections[0].rows[1].file_index, 1);
         assert!(matches!(
             model.file_list.sections[0].rows[1].review_status,
-            ReviewStatusModel::Changed { .. }
+            ReviewStatus::Changed { .. }
         ));
         assert_eq!(model.file_list.sections[1].rows[0].path, "c.rs");
     }
@@ -477,7 +479,11 @@ mod tests {
         let mut app = App::new(
             Config::default(),
             test_context(),
-            vec![file("src/main.rs", ReviewStatus::Unreviewed, vec![hunk()])],
+            vec![file(
+                "src/main.rs",
+                DomainReviewStatus::Unreviewed,
+                vec![hunk()],
+            )],
         );
         app.state.diff_line_cursor = 3;
         app.state.diff_col_cursor = 7;
@@ -499,12 +505,12 @@ mod tests {
         assert_eq!(
             model.diff.search_highlights,
             vec![
-                TextRangeModel {
+                TextRange {
                     line: 3,
                     column_start: 10,
                     column_end: 13,
                 },
-                TextRangeModel {
+                TextRange {
                     line: 8,
                     column_start: 2,
                     column_end: 5,
@@ -519,7 +525,11 @@ mod tests {
         let app = App::new(
             Config::default(),
             test_context(),
-            vec![file("src/lib.rs", ReviewStatus::Unreviewed, Vec::new())],
+            vec![file(
+                "src/lib.rs",
+                DomainReviewStatus::Unreviewed,
+                Vec::new(),
+            )],
         );
 
         let model = app.model();
