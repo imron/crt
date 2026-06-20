@@ -26,7 +26,7 @@ use crate::client::Client;
 use crate::core::command::Command;
 use crate::core::review;
 use crate::core::search as core_search;
-use crate::core::{InputEvent, InteractionContext, PaneId, TextAnchor};
+use crate::core::{CoreEffect, InputEvent, InteractionContext, PaneId, TextAnchor};
 use crate::model::{ConnectionContext, PaneFocus, ReviewStatus};
 
 /// How long the "Press Ctrl-C again" prompt stays active.
@@ -222,6 +222,11 @@ impl Tui {
     }
 
     fn dispatch_core_input(&mut self, dispatch: CoreInputDispatch) -> bool {
+        let effects = self.core_effects_for_input(dispatch);
+        apply_core_effects(&mut self.app.state, &mut self.tui_state, effects)
+    }
+
+    fn core_effects_for_input(&mut self, dispatch: CoreInputDispatch) -> Vec<CoreEffect> {
         let (event, context) = match dispatch {
             CoreInputDispatch::Interaction(event) => (event, self.interaction_context()),
             CoreInputDispatch::PromptSubmit(event) => {
@@ -229,12 +234,10 @@ impl Tui {
             }
             CoreInputDispatch::PromptCancel(event) => (event, InteractionContext::default()),
         };
-        let effects = self
-            .app
+        self.app
             .state
             .core_interaction
-            .handle_input(event, &context);
-        apply_core_effects(&mut self.app.state, &mut self.tui_state, effects)
+            .handle_input(event, &context)
     }
 
     fn interaction_context(&self) -> InteractionContext {
@@ -292,12 +295,7 @@ impl Tui {
         let input_event = input::input_event_from_mouse(&self.app.state, &self.tui_state, &mouse);
         let semantic_content_hit = input_event.as_ref().and_then(mouse_content_hit);
         let pending_core_effects = input_event
-            .map(|event| {
-                self.app
-                    .state
-                    .core_interaction
-                    .handle_input(event, &Default::default())
-            })
+            .map(|event| self.core_effects_for_input(CoreInputDispatch::Interaction(event)))
             .unwrap_or_default();
 
         match mouse.kind {

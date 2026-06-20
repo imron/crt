@@ -155,6 +155,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   TUI input adapter while keeping app hit mapping UI-neutral.
 - Changed the TUI key input adapter to emit UI-neutral `InputEvent`s instead
   of dispatching to the core interaction engine directly.
+- Centralized TUI runtime core input dispatch so key and mouse events share
+  the same context selection and effect application boundary.
 
 ## Acceptance Criteria
 
