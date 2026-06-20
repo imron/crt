@@ -1,6 +1,6 @@
 //! Search and definition result semantics shared by UI adapters.
 
-use crate::model::{
+use crate::review_types::{
     DefinitionLocation, FileEntry, FindDefinitionResult, SearchCodebaseResult, SearchMatch,
 };
 
@@ -85,7 +85,7 @@ fn resolve_location(files: &[FileEntry], file_path: &str, line_number: u32) -> L
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ChangeKind, DiffContent, FileChange, ReviewStatus};
+    use crate::review_types::{ChangeKind, DiffContent, FileChange, ReviewStatus};
 
     fn entry(path: &str) -> FileEntry {
         FileEntry {

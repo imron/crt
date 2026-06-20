@@ -8,7 +8,7 @@ use crate::app::model::AppModel;
 use crate::app::{AppOutput, AppState, AppViewport, StatusUpdate};
 use crate::core::command::Command;
 use crate::core::{AppTarget, PaneId, PointerSemanticHit, PromptId, TextAnchor};
-use crate::model::{DefinitionLocation, PaneFocus, SearchMatch};
+use crate::review_types::{DefinitionLocation, PaneFocus, SearchMatch};
 use ratatui::layout::Rect;
 
 /// Current terminal input mode.

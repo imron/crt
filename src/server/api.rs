@@ -10,10 +10,10 @@ use tokio::sync::broadcast;
 use super::{ConnectionContext, ServerState};
 use crate::db::Database;
 use crate::git;
-use crate::model;
 use crate::protocol::{
     ERR_INTERNAL, ERR_INVALID_PARAMS, JsonRpcResponse, Notification, NotificationKind,
 };
+use crate::review_types;
 
 pub async fn handle_init(
     params: &serde_json::Value,
@@ -22,7 +22,7 @@ pub async fn handle_init(
     conn_ctx: &mut Option<ConnectionContext>,
     conn_db: &mut Option<Arc<Mutex<Database>>>,
 ) -> JsonRpcResponse {
-    let init_params: model::InitParams = match serde_json::from_value(params.clone()) {
+    let init_params: review_types::InitParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => {
             return JsonRpcResponse::error(
@@ -101,7 +101,7 @@ pub async fn handle_init(
         db_path,
     };
 
-    let result = model::ConnectionContext {
+    let result = review_types::ConnectionContext {
         repo_root: git_ctx.repo_root.to_string_lossy().into_owned(),
         worktree: worktree_path.to_string_lossy().into_owned(),
         head_ref: git_ctx.head.display_name(),
@@ -179,9 +179,9 @@ pub async fn handle_list_changed_files(
             let diff = repo.diff_file_workdir(&merge_base, &change.path)?;
 
             let status = match reviews.get(&change.path) {
-                None => model::ReviewStatus::Unreviewed,
+                None => review_types::ReviewStatus::Unreviewed,
                 Some(review) if review.diff_hash == diff.diff_hash => {
-                    model::ReviewStatus::Reviewed {
+                    review_types::ReviewStatus::Reviewed {
                         at: review.reviewed_at.clone(),
                         reviewed_commit: if review.reviewed_commit.is_empty() {
                             None
@@ -190,7 +190,7 @@ pub async fn handle_list_changed_files(
                         },
                     }
                 }
-                Some(review) => model::ReviewStatus::Changed {
+                Some(review) => review_types::ReviewStatus::Changed {
                     at: review.reviewed_at.clone(),
                     reviewed_commit: if review.reviewed_commit.is_empty() {
                         None
@@ -200,14 +200,14 @@ pub async fn handle_list_changed_files(
                 },
             };
 
-            files.push(model::FileEntry {
+            files.push(review_types::FileEntry {
                 change,
                 status,
                 diff,
             });
         }
 
-        Ok(model::ListChangedFilesResult { files })
+        Ok(review_types::ListChangedFilesResult { files })
     })
     .await;
 
@@ -387,7 +387,8 @@ pub async fn handle_get_file_diff(
     id: &serde_json::Value,
     ctx: &ConnectionContext,
 ) -> JsonRpcResponse {
-    let diff_params: model::GetFileDiffParams = match serde_json::from_value(params.clone()) {
+    let diff_params: review_types::GetFileDiffParams = match serde_json::from_value(params.clone())
+    {
         Ok(p) => p,
         Err(e) => {
             return JsonRpcResponse::error(
@@ -405,7 +406,7 @@ pub async fn handle_get_file_diff(
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let repo = git::Repo::open(&worktree)?;
         let diff = repo.diff_file_workdir(&merge_base, &file_path)?;
-        Ok(model::GetFileDiffResult { diff })
+        Ok(review_types::GetFileDiffResult { diff })
     })
     .await;
 
@@ -436,7 +437,7 @@ pub async fn handle_mark_reviewed(
     db: &Arc<Mutex<Database>>,
     notify_tx: &broadcast::Sender<Notification>,
 ) -> JsonRpcResponse {
-    let p: model::MarkReviewedParams = match serde_json::from_value(params.clone()) {
+    let p: review_types::MarkReviewedParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => {
             return JsonRpcResponse::error(
@@ -510,9 +511,9 @@ pub async fn handle_mark_reviewed(
         },
     });
 
-    let result = model::ReviewActionResult {
+    let result = review_types::ReviewActionResult {
         file_path,
-        status: model::ReviewStatus::Reviewed {
+        status: review_types::ReviewStatus::Reviewed {
             at: reviewed_at,
             reviewed_commit: Some(reviewed_commit),
         },
@@ -539,7 +540,7 @@ pub async fn handle_unmark_reviewed(
     db: &Arc<Mutex<Database>>,
     notify_tx: &broadcast::Sender<Notification>,
 ) -> JsonRpcResponse {
-    let p: model::UnmarkReviewedParams = match serde_json::from_value(params.clone()) {
+    let p: review_types::UnmarkReviewedParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
         Err(e) => {
             return JsonRpcResponse::error(
@@ -573,9 +574,9 @@ pub async fn handle_unmark_reviewed(
         },
     });
 
-    let result = model::ReviewActionResult {
+    let result = review_types::ReviewActionResult {
         file_path: p.file_path,
-        status: model::ReviewStatus::Unreviewed,
+        status: review_types::ReviewStatus::Unreviewed,
     };
 
     match serde_json::to_value(result) {
@@ -621,7 +622,7 @@ pub async fn handle_reset_reviews(
         kind: NotificationKind::ReviewsCleared,
     });
 
-    let result = model::ResetReviewsResult { cleared };
+    let result = review_types::ResetReviewsResult { cleared };
 
     match serde_json::to_value(result) {
         Ok(v) => JsonRpcResponse::success(id.clone(), v),
@@ -662,16 +663,17 @@ pub async fn handle_search_codebase(
     id: &serde_json::Value,
     ctx: &ConnectionContext,
 ) -> JsonRpcResponse {
-    let search_params: model::SearchCodebaseParams = match serde_json::from_value(params.clone()) {
-        Ok(p) => p,
-        Err(e) => {
-            return JsonRpcResponse::error(
-                id.clone(),
-                ERR_INVALID_PARAMS,
-                format!("Invalid search params: {e}"),
-            );
-        }
-    };
+    let search_params: review_types::SearchCodebaseParams =
+        match serde_json::from_value(params.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INVALID_PARAMS,
+                    format!("Invalid search params: {e}"),
+                );
+            }
+        };
 
     let repo_root = ctx.worktree.clone();
     let pattern = search_params.pattern.clone();
@@ -736,16 +738,17 @@ pub async fn handle_find_definition(
     id: &serde_json::Value,
     ctx: &ConnectionContext,
 ) -> JsonRpcResponse {
-    let def_params: model::FindDefinitionParams = match serde_json::from_value(params.clone()) {
-        Ok(p) => p,
-        Err(e) => {
-            return JsonRpcResponse::error(
-                id.clone(),
-                ERR_INVALID_PARAMS,
-                format!("Invalid find_definition params: {e}"),
-            );
-        }
-    };
+    let def_params: review_types::FindDefinitionParams =
+        match serde_json::from_value(params.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INVALID_PARAMS,
+                    format!("Invalid find_definition params: {e}"),
+                );
+            }
+        };
 
     let repo_root = ctx.worktree.clone();
     let symbol = def_params.symbol.clone();

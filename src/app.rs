@@ -9,7 +9,7 @@ use crate::core::InputEvent;
 use crate::core::diff;
 use crate::core::interaction::{CoreEffect, CoreInteractionEngine, InteractionContext};
 use crate::core::review;
-use crate::model::{
+use crate::review_types::{
     ConnectionContext, ContentMode, DefinitionLocation, FileEntry, PaneFocus, RenderVariant,
     SearchMatch,
 };
@@ -352,7 +352,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ChangeKind, DiffContent, FileChange, FileEntry, ReviewStatus};
+    use crate::review_types::{ChangeKind, DiffContent, FileChange, FileEntry, ReviewStatus};
 
     fn test_context() -> ConnectionContext {
         ConnectionContext {

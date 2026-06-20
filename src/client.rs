@@ -12,10 +12,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 
-use crate::model;
+use crate::review_types;
 
-/// Result of the `init` call. Alias for [`model::ConnectionContext`].
-pub type InitResult = model::ConnectionContext;
+/// Result of the `init` call. Alias for [`review_types::ConnectionContext`].
+pub type InitResult = review_types::ConnectionContext;
 
 // ---------------------------------------------------------------------------
 // Client
@@ -72,11 +72,11 @@ impl Client {
     // Review state (stubs — will return "not implemented" from server)
     // -----------------------------------------------------------------------
 
-    pub async fn list_changed_files(&self) -> Result<model::ListChangedFilesResult> {
+    pub async fn list_changed_files(&self) -> Result<review_types::ListChangedFilesResult> {
         self.call("list_changed_files", serde_json::json!({})).await
     }
 
-    pub async fn get_file_diff(&self, file_path: &str) -> Result<model::GetFileDiffResult> {
+    pub async fn get_file_diff(&self, file_path: &str) -> Result<review_types::GetFileDiffResult> {
         self.call(
             "get_file_diff",
             serde_json::json!({ "file_path": file_path }),
@@ -96,7 +96,7 @@ impl Client {
         .await
     }
 
-    pub async fn mark_reviewed(&self, file_path: &str) -> Result<model::ReviewActionResult> {
+    pub async fn mark_reviewed(&self, file_path: &str) -> Result<review_types::ReviewActionResult> {
         self.call(
             "mark_reviewed",
             serde_json::json!({ "file_path": file_path }),
@@ -104,7 +104,10 @@ impl Client {
         .await
     }
 
-    pub async fn unmark_reviewed(&self, file_path: &str) -> Result<model::ReviewActionResult> {
+    pub async fn unmark_reviewed(
+        &self,
+        file_path: &str,
+    ) -> Result<review_types::ReviewActionResult> {
         self.call(
             "unmark_reviewed",
             serde_json::json!({ "file_path": file_path }),
@@ -112,7 +115,7 @@ impl Client {
         .await
     }
 
-    pub async fn reset_reviews(&self) -> Result<model::ResetReviewsResult> {
+    pub async fn reset_reviews(&self) -> Result<review_types::ResetReviewsResult> {
         self.call("reset_reviews", serde_json::json!({})).await
     }
 
@@ -158,7 +161,7 @@ impl Client {
         &self,
         pattern: &str,
         scope: &str,
-    ) -> Result<crate::model::SearchCodebaseResult> {
+    ) -> Result<crate::review_types::SearchCodebaseResult> {
         let value = self
             .call(
                 "search_codebase",
@@ -173,7 +176,7 @@ impl Client {
         &self,
         symbol: &str,
         context_file: Option<&str>,
-    ) -> Result<crate::model::FindDefinitionResult> {
+    ) -> Result<crate::review_types::FindDefinitionResult> {
         let value = self
             .call(
                 "find_definition",

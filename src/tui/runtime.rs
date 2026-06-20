@@ -26,7 +26,7 @@ use crate::core::command::Command;
 use crate::core::review;
 use crate::core::search as core_search;
 use crate::core::{CoreEffect, InputEvent, InteractionContext, PaneId, TextAnchor};
-use crate::model::{ConnectionContext, PaneFocus, ReviewStatus};
+use crate::review_types::{ConnectionContext, PaneFocus, ReviewStatus};
 
 /// How long the "Press Ctrl-C again" prompt stays active.
 const CTRL_C_TIMEOUT: Duration = Duration::from_secs(3);
@@ -660,7 +660,7 @@ impl Tui {
 
     /// Apply a review action result from the server: update the file's status,
     /// re-sort the file list, and auto-advance if needed.
-    fn apply_review_result(&mut self, result: &crate::model::ReviewActionResult) {
+    fn apply_review_result(&mut self, result: &crate::review_types::ReviewActionResult) {
         self.app.state.selected_file = review::apply_review_result(
             &mut self.app.state.files,
             self.app.state.selected_file,

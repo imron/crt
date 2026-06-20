@@ -1,6 +1,6 @@
 //! Navigation rules shared by UI adapters.
 
-use crate::model::FileEntry;
+use crate::review_types::FileEntry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -186,7 +186,9 @@ pub fn scroll_to_show_hunk(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ChangeKind, DiffContent, DiffHunk, DiffLine, FileChange, ReviewStatus};
+    use crate::review_types::{
+        ChangeKind, DiffContent, DiffHunk, DiffLine, FileChange, ReviewStatus,
+    };
 
     fn entry() -> FileEntry {
         FileEntry {
@@ -204,7 +206,7 @@ mod tests {
                     new_lines: 3,
                     header: String::new(),
                     lines: vec![DiffLine {
-                        kind: crate::model::LineKind::Context,
+                        kind: crate::review_types::LineKind::Context,
                         content: String::new(),
                         old_lineno: Some(10),
                         new_lineno: Some(10),

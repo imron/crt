@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::config::DiffAlgorithm;
 use crate::git::{BlameLine, Repo};
-use crate::model::DiffContent;
+use crate::review_types::DiffContent;
 
 pub fn resolve_diff_algorithm(worktree: &str, configured: Option<DiffAlgorithm>) -> DiffAlgorithm {
     configured.unwrap_or_else(|| {

@@ -5,7 +5,9 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::model::{DefinitionLocation, FindDefinitionResult, SearchCodebaseResult, SearchMatch};
+use crate::review_types::{
+    DefinitionLocation, FindDefinitionResult, SearchCodebaseResult, SearchMatch,
+};
 
 /// Maximum number of search results to return (prevents UI overload).
 const MAX_SEARCH_RESULTS: usize = 500;

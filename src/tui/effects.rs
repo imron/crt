@@ -5,7 +5,7 @@ use crate::app::{App, AppState};
 use crate::core::{
     CoreEffect, DefinitionResultsEffect, PaneEffect, PaneId, PromptKind, SearchResultsEffect,
 };
-use crate::model::PaneFocus;
+use crate::review_types::PaneFocus;
 
 pub fn apply_core_effects(
     app: &mut App,

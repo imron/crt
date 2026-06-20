@@ -14,7 +14,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use super::super::state::TuiState;
 use crate::app::model::{AppModel, BlameLine, DiffHunk, DiffPanel, ReviewStatus};
 use crate::config::{DiffStyle, StyleConfig};
-use crate::model::{ContentMode, LineKind, PaneFocus, RenderVariant};
+use crate::review_types::{ContentMode, LineKind, PaneFocus, RenderVariant};
 
 // ---------------------------------------------------------------------------
 // Diff line cache — avoids rebuilding all Line<'static> every frame
