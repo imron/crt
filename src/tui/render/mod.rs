@@ -52,19 +52,19 @@ pub fn draw(
                     Constraint::Min(1),
                 ])
                 .split(main_area);
-            state.file_list_area = panes[0];
-            state.diff_area = panes[1];
-            file_list::draw(frame, state, styles, panes[0]);
+            tui_state.file_list_area = panes[0];
+            tui_state.diff_area = panes[1];
+            file_list::draw(frame, state, tui_state, styles, panes[0]);
             diff_view::draw(frame, state, tui_state, styles, panes[1]);
         }
         (true, false) => {
-            state.file_list_area = main_area;
-            state.diff_area = Rect::default();
-            file_list::draw(frame, state, styles, main_area);
+            tui_state.file_list_area = main_area;
+            tui_state.diff_area = Rect::default();
+            file_list::draw(frame, state, tui_state, styles, main_area);
         }
         (false, true) => {
-            state.file_list_area = Rect::default();
-            state.diff_area = main_area;
+            tui_state.file_list_area = Rect::default();
+            tui_state.diff_area = main_area;
             diff_view::draw(frame, state, tui_state, styles, main_area);
         }
         (false, false) => {
@@ -122,8 +122,8 @@ fn draw_selection_highlight(
     };
 
     let area = match sel.pane {
-        crate::model::PaneFocus::FileList => state.file_list_area,
-        crate::model::PaneFocus::Diff => state.diff_area,
+        crate::model::PaneFocus::FileList => tui_state.file_list_area,
+        crate::model::PaneFocus::Diff => tui_state.diff_area,
     };
     // Inner area excludes borders.
     let inner = Rect {
@@ -135,7 +135,7 @@ fn draw_selection_highlight(
 
     let (scroll, base_col) = match sel.pane {
         crate::model::PaneFocus::FileList => (state.file_list_scroll, 0usize),
-        crate::model::PaneFocus::Diff => (state.diff_scroll, state.diff_content_start_col()),
+        crate::model::PaneFocus::Diff => (state.diff_scroll, tui_state.diff_content_start_col()),
     };
 
     let visible_start_line = scroll;

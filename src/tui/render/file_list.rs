@@ -7,12 +7,19 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
+use super::super::state::TuiState;
 use crate::app::AppState;
 use crate::config::{FilesStyle, StyleConfig};
 use crate::model::{ChangeKind, PaneFocus, ReviewStatus};
 
 /// Draw the file list pane with split unreviewed/reviewed sections.
-pub fn draw(frame: &mut Frame, state: &mut AppState, styles: &StyleConfig, area: Rect) {
+pub fn draw(
+    frame: &mut Frame,
+    state: &mut AppState,
+    tui_state: &mut TuiState,
+    styles: &StyleConfig,
+    area: Rect,
+) {
     let focused = state.pane_focus == PaneFocus::FileList;
     let border_style = super::pane_border_style(&styles.panel, focused);
     let fs = &styles.files;
@@ -72,8 +79,8 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, styles: &StyleConfig, area:
         row_to_file.push(Some(i));
     }
 
-    state.file_list_rendered_text = rendered_text;
-    state.file_list_row_to_file = row_to_file;
+    tui_state.file_list_rendered_text = rendered_text;
+    tui_state.file_list_row_to_file = row_to_file;
 
     // -- Scroll to keep the cursor visible --
     let inner_height = area.height.saturating_sub(2) as usize;

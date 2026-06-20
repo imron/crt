@@ -93,8 +93,8 @@ pub fn draw(
             .unwrap_or_default(),
     };
 
-    let (cache, cache_hit): (&DiffCache, bool) = match tui_state.diff_cache.as_ref() {
-        Some(cache) if cache.key == new_key => (cache, true),
+    let cache_hit = match tui_state.diff_cache.as_ref() {
+        Some(cache) if cache.key == new_key => true,
         _ => {
             // Cache miss — rebuild everything.
             let (_title, content, hunk_starts, hunk_ends, hunk_first_changes, gutter_w) =
@@ -111,7 +111,7 @@ pub fn draw(
                 })
                 .collect();
 
-            let cache = tui_state.diff_cache.insert(DiffCache {
+            tui_state.diff_cache = Some(DiffCache {
                 key: new_key,
                 lines: content,
                 hunk_starts,
@@ -120,32 +120,44 @@ pub fn draw(
                 gutter_w,
                 rendered_text,
             });
-            (cache, false)
+            false
         }
     };
 
     // From here we know the cache is populated.
     // Extract values we need without keeping state mutations tied to cache shape.
-    let (hunk_starts, hunk_ends, hunk_first_changes, gutter_w, content_height) = {
+    let (
+        hunk_starts,
+        hunk_ends,
+        hunk_first_changes,
+        gutter_w,
+        content_height,
+        rendered_text,
+    ) = {
+        let cache = tui_state
+            .diff_cache
+            .as_ref()
+            .expect("diff cache should be populated before rendering");
         (
             cache.hunk_starts.clone(),
             cache.hunk_ends.clone(),
             cache.hunk_first_changes.clone(),
             cache.gutter_w,
             cache.lines.len(),
+            cache.rendered_text.clone(),
         )
     };
 
-    state.hunk_start_rows = hunk_starts;
-    state.hunk_end_rows = hunk_ends;
-    state.hunk_first_change_rows = hunk_first_changes;
+    tui_state.hunk_start_rows = hunk_starts;
+    tui_state.hunk_end_rows = hunk_ends;
+    tui_state.hunk_first_change_rows = hunk_first_changes;
     // Two gutter columns (old + new) plus separator, plus optional blame.
     let blame_cols = if state.show_blame {
         BLAME_COL_WIDTH + 1
     } else {
         0
     };
-    state.diff_gutter_cols = if gutter_w > 0 {
+    tui_state.diff_gutter_cols = if gutter_w > 0 {
         blame_cols + gutter_w * 2 + 1
     } else {
         0
@@ -154,25 +166,25 @@ pub fn draw(
     // Store plain text for clipboard extraction.
     // Only update on cache miss — the value persists across frames.
     if !cache_hit {
-        state.diff_rendered_text = cache.rendered_text.clone();
+        tui_state.diff_rendered_text = rendered_text;
     }
 
     // Update content/viewport dimensions for scroll clamping.
-    state.diff_content_height = content_height;
-    state.diff_view_height = area.height.saturating_sub(2) as usize;
-    state.clamp_cursor_and_scroll();
+    tui_state.diff_content_height = content_height;
+    tui_state.diff_view_height = area.height.saturating_sub(2) as usize;
+    tui_state.clamp_cursor_and_scroll(state);
 
     // Build the title fresh each frame — it depends on diff_scroll for hunk
     // navigation info (e.g. "3/5") so it can't be cached.
-    let total_hunks = state.hunk_start_rows.len();
+    let total_hunks = tui_state.hunk_start_rows.len();
     let title = match state.selected_file_entry() {
-        Some(entry) => build_title(state, entry, total_hunks),
+        Some(entry) => build_title(state, tui_state, entry, total_hunks),
         None => " Diff ".to_string(),
     };
 
     // Recompute diff search matches when content has changed (cache miss).
     if !cache_hit && state.diff_search_query.is_some() {
-        if let Some(_err) = state.recompute_diff_search_matches() {
+        if let Some(_err) = tui_state.recompute_diff_search_matches(state) {
             // Invalid regex — clear search silently on content change.
             state.diff_search_query = None;
         }
@@ -184,18 +196,27 @@ pub fn draw(
     let search_match_bg = *styles.diff.search_match_bg;
     let search_current_bg = *styles.diff.search_current_match_bg;
     let cursor_visible_idx = state.diff_line_cursor.saturating_sub(state.diff_scroll);
+    let diff_view_height = tui_state.diff_view_height;
+    let content_start_col = tui_state.diff_content_start_col();
+    let visible_source: Vec<Line> = tui_state
+        .diff_cache
+        .as_ref()
+        .expect("diff cache should be populated before rendering")
+        .lines
+        .iter()
+        .skip(state.diff_scroll)
+        .take(diff_view_height)
+        .cloned()
+        .collect();
     let visible: Vec<Line> = {
-        cache
-            .lines
-            .iter()
-            .skip(state.diff_scroll)
-            .take(state.diff_view_height)
+        visible_source
+            .into_iter()
             .enumerate()
             .map(|(i, line)| {
                 let display_row = state.diff_scroll + i;
                 let is_cursor_line = i == cursor_visible_idx
                     && state.diff_line_cursor >= state.diff_scroll
-                    && state.diff_line_cursor < state.diff_scroll + state.diff_view_height;
+                    && state.diff_line_cursor < state.diff_scroll + diff_view_height;
 
                 // Collect search matches on this row.
                 let row_matches: Vec<(usize, usize, bool)> = state
@@ -221,7 +242,7 @@ pub fn draw(
                 } else {
                     // Apply search match highlights by splitting spans.
                     let highlighted = apply_search_highlights(
-                        line,
+                        &line,
                         &row_matches,
                         search_match_bg,
                         search_current_bg,
@@ -236,9 +257,8 @@ pub fn draw(
 
                 // Apply column cursor overlay on the cursor line.
                 if is_cursor_line {
-                    let content_start = state.diff_content_start_col();
                     result_line =
-                        apply_col_cursor(&result_line, content_start, state.diff_col_cursor);
+                        apply_col_cursor(&result_line, content_start_col, state.diff_col_cursor);
                 }
 
                 result_line
@@ -397,12 +417,8 @@ fn build_content(
         },
     };
 
-    // Build title with hunk navigation info.
-    let total_hunks = built.hunk_starts.len();
-    let title = build_title(state, entry, total_hunks);
-
     (
-        title,
+        " Diff ".to_string(),
         built.lines,
         built.hunk_starts,
         built.hunk_ends,
@@ -412,7 +428,12 @@ fn build_content(
 }
 
 /// Build the border title with hunk navigation context.
-fn build_title(state: &AppState, entry: &crate::model::FileEntry, total_hunks: usize) -> String {
+fn build_title(
+    state: &AppState,
+    tui_state: &TuiState,
+    entry: &crate::model::FileEntry,
+    total_hunks: usize,
+) -> String {
     let path = &entry.change.path;
 
     let mode_label: String = match state.content_mode {
@@ -463,7 +484,7 @@ fn build_title(state: &AppState, entry: &crate::model::FileEntry, total_hunks: u
 
     let hunk_info = if total_hunks == 0 {
         String::new()
-    } else if let Some(idx) = state.current_hunk_index() {
+    } else if let Some(idx) = tui_state.current_hunk_index(state) {
         format!(" \u{2014} {}/{total_hunks}", idx + 1)
     } else {
         String::new()

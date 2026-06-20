@@ -71,6 +71,10 @@ toolkit widgets.
   scaffolding superseded by the AppModel migration.
 - Added the initial `AppModel` scaffold as a pure app-owned projection without
   changing TUI rendering or input behavior.
+- Removed terminal render state from `AppState`: pane geometry, rendered text,
+  hunk row maps, gutter measurements, and file row hit maps now live in
+  `TuiState`, with `app_update` using a temporary view trait until later
+  AppModel slices remove the render-derived dependency.
 
 ## Resolved Decisions
 

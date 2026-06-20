@@ -85,14 +85,9 @@ pub fn input_event_from_mouse(
         _ => return None,
     };
 
-    let pane = state.pane_at(
-        mouse.column,
-        mouse.row,
-        tui_state.show_file_list,
-        tui_state.show_diff_pane,
-    );
+    let pane = tui_state.pane_at(mouse.column, mouse.row);
     let local_pos = pane.map(|pane| {
-        let area = state.area_for_pane(pane);
+        let area = tui_state.area_for_pane(pane);
         (
             mouse.column.saturating_sub(area.x),
             mouse.row.saturating_sub(area.y),
@@ -104,7 +99,7 @@ pub fn input_event_from_mouse(
         button,
         local_pos,
         semantic_hit: pane
-            .and_then(|pane| state.pointer_semantic_hit(pane, mouse.column, mouse.row)),
+            .and_then(|pane| tui_state.pointer_semantic_hit(state, pane, mouse.column, mouse.row)),
         modifiers: InputModifiers {
             ctrl: mouse.modifiers.contains(KeyModifiers::CONTROL),
             alt: mouse.modifiers.contains(KeyModifiers::ALT),
@@ -436,10 +431,12 @@ mod tests {
 
     #[test]
     fn mouse_input_event_maps_file_list_hit() {
-        let mut state = test_state();
-        state.file_list_area = Rect::new(0, 0, 30, 10);
-        state.file_list_row_to_file = vec![Some(0)];
-        let tui_state = TuiState::default();
+        let state = test_state();
+        let tui_state = TuiState {
+            file_list_area: Rect::new(0, 0, 30, 10),
+            file_list_row_to_file: vec![Some(0)],
+            ..TuiState::default()
+        };
 
         let event = input_event_from_mouse(
             &state,
@@ -476,11 +473,11 @@ mod tests {
     #[test]
     fn mouse_input_event_maps_diff_hit_to_content_anchor() {
         let mut state = test_state();
-        state.diff_area = Rect::new(0, 0, 80, 20);
         state.diff_scroll = 10;
-        state.diff_gutter_cols = 4;
         let tui_state = TuiState {
             show_file_list: false,
+            diff_area: Rect::new(0, 0, 80, 20),
+            diff_gutter_cols: 4,
             ..TuiState::default()
         };
 

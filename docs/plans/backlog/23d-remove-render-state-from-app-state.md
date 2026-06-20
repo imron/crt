@@ -1,6 +1,6 @@
 # Stage 23d: Remove Render State from AppState
 
-## Status: Backlog
+## Status: Complete
 
 ## Order
 
@@ -43,10 +43,10 @@ semantic application state in the app model.
 
 ## Acceptance Criteria
 
-- [ ] `AppState` no longer depends on ratatui layout types.
-- [ ] Terminal pane geometry is stored in TUI-owned state.
-- [ ] Terminal row/cell hit maps are stored in TUI-owned state.
-- [ ] App-owned state remains sufficient to build `AppModel`.
-- [ ] Existing mouse click, drag selection, double-click copy, and wheel scroll
+- [x] `AppState` no longer depends on ratatui layout types.
+- [x] Terminal pane geometry is stored in TUI-owned state.
+- [x] Terminal row/cell hit maps are stored in TUI-owned state.
+- [x] App-owned state remains sufficient to build `AppModel`.
+- [x] Existing mouse click, drag selection, double-click copy, and wheel scroll
       behavior still works.
-- [ ] `cargo test` passes.
+- [x] `cargo test` passes.
