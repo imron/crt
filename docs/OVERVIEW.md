@@ -480,8 +480,10 @@ src/
     api.rs          -- JSON-RPC method implementations
     notify.rs       -- Push notifications to connected clients
   client.rs         -- Client connection (Unix socket), request/response
-  app.rs            -- App-owned state, configuration, and model projection
-  app_update.rs     -- Transitional app reducer helpers (to be folded into App)
+  app.rs            -- App-owned state, configuration, model projection, and reducers
+  app/
+    model.rs        -- UI-agnostic AppModel projection
+    update.rs       -- Private app-owned reducer implementation
   tui/
     mod.rs          -- Terminal UI adapter boundary
     runtime.rs      -- TUI event loop and terminal/runtime effects
