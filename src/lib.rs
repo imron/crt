@@ -5,7 +5,6 @@
 //! server.
 
 pub mod app;
-mod app_update;
 pub mod client;
 pub mod config;
 pub mod core;

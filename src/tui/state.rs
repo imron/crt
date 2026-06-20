@@ -4,9 +4,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::render::diff_view::DiffCache;
-use crate::app::AppState;
 use crate::app::model::AppModel;
-use crate::app_update::{AppUpdate, AppView, StatusUpdate};
+use crate::app::{AppOutput, AppState, AppViewport, StatusUpdate};
 use crate::core::command::Command;
 use crate::core::{AppTarget, PaneId, PointerSemanticHit, PromptId, TextAnchor};
 use crate::model::{DefinitionLocation, PaneFocus, SearchMatch};
@@ -419,15 +418,15 @@ impl TuiState {
         }
     }
 
-    pub fn apply_app_update(&mut self, update: AppUpdate) {
-        self.apply_status_update(update.status);
-        self.pending_review_toggle |= update.pending_review_toggle;
-        self.should_suspend |= update.should_suspend;
-        self.should_quit |= update.should_quit;
-        if let Some(command) = update.pending_command {
+    pub fn apply_app_output(&mut self, output: AppOutput) {
+        self.apply_status_update(output.status);
+        self.pending_review_toggle |= output.pending_review_toggle;
+        self.should_suspend |= output.should_suspend;
+        self.should_quit |= output.should_quit;
+        if let Some(command) = output.pending_command {
             self.pending_command = Some(command);
         }
-        if let Some(show_comments) = update.show_comments {
+        if let Some(show_comments) = output.show_comments {
             self.show_comments = show_comments;
         }
     }
@@ -476,7 +475,7 @@ impl TuiState {
     }
 }
 
-impl AppView for TuiState {
+impl AppViewport for TuiState {
     fn hunk_start_rows(&self) -> &[usize] {
         &self.hunk_start_rows
     }
@@ -575,10 +574,10 @@ mod tests {
     }
 
     #[test]
-    fn app_updates_set_tui_runtime_intents() {
+    fn app_outputs_set_tui_runtime_intents() {
         let mut state = TuiState::default();
 
-        state.apply_app_update(AppUpdate {
+        state.apply_app_output(AppOutput {
             handled: true,
             status: Some(StatusUpdate::Set("Searching...".to_string())),
             pending_review_toggle: true,

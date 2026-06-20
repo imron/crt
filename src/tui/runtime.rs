@@ -21,7 +21,6 @@ use super::input::{CoreInputDispatch, KeyInputResult};
 use super::state::{DefinitionResults, LastPointerClick, MouseSelection, SearchResults, TuiState};
 use super::{input, render};
 use crate::app::{App, AppState, JumpLocation};
-use crate::app_update;
 use crate::client::Client;
 use crate::core::command::Command;
 use crate::core::review;
@@ -218,7 +217,7 @@ impl Tui {
 
     fn dispatch_core_input(&mut self, dispatch: CoreInputDispatch) -> bool {
         let effects = self.core_effects_for_input(dispatch);
-        apply_core_effects(&mut self.app.state, &mut self.tui_state, effects)
+        apply_core_effects(&mut self.app, &mut self.tui_state, effects)
     }
 
     fn render_current_frame(&mut self) -> Result<()> {
@@ -235,16 +234,12 @@ impl Tui {
     fn core_effects_for_input(&mut self, dispatch: CoreInputDispatch) -> Vec<CoreEffect> {
         let (event, context) = match dispatch {
             CoreInputDispatch::Interaction(event) => (event, self.interaction_context()),
-            CoreInputDispatch::PromptSubmit(event) => (
-                event,
-                app_update::prompt_submit_context(&self.app.state, &self.tui_state),
-            ),
+            CoreInputDispatch::PromptSubmit(event) => {
+                (event, self.app.prompt_submit_context(&self.tui_state))
+            }
             CoreInputDispatch::PromptCancel(event) => (event, InteractionContext::default()),
         };
-        self.app
-            .state
-            .core_interaction
-            .handle_input(event, &context)
+        self.app.handle_input(event, &context)
     }
 
     fn interaction_context(&self) -> InteractionContext {
@@ -253,7 +248,7 @@ impl Tui {
             search_results_visible: self.tui_state.search_results.is_some(),
             definition_results_visible: self.tui_state.definition_results.is_some(),
             quit_confirmation_active: self.tui_state.quit_confirmation_active(CTRL_C_TIMEOUT),
-            ..app_update::interaction_context(&self.app.state)
+            ..self.app.interaction_context()
         }
     }
 
@@ -345,11 +340,7 @@ impl Tui {
                     return; // skip drag selection setup
                 }
 
-                apply_core_effects(
-                    &mut self.app.state,
-                    &mut self.tui_state,
-                    pending_core_effects,
-                );
+                apply_core_effects(&mut self.app, &mut self.tui_state, pending_core_effects);
 
                 if let Some((pane, anchor)) = semantic_content_hit {
                     // Record mouse-down anchor; drag starts selection.
@@ -358,11 +349,7 @@ impl Tui {
                 }
             }
             _ => {
-                if apply_core_effects(
-                    &mut self.app.state,
-                    &mut self.tui_state,
-                    pending_core_effects,
-                ) {
+                if apply_core_effects(&mut self.app, &mut self.tui_state, pending_core_effects) {
                     return;
                 }
 

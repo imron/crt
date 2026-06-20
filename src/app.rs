@@ -1,13 +1,20 @@
 //! Application state and input dispatch.
 
 pub mod model;
+mod update;
 
 use self::model::AppModel;
 use crate::config::Config;
+use crate::core::InputEvent;
 use crate::core::diff;
-use crate::core::interaction::CoreInteractionEngine;
+use crate::core::interaction::{CoreEffect, CoreInteractionEngine, InteractionContext};
 use crate::core::review;
-use crate::model::{ConnectionContext, ContentMode, FileEntry, PaneFocus, RenderVariant};
+use crate::model::{
+    ConnectionContext, ContentMode, DefinitionLocation, FileEntry, PaneFocus, RenderVariant,
+    SearchMatch,
+};
+
+pub use update::{AppOutput, AppViewport, StatusUpdate};
 
 // ---------------------------------------------------------------------------
 // Jump stack
@@ -52,6 +59,46 @@ impl App {
 
     pub fn model(&self) -> AppModel {
         AppModel::from_state(&self.state)
+    }
+
+    pub fn interaction_context(&self) -> InteractionContext {
+        update::interaction_context(&self.state)
+    }
+
+    pub fn prompt_submit_context(&self, viewport: &impl AppViewport) -> InteractionContext {
+        update::prompt_submit_context(&self.state, viewport)
+    }
+
+    pub fn handle_input(
+        &mut self,
+        event: InputEvent,
+        context: &InteractionContext,
+    ) -> Vec<CoreEffect> {
+        self.state.core_interaction.handle_input(event, context)
+    }
+
+    pub fn apply_core_effects(
+        &mut self,
+        viewport: &impl AppViewport,
+        effects: Vec<CoreEffect>,
+    ) -> AppOutput {
+        update::apply_core_effects(&mut self.state, viewport, effects)
+    }
+
+    pub fn navigate_to_search_match(
+        &mut self,
+        viewport: &impl AppViewport,
+        search_match: &SearchMatch,
+    ) -> AppOutput {
+        update::navigate_to_search_match(&mut self.state, viewport, search_match)
+    }
+
+    pub fn navigate_to_definition(
+        &mut self,
+        viewport: &impl AppViewport,
+        definition: &DefinitionLocation,
+    ) -> AppOutput {
+        update::navigate_to_definition(&mut self.state, viewport, definition)
     }
 }
 
