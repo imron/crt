@@ -19,10 +19,9 @@ use ratatui::backend::CrosstermBackend;
 use super::effects::apply_core_effects;
 use super::state::{DefinitionResults, LastPointerClick, MouseSelection, SearchResults, TuiState};
 use super::{input, render};
-use crate::app::{AppState, JumpLocation};
+use crate::app::{App, AppState, JumpLocation};
 use crate::client::Client;
 use crate::core::command::Command;
-use crate::core::diff;
 use crate::core::review;
 use crate::core::search as core_search;
 use crate::core::{InputEvent, PaneId, TextAnchor};
@@ -30,7 +29,7 @@ use crate::model::{ConnectionContext, PaneFocus, ReviewStatus};
 
 /// The terminal UI runtime. Owns the terminal, client connection, and state.
 pub struct Tui {
-    state: AppState,
+    app: App,
     tui_state: TuiState,
     client: Client,
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
@@ -39,7 +38,7 @@ pub struct Tui {
 impl Tui {
     /// Create a new application, loading initial data from the server.
     pub async fn new(client: Client, context: ConnectionContext) -> Result<Self> {
-        let cfg = crate::config::load();
+        let config = crate::config::load();
 
         // Load file list from server.
         let files = match client.list_changed_files().await {
@@ -51,21 +50,18 @@ impl Tui {
             }
         };
 
-        // Resolve diff algorithm: crt config → git config → patience.
-        let diff_algorithm =
-            diff::resolve_diff_algorithm(&context.worktree, cfg.layout.diff_algorithm);
-
         let config_path = crate::config::config_path();
-        let mut state = AppState::new(diff_algorithm, context, files);
+        let mut app = App::new(config, context, files);
         // Refresh the first file's diff using the correct base (e.g.
         // reviewed_commit for previously-reviewed files).  The server always
         // computes diffs from merge_base, so we recompute locally here.
-        state.on_file_changed();
+        app.state.on_file_changed();
         let terminal = setup_terminal().context("Failed to set up terminal")?;
+        let file_list_width = app.config.layout.file_list_width;
 
         Ok(Self {
-            state,
-            tui_state: TuiState::new(cfg.style, cfg.layout.file_list_width, config_path),
+            app,
+            tui_state: TuiState::new(file_list_width, config_path),
             client,
             terminal,
         })
@@ -122,10 +118,11 @@ impl Tui {
 
         loop {
             // Render current state.
-            let state = &mut self.state;
+            let state = &mut self.app.state;
+            let styles = &self.app.config.style;
             let tui_state = &mut self.tui_state;
             self.terminal
-                .draw(|frame| render::draw(frame, state, tui_state))?;
+                .draw(|frame| render::draw(frame, state, tui_state, styles))?;
 
             // Wait for the next terminal event, with a timeout so that
             // transient status messages get cleared by re-rendering.
@@ -192,7 +189,7 @@ impl Tui {
                 // Any keypress clears mouse selection.
                 self.tui_state.mouse_selection = None;
                 self.tui_state.mouse_down_anchor = None;
-                input::handle_key_event(&mut self.state, &mut self.tui_state, key);
+                input::handle_key_event(&mut self.app.state, &mut self.tui_state, key);
             }
             Event::Mouse(mouse) => {
                 self.handle_mouse_event(mouse);
@@ -231,10 +228,10 @@ impl Tui {
         if !self.tui_state.show_file_list || !self.tui_state.show_diff_pane {
             return false;
         }
-        let border_col = self.state.file_list_area.right().saturating_sub(1);
+        let border_col = self.app.state.file_list_area.right().saturating_sub(1);
         col == border_col
-            && row >= self.state.file_list_area.y
-            && row < self.state.file_list_area.bottom()
+            && row >= self.app.state.file_list_area.y
+            && row < self.app.state.file_list_area.bottom()
     }
 
     /// Persist the current file list width to the config file.
@@ -242,7 +239,7 @@ impl Tui {
         if let Some(path) = &self.tui_state.config_path {
             let layout = crate::config::LayoutConfig {
                 file_list_width: self.tui_state.file_list_width,
-                diff_algorithm: Some(self.state.diff_algorithm),
+                diff_algorithm: Some(self.app.state.diff_algorithm),
             };
             crate::config::save_layout(path, &layout);
         }
@@ -250,7 +247,7 @@ impl Tui {
 
     /// Handle mouse events: selection, scroll wheel, border drag.
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
-        let input_event = self.state.input_event_from_mouse(
+        let input_event = self.app.state.input_event_from_mouse(
             &mouse,
             self.tui_state.show_file_list,
             self.tui_state.show_diff_pane,
@@ -258,7 +255,8 @@ impl Tui {
         let semantic_content_hit = input_event.as_ref().and_then(mouse_content_hit);
         let pending_core_effects = input_event
             .map(|event| {
-                self.state
+                self.app
+                    .state
                     .core_interaction
                     .handle_input(event, &Default::default())
             })
@@ -303,7 +301,11 @@ impl Tui {
                     return; // skip drag selection setup
                 }
 
-                apply_core_effects(&mut self.state, &mut self.tui_state, pending_core_effects);
+                apply_core_effects(
+                    &mut self.app.state,
+                    &mut self.tui_state,
+                    pending_core_effects,
+                );
 
                 if let Some((pane, anchor)) = semantic_content_hit {
                     // Record mouse-down anchor; drag starts selection.
@@ -312,7 +314,11 @@ impl Tui {
                 }
             }
             _ => {
-                if apply_core_effects(&mut self.state, &mut self.tui_state, pending_core_effects) {
+                if apply_core_effects(
+                    &mut self.app.state,
+                    &mut self.tui_state,
+                    pending_core_effects,
+                ) {
                     return;
                 }
 
@@ -322,15 +328,17 @@ impl Tui {
                             // Resize the file list pane. Minimum 10, maximum
                             // terminal width minus 20.
                             let min_w = 10u16;
-                            let max_w =
-                                self.state.file_list_area.width + self.state.diff_area.width - 20;
+                            let max_w = self.app.state.file_list_area.width
+                                + self.app.state.diff_area.width
+                                - 20;
                             let new_width = (mouse.column + 1).clamp(min_w, max_w);
                             self.tui_state.file_list_width = new_width;
                             return;
                         }
                         let drag_content_hit = semantic_content_hit.or_else(|| {
                             let (pane, _) = self.tui_state.mouse_down_anchor?;
-                            self.state
+                            self.app
+                                .state
                                 .pointer_text_anchor_for_pane(pane, mouse.column, mouse.row, true)
                                 .map(|anchor| (pane, anchor))
                         });
@@ -368,7 +376,7 @@ impl Tui {
                             if !sel.word_selected {
                                 // Only re-extract for drag selections — word selections
                                 // were already copied by select_word_at().
-                                let text = extract_selected_text(&self.state, &sel);
+                                let text = extract_selected_text(&self.app.state, &sel);
                                 if !text.is_empty() {
                                     copy_to_clipboard(&text);
                                 }
@@ -385,7 +393,7 @@ impl Tui {
 
     /// Toggle the review status of the currently selected file.
     async fn process_review_toggle(&mut self) {
-        let entry = match self.state.files.get(self.state.selected_file) {
+        let entry = match self.app.state.files.get(self.app.state.selected_file) {
             Some(e) => e,
             None => return,
         };
@@ -415,11 +423,12 @@ impl Tui {
             Command::SearchAll { pattern } => {
                 self.tui_state.set_status_message("Searching...");
                 // Force a re-render so the user sees the searching message.
-                let state = &mut self.state;
+                let state = &mut self.app.state;
+                let styles = &self.app.config.style;
                 let tui_state = &mut self.tui_state;
                 let _ = self
                     .terminal
-                    .draw(|frame| render::draw(frame, state, tui_state));
+                    .draw(|frame| render::draw(frame, state, tui_state, styles));
 
                 match self.client.search_codebase(&pattern, "all").await {
                     Ok(result) => match core_search::search_outcome(&pattern, false, result) {
@@ -450,11 +459,12 @@ impl Tui {
             }
             Command::SearchDiff { pattern } => {
                 self.tui_state.set_status_message("Searching diff files...");
-                let state = &mut self.state;
+                let state = &mut self.app.state;
+                let styles = &self.app.config.style;
                 let tui_state = &mut self.tui_state;
                 let _ = self
                     .terminal
-                    .draw(|frame| render::draw(frame, state, tui_state));
+                    .draw(|frame| render::draw(frame, state, tui_state, styles));
 
                 match self.client.search_codebase(&pattern, "diff").await {
                     Ok(result) => match core_search::search_outcome(&pattern, true, result) {
@@ -485,13 +495,15 @@ impl Tui {
             }
             Command::FindDefinition { symbol } => {
                 self.tui_state.set_status_message("Finding definition...");
-                let state = &mut self.state;
+                let state = &mut self.app.state;
+                let styles = &self.app.config.style;
                 let tui_state = &mut self.tui_state;
                 let _ = self
                     .terminal
-                    .draw(|frame| render::draw(frame, state, tui_state));
+                    .draw(|frame| render::draw(frame, state, tui_state, styles));
 
                 let context_file = self
+                    .app
                     .state
                     .selected_file_entry()
                     .map(|e| e.change.path.clone());
@@ -501,7 +513,11 @@ impl Tui {
                     .await
                 {
                     Ok(result) => {
-                        match core_search::definition_outcome(&symbol, result, &self.state.files) {
+                        match core_search::definition_outcome(
+                            &symbol,
+                            result,
+                            &self.app.state.files,
+                        ) {
                             core_search::DefinitionOutcome::NoDefinitions => {
                                 self.tui_state.set_status_message(format!(
                                     "No definitions found for '{symbol}'"
@@ -510,7 +526,7 @@ impl Tui {
                             core_search::DefinitionOutcome::Navigate(target) => {
                                 self.tui_state.clear_status_message();
                                 navigate_to_location_from_tui(
-                                    &mut self.state,
+                                    &mut self.app.state,
                                     &mut self.tui_state,
                                     target,
                                 );
@@ -576,39 +592,42 @@ impl Tui {
 
     /// Reload the file list from the server, preserving selection and cursor.
     async fn reload_file_list(&mut self) {
-        let selected_path = review::selected_path(&self.state.files, self.state.selected_file);
+        let selected_path =
+            review::selected_path(&self.app.state.files, self.app.state.selected_file);
 
         // Save cursor/scroll position to restore after reload.
-        let saved_cursor = self.state.diff_line_cursor;
-        let saved_col = self.state.diff_col_cursor;
-        let saved_scroll = self.state.diff_scroll;
-        let saved_content_mode = self.state.content_mode;
-        let saved_render_variant = self.state.render_variant;
+        let saved_cursor = self.app.state.diff_line_cursor;
+        let saved_col = self.app.state.diff_col_cursor;
+        let saved_scroll = self.app.state.diff_scroll;
+        let saved_content_mode = self.app.state.content_mode;
+        let saved_render_variant = self.app.state.render_variant;
 
         match self.client.list_changed_files().await {
             Ok(result) => {
-                self.state.files = result.files;
-                review::sort_files(&mut self.state.files);
+                self.app.state.files = result.files;
+                review::sort_files(&mut self.app.state.files);
                 // Restore selection by path.
-                let prev_selected = self.state.selected_file;
-                self.state.selected_file =
-                    review::restore_selection_by_path(&self.state.files, selected_path.as_deref());
+                let prev_selected = self.app.state.selected_file;
+                self.app.state.selected_file = review::restore_selection_by_path(
+                    &self.app.state.files,
+                    selected_path.as_deref(),
+                );
 
                 // Refresh diff and content for the selected file.
-                self.state.refresh_current_file_diff();
-                self.state.load_head_content();
-                self.state.load_blame();
+                self.app.state.refresh_current_file_diff();
+                self.app.state.load_head_content();
+                self.app.state.load_blame();
 
                 // Restore cursor/scroll if we're still on the same file.
-                if self.state.selected_file == prev_selected {
-                    self.state.content_mode = saved_content_mode;
-                    self.state.render_variant = saved_render_variant;
-                    self.state.diff_line_cursor = saved_cursor;
-                    self.state.diff_col_cursor = saved_col;
-                    self.state.diff_scroll = saved_scroll;
-                    self.state.clamp_cursor_and_scroll();
+                if self.app.state.selected_file == prev_selected {
+                    self.app.state.content_mode = saved_content_mode;
+                    self.app.state.render_variant = saved_render_variant;
+                    self.app.state.diff_line_cursor = saved_cursor;
+                    self.app.state.diff_col_cursor = saved_col;
+                    self.app.state.diff_scroll = saved_scroll;
+                    self.app.state.clamp_cursor_and_scroll();
                 } else {
-                    self.state.on_file_changed();
+                    self.app.state.on_file_changed();
                 }
             }
             Err(e) => {
@@ -621,18 +640,21 @@ impl Tui {
     /// Apply a review action result from the server: update the file's status,
     /// re-sort the file list, and auto-advance if needed.
     fn apply_review_result(&mut self, result: &crate::model::ReviewActionResult) {
-        self.state.selected_file =
-            review::apply_review_result(&mut self.state.files, self.state.selected_file, result);
-        self.state.on_file_changed();
+        self.app.state.selected_file = review::apply_review_result(
+            &mut self.app.state.files,
+            self.app.state.selected_file,
+            result,
+        );
+        self.app.state.on_file_changed();
     }
 
     /// Select the word under the given semantic position and copy it.
     fn select_word_at(&mut self, pane: PaneFocus, anchor: TextAnchor) -> bool {
         let (text, base_col) = match pane {
-            PaneFocus::FileList => (&self.state.file_list_rendered_text, 0),
+            PaneFocus::FileList => (&self.app.state.file_list_rendered_text, 0),
             PaneFocus::Diff => (
-                &self.state.diff_rendered_text,
-                self.state.diff_content_start_col(),
+                &self.app.state.diff_rendered_text,
+                self.app.state.diff_content_start_col(),
             ),
         };
         let line = match text.get(anchor.line) {
@@ -675,8 +697,8 @@ impl Tui {
 
     /// Double-click in the file list: copy the full file path to the clipboard.
     fn copy_file_path_at(&mut self, row: usize) {
-        if let Some(&Some(file_idx)) = self.state.file_list_row_to_file.get(row) {
-            if let Some(entry) = self.state.files.get(file_idx) {
+        if let Some(&Some(file_idx)) = self.app.state.file_list_row_to_file.get(row) {
+            if let Some(entry) = self.app.state.files.get(file_idx) {
                 let path = &entry.change.path;
                 copy_to_clipboard(path);
                 self.tui_state.set_status_message(format!("Copied: {path}"));

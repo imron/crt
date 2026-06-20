@@ -60,9 +60,15 @@ fn string_id(s: &Option<String>) -> Option<(usize, usize)> {
 }
 
 /// Draw the diff/file view pane.
-pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState, area: Rect) {
+pub fn draw(
+    frame: &mut Frame,
+    state: &mut AppState,
+    tui_state: &mut TuiState,
+    styles: &StyleConfig,
+    area: Rect,
+) {
     let focused = state.pane_focus == PaneFocus::Diff;
-    let border_style = super::pane_border_style(&tui_state.styles.panel, focused);
+    let border_style = super::pane_border_style(&styles.panel, focused);
 
     // Inner width excludes left and right borders.
     let inner_w = area.width.saturating_sub(2) as usize;
@@ -92,7 +98,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState, a
         _ => {
             // Cache miss — rebuild everything.
             let (_title, content, hunk_starts, hunk_ends, hunk_first_changes, gutter_w) =
-                build_content(state, &tui_state.styles, inner_w);
+                build_content(state, styles, inner_w);
 
             // Pre-compute rendered text for clipboard.
             let rendered_text: Vec<String> = content
@@ -174,9 +180,9 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState, a
 
     // Extract only the visible slice from the cache — clone ~viewport lines.
     // Apply cursor line highlight and search match highlighting.
-    let cursor_line_bg = *tui_state.styles.diff.cursor_line_bg;
-    let search_match_bg = *tui_state.styles.diff.search_match_bg;
-    let search_current_bg = *tui_state.styles.diff.search_current_match_bg;
+    let cursor_line_bg = *styles.diff.cursor_line_bg;
+    let search_match_bg = *styles.diff.search_match_bg;
+    let search_current_bg = *styles.diff.search_current_match_bg;
     let cursor_visible_idx = state.diff_line_cursor.saturating_sub(state.diff_scroll);
     let visible: Vec<Line> = {
         cache
