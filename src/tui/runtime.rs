@@ -189,7 +189,9 @@ impl Tui {
                 // Any keypress clears mouse selection.
                 self.tui_state.mouse_selection = None;
                 self.tui_state.mouse_down_anchor = None;
-                input::handle_key_event(&mut self.app.state, &mut self.tui_state, key);
+                let effects =
+                    input::handle_key_event(&mut self.app.state, &mut self.tui_state, key);
+                apply_core_effects(&mut self.app.state, &mut self.tui_state, effects);
             }
             Event::Mouse(mouse) => {
                 self.handle_mouse_event(mouse);
