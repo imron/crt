@@ -3,8 +3,6 @@
 //! Key events are normalized into core input where possible, with local
 //! prompt editing retained by the TUI adapter.
 
-use std::time::Duration;
-
 use crossterm::event::{
     KeyCode, KeyEvent as CrosstermKeyEvent, KeyEventKind as CrosstermKeyEventKind, KeyModifiers,
     MouseButton as CrosstermMouseButton, MouseEvent as CrosstermMouseEvent,
@@ -13,15 +11,25 @@ use crossterm::event::{
 
 use super::state::{InputMode, TuiState};
 use crate::app::AppState;
-use crate::app_update;
 use crate::core::{
-    CoreEffect, InputEvent, InputModifiers, InteractionContext, Key as CoreKey,
-    KeyEvent as CoreKeyEvent, KeyEventKind as CoreKeyEventKind, MouseButton as CoreMouseButton,
-    MouseEvent as CoreMouseEvent, MouseEventKind as CoreMouseEventKind,
+    InputEvent, InputModifiers, Key as CoreKey, KeyEvent as CoreKeyEvent,
+    KeyEventKind as CoreKeyEventKind, MouseButton as CoreMouseButton, MouseEvent as CoreMouseEvent,
+    MouseEventKind as CoreMouseEventKind,
 };
 
-/// How long the "Press Ctrl-C again" prompt stays active.
-const CTRL_C_TIMEOUT: Duration = Duration::from_secs(3);
+#[derive(Debug, Clone, PartialEq)]
+pub enum CoreInputDispatch {
+    Interaction(InputEvent),
+    PromptSubmit(InputEvent),
+    PromptCancel(InputEvent),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum KeyInputResult {
+    Core(CoreInputDispatch),
+    Local,
+    Unhandled,
+}
 
 fn input_event_from_key(key: CrosstermKeyEvent) -> Option<InputEvent> {
     Some(InputEvent::Key(CoreKeyEvent {
@@ -113,109 +121,69 @@ fn core_mouse_button(button: CrosstermMouseButton) -> Option<CoreMouseButton> {
     }
 }
 
-fn dispatch_core_input(
-    state: &mut AppState,
-    tui_state: &TuiState,
-    key: CrosstermKeyEvent,
-) -> Option<Vec<CoreEffect>> {
-    let Some(event) = input_event_from_key(key) else {
-        return None;
-    };
-    Some(
-        state
-            .core_interaction
-            .handle_input(event, &interaction_context(state, tui_state)),
-    )
+fn dispatch_core_input(key: CrosstermKeyEvent) -> KeyInputResult {
+    input_event_from_key(key)
+        .map(|event| KeyInputResult::Core(CoreInputDispatch::Interaction(event)))
+        .unwrap_or(KeyInputResult::Unhandled)
 }
 
-fn interaction_context(state: &AppState, tui_state: &TuiState) -> InteractionContext {
-    InteractionContext {
-        help_visible: tui_state.show_help,
-        search_results_visible: tui_state.search_results.is_some(),
-        definition_results_visible: tui_state.definition_results.is_some(),
-        quit_confirmation_active: tui_state.quit_confirmation_active(CTRL_C_TIMEOUT),
-        ..app_update::interaction_context(state)
-    }
-}
-
-fn submit_active_prompt(
-    state: &mut AppState,
-    tui_state: &mut TuiState,
-    value: String,
-) -> Option<Vec<CoreEffect>> {
+fn submit_active_prompt(tui_state: &mut TuiState, value: String) -> Option<CoreInputDispatch> {
     let Some(id) = tui_state.active_core_prompt else {
         return None;
     };
-    Some(state.core_interaction.handle_input(
-        InputEvent::PromptSubmit { id, value },
-        &app_update::prompt_submit_context(state),
-    ))
+    Some(CoreInputDispatch::PromptSubmit(InputEvent::PromptSubmit {
+        id,
+        value,
+    }))
 }
 
-fn cancel_active_prompt(state: &mut AppState, tui_state: &mut TuiState) -> Option<Vec<CoreEffect>> {
+fn cancel_active_prompt(tui_state: &mut TuiState) -> Option<CoreInputDispatch> {
     let Some(id) = tui_state.active_core_prompt else {
         return None;
     };
-    Some(
-        state
-            .core_interaction
-            .handle_input(InputEvent::PromptCancel { id }, &Default::default()),
-    )
+    Some(CoreInputDispatch::PromptCancel(InputEvent::PromptCancel {
+        id,
+    }))
 }
 
-/// Handle a key press event by updating local TUI input state and emitting core effects.
-pub fn handle_key_event(
-    state: &mut AppState,
-    tui_state: &mut TuiState,
-    key: CrosstermKeyEvent,
-) -> Vec<CoreEffect> {
+/// Handle a key press event by updating local TUI input state and emitting core input.
+pub fn handle_key_event(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> KeyInputResult {
     if tui_state.input_mode == InputMode::Command {
-        return handle_command_input(state, tui_state, key);
+        return handle_command_input(tui_state, key);
     }
 
     if tui_state.input_mode == InputMode::DiffSearch {
-        return handle_diff_search_input(state, tui_state, key);
+        return handle_diff_search_input(tui_state, key);
     }
 
     if tui_state.search_results.is_some() {
-        return dispatch_core_input(state, tui_state, key).unwrap_or_default();
+        return dispatch_core_input(key);
     }
 
     if tui_state.definition_results.is_some() {
-        return dispatch_core_input(state, tui_state, key).unwrap_or_default();
+        return dispatch_core_input(key);
     }
 
     if tui_state.show_help {
-        return dispatch_core_input(state, tui_state, key).unwrap_or_default();
+        return dispatch_core_input(key);
     }
 
-    if let Some(effects) = dispatch_core_input(state, tui_state, key) {
-        if !effects.is_empty() {
-            return effects;
-        }
-    }
-
-    tui_state.clear_status_message();
-    Vec::new()
+    dispatch_core_input(key)
 }
 
 /// Handle keystrokes while in command mode.
-fn handle_command_input(
-    state: &mut AppState,
-    tui_state: &mut TuiState,
-    key: CrosstermKeyEvent,
-) -> Vec<CoreEffect> {
+fn handle_command_input(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> KeyInputResult {
     match key.code {
         KeyCode::Esc => {
-            if let Some(effects) = cancel_active_prompt(state, tui_state) {
-                return effects;
+            if let Some(dispatch) = cancel_active_prompt(tui_state) {
+                return KeyInputResult::Core(dispatch);
             }
             tui_state.clear_prompt();
         }
         KeyCode::Enter => {
             let cmd = tui_state.command_input.clone();
-            if let Some(effects) = submit_active_prompt(state, tui_state, cmd) {
-                return effects;
+            if let Some(dispatch) = submit_active_prompt(tui_state, cmd) {
+                return KeyInputResult::Core(dispatch);
             }
             tui_state.clear_prompt();
         }
@@ -223,8 +191,8 @@ fn handle_command_input(
             if tui_state.command_cursor > 0 {
                 tui_state.command_cursor -= 1;
                 tui_state.command_input.remove(tui_state.command_cursor);
-            } else if let Some(effects) = cancel_active_prompt(state, tui_state) {
-                return effects;
+            } else if let Some(dispatch) = cancel_active_prompt(tui_state) {
+                return KeyInputResult::Core(dispatch);
             } else {
                 tui_state.clear_prompt();
             }
@@ -256,26 +224,22 @@ fn handle_command_input(
         }
         _ => {}
     }
-    Vec::new()
+    KeyInputResult::Local
 }
 
 /// Handle keystrokes while in diff search mode.
-fn handle_diff_search_input(
-    state: &mut AppState,
-    tui_state: &mut TuiState,
-    key: CrosstermKeyEvent,
-) -> Vec<CoreEffect> {
+fn handle_diff_search_input(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> KeyInputResult {
     match key.code {
         KeyCode::Esc => {
-            if let Some(effects) = cancel_active_prompt(state, tui_state) {
-                return effects;
+            if let Some(dispatch) = cancel_active_prompt(tui_state) {
+                return KeyInputResult::Core(dispatch);
             }
             tui_state.clear_prompt();
         }
         KeyCode::Enter => {
             let query = tui_state.diff_search_input.clone();
-            if let Some(effects) = submit_active_prompt(state, tui_state, query) {
-                return effects;
+            if let Some(dispatch) = submit_active_prompt(tui_state, query) {
+                return KeyInputResult::Core(dispatch);
             }
             tui_state.clear_prompt();
         }
@@ -285,8 +249,8 @@ fn handle_diff_search_input(
                 tui_state
                     .diff_search_input
                     .remove(tui_state.diff_search_cursor);
-            } else if let Some(effects) = cancel_active_prompt(state, tui_state) {
-                return effects;
+            } else if let Some(dispatch) = cancel_active_prompt(tui_state) {
+                return KeyInputResult::Core(dispatch);
             } else {
                 tui_state.clear_prompt();
             }
@@ -324,16 +288,17 @@ fn handle_diff_search_input(
         }
         _ => {}
     }
-    Vec::new()
+    KeyInputResult::Local
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::DiffAlgorithm;
+    use crate::core::PromptId;
     use crate::core::{
         MouseButton as CoreMouseButton, MouseEvent as CoreMouseEvent,
-        MouseEventKind as CoreMouseEventKind, PaneId, PointerSemanticHit, PromptKind, TextAnchor,
+        MouseEventKind as CoreMouseEventKind, PaneId, PointerSemanticHit, TextAnchor,
     };
     use crate::model::{
         ChangeKind, ConnectionContext, DiffContent, FileChange, FileEntry, ReviewStatus,
@@ -426,23 +391,47 @@ mod tests {
     }
 
     #[test]
-    fn handle_key_event_emits_core_effects_without_applying_them() {
-        let mut state = test_state();
+    fn handle_key_event_emits_core_input_without_dispatching_it() {
         let mut tui_state = TuiState::default();
 
-        let effects = handle_key_event(
-            &mut state,
+        let result = handle_key_event(
             &mut tui_state,
             CrosstermKeyEvent::new(KeyCode::Char(':'), KeyModifiers::SHIFT),
         );
 
-        match effects.as_slice() {
-            [CoreEffect::RequestPrompt(prompt)] => {
-                assert_eq!(prompt.kind, PromptKind::CommandLine);
-            }
-            other => panic!("unexpected effects: {other:?}"),
-        }
+        assert_eq!(
+            result,
+            KeyInputResult::Core(CoreInputDispatch::Interaction(InputEvent::Key(
+                CoreKeyEvent {
+                    kind: CoreKeyEventKind::Press,
+                    key: CoreKey::Char(':'),
+                    modifiers: InputModifiers {
+                        shift: true,
+                        ..Default::default()
+                    },
+                }
+            )))
+        );
         assert_eq!(tui_state.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn command_prompt_submit_emits_prompt_input() {
+        let mut tui_state = TuiState::default();
+        tui_state.open_command_prompt(PromptId(7), "gd symbol".to_string());
+
+        let result = handle_key_event(
+            &mut tui_state,
+            CrosstermKeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        assert_eq!(
+            result,
+            KeyInputResult::Core(CoreInputDispatch::PromptSubmit(InputEvent::PromptSubmit {
+                id: PromptId(7),
+                value: "gd symbol".to_string(),
+            }))
+        );
     }
 
     #[test]
