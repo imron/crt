@@ -249,11 +249,7 @@ impl Tui {
 
     /// Handle mouse events: selection, scroll wheel, border drag.
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
-        let input_event = self.app.state.input_event_from_mouse(
-            &mouse,
-            self.tui_state.show_file_list,
-            self.tui_state.show_diff_pane,
-        );
+        let input_event = input::input_event_from_mouse(&self.app.state, &self.tui_state, &mouse);
         let semantic_content_hit = input_event.as_ref().and_then(mouse_content_hit);
         let pending_core_effects = input_event
             .map(|event| {
