@@ -1,6 +1,6 @@
 # Stage 23c: AppModel Scaffold
 
-## Status: Backlog
+## Status: Complete
 
 ## Order
 
@@ -43,14 +43,14 @@ state without changing TUI behavior.
 
 ## Acceptance Criteria
 
-- [ ] `AppModel` represents file list sections with file ids, paths, change
+- [x] `AppModel` represents file list sections with file ids, paths, change
       kinds, review states, and selection.
-- [ ] `AppModel` represents the current diff with hunks, lines, line kinds,
+- [x] `AppModel` represents the current diff with hunks, lines, line kinds,
       word/search highlights where currently available, and cursor anchors.
-- [ ] `AppModel` represents app focus, status, prompt, overlay, and semantic
+- [x] `AppModel` represents app focus, status, prompt, overlay, and semantic
       selection concepts without backend geometry.
-- [ ] Existing TUI behavior is unchanged.
-- [ ] `cargo test` passes.
+- [x] Existing TUI behavior is unchanged.
+- [x] `cargo test` passes.
 
 ## Resolved Decisions
 

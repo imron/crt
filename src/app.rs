@@ -2,6 +2,7 @@
 
 use ratatui::layout::Rect;
 
+use crate::app_model::AppModel;
 use crate::config::Config;
 use crate::core::diff;
 use crate::core::interaction::CoreInteractionEngine;
@@ -48,6 +49,10 @@ impl App {
         let state = AppState::new(diff_algorithm, context, files);
 
         Self { state, config }
+    }
+
+    pub fn model(&self) -> AppModel {
+        AppModel::from_state(&self.state)
     }
 }
 
