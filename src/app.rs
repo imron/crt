@@ -343,5 +343,4 @@ mod tests {
         assert_eq!(app.config.layout.file_list_width, expected_width);
         assert_eq!(app.state.files.len(), 1);
     }
-
 }

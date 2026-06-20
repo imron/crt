@@ -1,6 +1,6 @@
 # Stage 23e: Render TUI from AppModel
 
-## Status: Backlog
+## Status: Complete
 
 ## Order
 
@@ -48,11 +48,11 @@ Convert TUI rendering to consume `AppModel` rather than raw app state.
 
 ## Acceptance Criteria
 
-- [ ] TUI rendering reads `AppModel` for app content.
-- [ ] TUI rendering does not mutate app state.
-- [ ] Renderer-specific style conversion stays in TUI code.
-- [ ] Existing visual layout and keyboard/mouse workflows remain compatible.
-- [ ] `cargo test` passes.
+- [x] TUI rendering reads `AppModel` for app content.
+- [x] TUI rendering does not mutate app state.
+- [x] Renderer-specific style conversion stays in TUI code.
+- [x] Existing visual layout and keyboard/mouse workflows remain compatible.
+- [x] `cargo test` passes.
 
 ## Resolved Decisions
 

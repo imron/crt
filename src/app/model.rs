@@ -27,6 +27,8 @@ pub struct AppModel {
 pub struct FileListModel {
     pub sections: Vec<FileListSectionModel>,
     pub selected_file_id: Option<String>,
+    pub selected_file_index: Option<usize>,
+    pub scroll: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +45,7 @@ pub struct FileListSectionModel {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileListRowModel {
+    pub file_index: usize,
     pub file_id: String,
     pub path: String,
     pub old_path: Option<String>,
@@ -66,17 +69,26 @@ pub enum ReviewStatusModel {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffPanelModel {
+    pub selected_file_index: Option<usize>,
     pub file_id: Option<String>,
     pub path: Option<String>,
+    pub review_status: Option<ReviewStatusModel>,
     pub content_mode: ContentMode,
     pub render_variant: RenderVariant,
     pub diff_algorithm: DiffAlgorithm,
+    pub default_diff_algorithm: DiffAlgorithm,
     pub ignore_whitespace: bool,
     pub show_blame: bool,
     pub show_merge_base: bool,
+    pub reviewed_diff_expanded: bool,
     pub is_binary: bool,
     pub diff_hash: Option<String>,
     pub hunks: Vec<DiffHunkModel>,
+    pub head_content: Option<String>,
+    pub base_content: Option<String>,
+    pub head_blame: Vec<BlameLineModel>,
+    pub base_blame: Vec<BlameLineModel>,
+    pub scroll: usize,
     pub cursor: TextAnchor,
     pub search_query: Option<String>,
     pub search_highlights: Vec<TextRangeModel>,
@@ -99,6 +111,13 @@ pub struct DiffLineModel {
     pub content: String,
     pub old_lineno: Option<u32>,
     pub new_lineno: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlameLineModel {
+    pub hash: String,
+    pub author: String,
+    pub date: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,6 +180,14 @@ impl AppModel {
             selection: None,
         }
     }
+
+    pub fn file_list_row_count(&self) -> usize {
+        self.file_list
+            .sections
+            .iter()
+            .map(|section| section.rows.len())
+            .sum()
+    }
 }
 
 fn file_list_model(state: &AppState) -> FileListModel {
@@ -196,6 +223,11 @@ fn file_list_model(state: &AppState) -> FileListModel {
             },
         ],
         selected_file_id,
+        selected_file_index: state
+            .files
+            .get(state.selected_file)
+            .map(|_| state.selected_file),
+        scroll: state.file_list_scroll,
     }
 }
 
@@ -205,6 +237,7 @@ fn file_row_model(
     entry: &crate::model::FileEntry,
 ) -> FileListRowModel {
     FileListRowModel {
+        file_index: index,
         file_id: entry.change.path.clone(),
         path: entry.change.path.clone(),
         old_path: entry.change.old_path.clone(),
@@ -244,17 +277,26 @@ fn diff_panel_model(state: &AppState) -> DiffPanelModel {
         .unwrap_or_default();
 
     DiffPanelModel {
+        selected_file_index: selected.map(|_| state.selected_file),
         file_id: selected.map(|entry| entry.change.path.clone()),
         path: selected.map(|entry| entry.change.path.clone()),
+        review_status: selected.map(|entry| ReviewStatusModel::from(&entry.status)),
         content_mode: state.content_mode,
         render_variant: state.render_variant,
         diff_algorithm: state.diff_algorithm,
+        default_diff_algorithm: state.default_diff_algorithm,
         ignore_whitespace: state.ignore_whitespace,
         show_blame: state.show_blame,
         show_merge_base: state.show_merge_base,
+        reviewed_diff_expanded: state.reviewed_diff_expanded,
         is_binary: selected.is_some_and(|entry| entry.diff.is_binary),
         diff_hash: selected.map(|entry| entry.diff.diff_hash.clone()),
         hunks,
+        head_content: state.head_content.clone(),
+        base_content: state.base_content.clone(),
+        head_blame: state.head_blame.iter().map(BlameLineModel::from).collect(),
+        base_blame: state.base_blame.iter().map(BlameLineModel::from).collect(),
+        scroll: state.diff_scroll,
         cursor: TextAnchor {
             line: state.diff_line_cursor,
             column: state.diff_col_cursor,
@@ -294,6 +336,16 @@ impl From<&ReviewStatus> for ReviewStatusModel {
                 at: at.clone(),
                 reviewed_commit: reviewed_commit.clone(),
             },
+        }
+    }
+}
+
+impl From<&crate::git::BlameLine> for BlameLineModel {
+    fn from(line: &crate::git::BlameLine) -> Self {
+        Self {
+            hash: line.hash.clone(),
+            author: line.author.clone(),
+            date: line.date.clone(),
         }
     }
 }
@@ -392,6 +444,8 @@ mod tests {
         let model = app.model();
 
         assert_eq!(model.file_list.selected_file_id, Some("b.rs".to_string()));
+        assert_eq!(model.file_list.selected_file_index, Some(1));
+        assert_eq!(model.file_list.scroll, 0);
         assert_eq!(model.file_list.sections.len(), 2);
         assert_eq!(
             model.file_list.sections[0].kind,
@@ -410,6 +464,7 @@ mod tests {
             vec!["a.rs", "b.rs"]
         );
         assert!(model.file_list.sections[0].rows[1].selected);
+        assert_eq!(model.file_list.sections[0].rows[1].file_index, 1);
         assert!(matches!(
             model.file_list.sections[0].rows[1].review_status,
             ReviewStatusModel::Changed { .. }
@@ -433,7 +488,9 @@ mod tests {
         let model = app.model();
 
         assert_eq!(model.diff.file_id, Some("src/main.rs".to_string()));
+        assert_eq!(model.diff.selected_file_index, Some(0));
         assert_eq!(model.diff.diff_hash, Some("hash-src/main.rs".to_string()));
+        assert_eq!(model.diff.scroll, 0);
         assert_eq!(model.diff.cursor, TextAnchor { line: 3, column: 7 });
         assert_eq!(model.diff.hunks.len(), 1);
         assert_eq!(model.diff.hunks[0].header, "@@ -1,2 +1,2 @@");

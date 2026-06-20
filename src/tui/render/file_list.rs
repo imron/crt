@@ -8,95 +8,55 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use super::super::state::TuiState;
-use crate::app::AppState;
+use crate::app::model::{AppModel, FileListRowModel, FileListSectionKind, ReviewStatusModel};
 use crate::config::{FilesStyle, StyleConfig};
-use crate::model::{ChangeKind, PaneFocus, ReviewStatus};
+use crate::model::{ChangeKind, PaneFocus};
 
 /// Draw the file list pane with split unreviewed/reviewed sections.
 pub fn draw(
     frame: &mut Frame,
-    state: &mut AppState,
+    model: &AppModel,
     tui_state: &mut TuiState,
     styles: &StyleConfig,
     area: Rect,
 ) {
-    let focused = state.pane_focus == PaneFocus::FileList;
+    let focused = model.focus == PaneFocus::FileList;
     let border_style = super::pane_border_style(&styles.panel, focused);
     let fs = &styles.files;
-
-    let unreviewed_count = state.unreviewed_count();
-    let reviewed_count = state.files.len() - unreviewed_count;
 
     // Build the display list: headers + file entries.
     // Track which display row each file index maps to.
     let mut lines: Vec<Line> = Vec::new();
     let mut rendered_text: Vec<String> = Vec::new();
     let mut row_to_file: Vec<Option<usize>> = Vec::new();
-    let mut file_display_rows: Vec<usize> = vec![0; state.files.len()];
 
     let inner_width = area.width.saturating_sub(2) as usize; // minus borders
 
-    // -- Unreviewed section --
-    lines.push(section_header(
-        fs,
-        "Unreviewed",
-        unreviewed_count,
-        inner_width,
-    ));
-    rendered_text.push(format!("── Unreviewed ({unreviewed_count}) ──"));
-    row_to_file.push(None); // header row
+    for section in &model.file_list.sections {
+        let label = match section.kind {
+            FileListSectionKind::Unreviewed => "Unreviewed",
+            FileListSectionKind::Reviewed => "Reviewed",
+        };
+        let count = section.rows.len();
+        lines.push(section_header(fs, label, count, inner_width));
+        rendered_text.push(format!("── {label} ({count}) ──"));
+        row_to_file.push(None);
 
-    for i in 0..unreviewed_count {
-        file_display_rows[i] = lines.len();
-        let (line, text) = file_line(
-            fs,
-            &state.files[i],
-            i == state.selected_file,
-            focused,
-            inner_width,
-        );
-        lines.push(line);
-        rendered_text.push(text);
-        row_to_file.push(Some(i));
-    }
-
-    // -- Reviewed section --
-    lines.push(section_header(fs, "Reviewed", reviewed_count, inner_width));
-    rendered_text.push(format!("── Reviewed ({reviewed_count}) ──"));
-    row_to_file.push(None); // header row
-
-    for i in unreviewed_count..state.files.len() {
-        file_display_rows[i] = lines.len();
-        let (line, text) = file_line(
-            fs,
-            &state.files[i],
-            i == state.selected_file,
-            focused,
-            inner_width,
-        );
-        lines.push(line);
-        rendered_text.push(text);
-        row_to_file.push(Some(i));
+        for row in &section.rows {
+            let (line, text) = file_line(fs, row, focused, inner_width);
+            lines.push(line);
+            rendered_text.push(text);
+            row_to_file.push(Some(row.file_index));
+        }
     }
 
     tui_state.file_list_rendered_text = rendered_text;
     tui_state.file_list_row_to_file = row_to_file;
 
-    // -- Scroll to keep the cursor visible --
-    let inner_height = area.height.saturating_sub(2) as usize;
-    if !state.files.is_empty() {
-        let cursor_row = file_display_rows[state.selected_file];
-        if cursor_row < state.file_list_scroll {
-            state.file_list_scroll = cursor_row;
-        } else if cursor_row >= state.file_list_scroll + inner_height {
-            state.file_list_scroll = cursor_row.saturating_sub(inner_height) + 1;
-        }
-    }
-
     // Apply scroll offset.
-    let visible: Vec<Line> = lines.into_iter().skip(state.file_list_scroll).collect();
+    let visible: Vec<Line> = lines.into_iter().skip(model.file_list.scroll).collect();
 
-    let title = format!(" Files ({}) ", state.files.len());
+    let title = format!(" Files ({}) ", model.file_list_row_count());
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
@@ -128,33 +88,32 @@ fn section_header(fs: &FilesStyle, label: &str, count: usize, width: usize) -> L
 /// Returns both the styled Line and the plain text (for clipboard).
 fn file_line(
     fs: &FilesStyle,
-    entry: &crate::model::FileEntry,
-    selected: bool,
+    row: &FileListRowModel,
     pane_focused: bool,
     max_width: usize,
 ) -> (Line<'static>, String) {
-    let marker = match &entry.status {
-        ReviewStatus::Unreviewed => "\u{2717}",      // ✗
-        ReviewStatus::Reviewed { .. } => "\u{2713}", // ✓
-        ReviewStatus::Changed { .. } => "~",
+    let marker = match &row.review_status {
+        ReviewStatusModel::Unreviewed => "\u{2717}",      // ✗
+        ReviewStatusModel::Reviewed { .. } => "\u{2713}", // ✓
+        ReviewStatusModel::Changed { .. } => "~",
     };
 
-    let marker_color = match &entry.status {
-        ReviewStatus::Unreviewed => *fs.unreviewed_fg,
-        ReviewStatus::Reviewed { .. } => *fs.reviewed_fg,
-        ReviewStatus::Changed { .. } => *fs.changed_fg,
+    let marker_color = match &row.review_status {
+        ReviewStatusModel::Unreviewed => *fs.unreviewed_fg,
+        ReviewStatusModel::Reviewed { .. } => *fs.reviewed_fg,
+        ReviewStatusModel::Changed { .. } => *fs.changed_fg,
     };
 
-    let kind_indicator = match entry.change.kind {
+    let kind_indicator = match row.change_kind {
         ChangeKind::Added => "+",
         ChangeKind::Deleted => "-",
         ChangeKind::Modified => " ",
         ChangeKind::Renamed => "R",
     };
 
-    let path_raw = match &entry.change.old_path {
-        Some(old) => format!("{} \u{2190} {old}", entry.change.path),
-        None => entry.change.path.clone(),
+    let path_raw = match &row.old_path {
+        Some(old) => format!("{} \u{2190} {old}", row.path),
+        None => row.path.clone(),
     };
 
     // Prefix columns: " X " (marker, 4) + "K " (kind, 2) = 6.
@@ -164,7 +123,7 @@ fn file_line(
 
     let plain = format!(" {marker} {kind_indicator} {path_text}");
 
-    let path_style = if selected {
+    let path_style = if row.selected {
         let style = Style::default().fg(*fs.selected_fg);
         if pane_focused {
             style.add_modifier(Modifier::BOLD)

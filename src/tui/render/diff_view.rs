@@ -2,6 +2,8 @@
 //! mode with change highlighting, and reviewed-file summary.
 
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -10,9 +12,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use super::super::state::TuiState;
-use crate::app::AppState;
+use crate::app::model::{
+    AppModel, BlameLineModel, DiffHunkModel, DiffPanelModel, ReviewStatusModel,
+};
 use crate::config::{DiffStyle, StyleConfig};
-use crate::model::{ContentMode, DiffHunk, LineKind, PaneFocus, RenderVariant, ReviewStatus};
+use crate::model::{ContentMode, LineKind, PaneFocus, RenderVariant};
 
 // ---------------------------------------------------------------------------
 // Diff line cache — avoids rebuilding all Line<'static> every frame
@@ -23,7 +27,7 @@ use crate::model::{ContentMode, DiffHunk, LineKind, PaneFocus, RenderVariant, Re
 /// (expensive) word-diff and line-building code again.
 #[derive(PartialEq, Eq)]
 pub struct DiffCacheKey {
-    selected_file: usize,
+    selected_file: Option<String>,
     content_mode: ContentMode,
     render_variant: RenderVariant,
     show_blame: bool,
@@ -31,12 +35,8 @@ pub struct DiffCacheKey {
     inner_w: usize,
     ignore_whitespace: bool,
     diff_algorithm: crate::config::DiffAlgorithm,
-    /// Cheap identity for head_content: (ptr, len). The String is heap-
-    /// allocated and kept alive in AppState, so ptr+len is stable as long as
-    /// the same String is referenced.
-    head_content_id: Option<(usize, usize)>,
-    /// Same for base_content.
-    base_content_id: Option<(usize, usize)>,
+    head_content_id: Option<(u64, usize)>,
+    base_content_id: Option<(u64, usize)>,
     head_blame_len: usize,
     base_blame_len: usize,
     /// Stable hash of the diff content (from DiffContent::diff_hash).
@@ -54,20 +54,24 @@ pub struct DiffCache {
     pub rendered_text: Vec<String>,
 }
 
-/// Helper: get cheap identity for an `Option<String>` — pointer + length.
-fn string_id(s: &Option<String>) -> Option<(usize, usize)> {
-    s.as_ref().map(|s| (s.as_ptr() as usize, s.len()))
+fn string_signature(s: &Option<String>) -> Option<(u64, usize)> {
+    s.as_ref().map(|s| {
+        let mut hasher = DefaultHasher::new();
+        s.hash(&mut hasher);
+        (hasher.finish(), s.len())
+    })
 }
 
 /// Draw the diff/file view pane.
 pub fn draw(
     frame: &mut Frame,
-    state: &mut AppState,
+    model: &AppModel,
     tui_state: &mut TuiState,
     styles: &StyleConfig,
     area: Rect,
 ) {
-    let focused = state.pane_focus == PaneFocus::Diff;
+    let diff = &model.diff;
+    let focused = model.focus == PaneFocus::Diff;
     let border_style = super::pane_border_style(&styles.panel, focused);
 
     // Inner width excludes left and right borders.
@@ -75,22 +79,19 @@ pub fn draw(
 
     // Build the cache key from current state.
     let new_key = DiffCacheKey {
-        selected_file: state.selected_file,
-        content_mode: state.content_mode,
-        render_variant: state.render_variant,
-        show_blame: state.show_blame,
-        reviewed_diff_expanded: state.reviewed_diff_expanded,
+        selected_file: diff.file_id.clone(),
+        content_mode: diff.content_mode,
+        render_variant: diff.render_variant,
+        show_blame: diff.show_blame,
+        reviewed_diff_expanded: diff.reviewed_diff_expanded,
         inner_w,
-        ignore_whitespace: state.ignore_whitespace,
-        diff_algorithm: state.diff_algorithm,
-        head_content_id: string_id(&state.head_content),
-        base_content_id: string_id(&state.base_content),
-        head_blame_len: state.head_blame.len(),
-        base_blame_len: state.base_blame.len(),
-        diff_hash: state
-            .selected_file_entry()
-            .map(|e| e.diff.diff_hash.clone())
-            .unwrap_or_default(),
+        ignore_whitespace: diff.ignore_whitespace,
+        diff_algorithm: diff.diff_algorithm,
+        head_content_id: string_signature(&diff.head_content),
+        base_content_id: string_signature(&diff.base_content),
+        head_blame_len: diff.head_blame.len(),
+        base_blame_len: diff.base_blame.len(),
+        diff_hash: diff.diff_hash.clone().unwrap_or_default(),
     };
 
     let cache_hit = match tui_state.diff_cache.as_ref() {
@@ -98,7 +99,7 @@ pub fn draw(
         _ => {
             // Cache miss — rebuild everything.
             let (_title, content, hunk_starts, hunk_ends, hunk_first_changes, gutter_w) =
-                build_content(state, styles, inner_w);
+                build_content(diff, styles, inner_w);
 
             // Pre-compute rendered text for clipboard.
             let rendered_text: Vec<String> = content
@@ -126,14 +127,7 @@ pub fn draw(
 
     // From here we know the cache is populated.
     // Extract values we need without keeping state mutations tied to cache shape.
-    let (
-        hunk_starts,
-        hunk_ends,
-        hunk_first_changes,
-        gutter_w,
-        content_height,
-        rendered_text,
-    ) = {
+    let (hunk_starts, hunk_ends, hunk_first_changes, gutter_w, content_height, rendered_text) = {
         let cache = tui_state
             .diff_cache
             .as_ref()
@@ -152,7 +146,7 @@ pub fn draw(
     tui_state.hunk_end_rows = hunk_ends;
     tui_state.hunk_first_change_rows = hunk_first_changes;
     // Two gutter columns (old + new) plus separator, plus optional blame.
-    let blame_cols = if state.show_blame {
+    let blame_cols = if diff.show_blame {
         BLAME_COL_WIDTH + 1
     } else {
         0
@@ -172,30 +166,20 @@ pub fn draw(
     // Update content/viewport dimensions for scroll clamping.
     tui_state.diff_content_height = content_height;
     tui_state.diff_view_height = area.height.saturating_sub(2) as usize;
-    tui_state.clamp_cursor_and_scroll(state);
-
     // Build the title fresh each frame — it depends on diff_scroll for hunk
     // navigation info (e.g. "3/5") so it can't be cached.
     let total_hunks = tui_state.hunk_start_rows.len();
-    let title = match state.selected_file_entry() {
-        Some(entry) => build_title(state, tui_state, entry, total_hunks),
+    let title = match &diff.path {
+        Some(_) => build_title(diff, tui_state, total_hunks),
         None => " Diff ".to_string(),
     };
-
-    // Recompute diff search matches when content has changed (cache miss).
-    if !cache_hit && state.diff_search_query.is_some() {
-        if let Some(_err) = tui_state.recompute_diff_search_matches(state) {
-            // Invalid regex — clear search silently on content change.
-            state.diff_search_query = None;
-        }
-    }
 
     // Extract only the visible slice from the cache — clone ~viewport lines.
     // Apply cursor line highlight and search match highlighting.
     let cursor_line_bg = *styles.diff.cursor_line_bg;
     let search_match_bg = *styles.diff.search_match_bg;
     let search_current_bg = *styles.diff.search_current_match_bg;
-    let cursor_visible_idx = state.diff_line_cursor.saturating_sub(state.diff_scroll);
+    let cursor_visible_idx = diff.cursor.line.saturating_sub(diff.scroll);
     let diff_view_height = tui_state.diff_view_height;
     let content_start_col = tui_state.diff_content_start_col();
     let visible_source: Vec<Line> = tui_state
@@ -204,7 +188,7 @@ pub fn draw(
         .expect("diff cache should be populated before rendering")
         .lines
         .iter()
-        .skip(state.diff_scroll)
+        .skip(diff.scroll)
         .take(diff_view_height)
         .cloned()
         .collect();
@@ -213,18 +197,24 @@ pub fn draw(
             .into_iter()
             .enumerate()
             .map(|(i, line)| {
-                let display_row = state.diff_scroll + i;
+                let display_row = diff.scroll + i;
                 let is_cursor_line = i == cursor_visible_idx
-                    && state.diff_line_cursor >= state.diff_scroll
-                    && state.diff_line_cursor < state.diff_scroll + diff_view_height;
+                    && diff.cursor.line >= diff.scroll
+                    && diff.cursor.line < diff.scroll + diff_view_height;
 
                 // Collect search matches on this row.
-                let row_matches: Vec<(usize, usize, bool)> = state
-                    .diff_search_matches
+                let row_matches: Vec<(usize, usize, bool)> = diff
+                    .search_highlights
                     .iter()
                     .enumerate()
-                    .filter(|(_, (row, _, _))| *row == display_row)
-                    .map(|(idx, (_, start, end))| (*start, *end, idx == state.diff_search_current))
+                    .filter(|(_, range)| range.line == display_row)
+                    .map(|(idx, range)| {
+                        (
+                            range.column_start,
+                            range.column_end,
+                            Some(idx) == diff.current_search_highlight,
+                        )
+                    })
                     .collect();
 
                 let mut result_line = if row_matches.is_empty() && is_cursor_line {
@@ -258,7 +248,7 @@ pub fn draw(
                 // Apply column cursor overlay on the cursor line.
                 if is_cursor_line {
                     result_line =
-                        apply_col_cursor(&result_line, content_start_col, state.diff_col_cursor);
+                        apply_col_cursor(&result_line, content_start_col, diff.cursor.column);
                 }
 
                 result_line
@@ -292,7 +282,7 @@ struct BuiltContent {
 }
 
 fn build_content(
-    state: &AppState,
+    diff: &DiffPanelModel,
     styles: &StyleConfig,
     inner_w: usize,
 ) -> (
@@ -305,7 +295,7 @@ fn build_content(
 ) {
     let ds = &styles.diff;
 
-    let entry = match state.selected_file_entry() {
+    let path = match &diff.path {
         None => {
             return (
                 " Diff ".to_string(),
@@ -316,20 +306,22 @@ fn build_content(
                 0,
             );
         }
-        Some(e) => e,
+        Some(path) => path,
     };
 
     // Reviewed file summary mode.
-    if matches!(entry.status, ReviewStatus::Reviewed { .. }) && !state.reviewed_diff_expanded {
-        let at = match &entry.status {
-            ReviewStatus::Reviewed { at, .. } => at.as_str(),
+    if matches!(diff.review_status, Some(ReviewStatusModel::Reviewed { .. }))
+        && !diff.reviewed_diff_expanded
+    {
+        let at = match &diff.review_status {
+            Some(ReviewStatusModel::Reviewed { at, .. }) => at.as_str(),
             _ => "",
         };
-        let title = format!(" {} ", entry.change.path);
+        let title = format!(" {path} ");
         let lines = vec![
             Line::from(""),
             Line::from(Span::styled(
-                format!("  {} \u{2014} reviewed at {at}", entry.change.path),
+                format!("  {path} \u{2014} reviewed at {at}"),
                 Style::default()
                     .fg(*ds.reviewed_fg)
                     .add_modifier(Modifier::BOLD),
@@ -344,8 +336,8 @@ fn build_content(
     }
 
     // Binary file.
-    if entry.diff.is_binary {
-        let title = format!(" {} ", entry.change.path);
+    if diff.is_binary {
+        let title = format!(" {path} ");
         return (
             title,
             vec![Line::from(Span::styled(
@@ -359,26 +351,26 @@ fn build_content(
         );
     }
 
-    let empty_blame: Vec<crate::git::BlameLine> = Vec::new();
-    let head_blame: &[crate::git::BlameLine] = if state.show_blame {
-        &state.head_blame
+    let empty_blame: Vec<BlameLineModel> = Vec::new();
+    let head_blame: &[BlameLineModel] = if diff.show_blame {
+        &diff.head_blame
     } else {
         &empty_blame
     };
-    let base_blame: &[crate::git::BlameLine] = if state.show_blame {
-        &state.base_blame
+    let base_blame: &[BlameLineModel] = if diff.show_blame {
+        &diff.base_blame
     } else {
         &empty_blame
     };
 
     let default_bg = *styles.bg;
 
-    let built = match (state.content_mode, state.render_variant) {
+    let built = match (diff.content_mode, diff.render_variant) {
         (ContentMode::Diff, RenderVariant::SideBySide) => build_side_by_side_diff(
             ds,
             default_bg,
-            &entry.diff.hunks,
-            state.head_content.as_deref(),
+            &diff.hunks,
+            diff.head_content.as_deref(),
             head_blame,
             base_blame,
             inner_w,
@@ -386,8 +378,8 @@ fn build_content(
         (ContentMode::Diff, _) => build_inline_diff(
             ds,
             default_bg,
-            &entry.diff.hunks,
-            state.head_content.as_deref(),
+            &diff.hunks,
+            diff.head_content.as_deref(),
             head_blame,
             base_blame,
             inner_w,
@@ -395,16 +387,16 @@ fn build_content(
         (ContentMode::FullFile, RenderVariant::HeadVersion) => build_full_file_head(
             ds,
             default_bg,
-            &entry.diff.hunks,
-            state.head_content.as_deref(),
+            &diff.hunks,
+            diff.head_content.as_deref(),
             head_blame,
             inner_w,
         ),
         (ContentMode::FullFile, RenderVariant::BaseVersion) => build_full_file_base(
             ds,
             default_bg,
-            &entry.diff.hunks,
-            state.base_content.as_deref(),
+            &diff.hunks,
+            diff.base_content.as_deref(),
             base_blame,
             inner_w,
         ),
@@ -428,28 +420,23 @@ fn build_content(
 }
 
 /// Build the border title with hunk navigation context.
-fn build_title(
-    state: &AppState,
-    tui_state: &TuiState,
-    entry: &crate::model::FileEntry,
-    total_hunks: usize,
-) -> String {
-    let path = &entry.change.path;
+fn build_title(diff: &DiffPanelModel, tui_state: &TuiState, total_hunks: usize) -> String {
+    let path = diff.path.as_deref().unwrap_or("Diff");
 
-    let mode_label: String = match state.content_mode {
-        ContentMode::FullFile => match state.render_variant {
+    let mode_label: String = match diff.content_mode {
+        ContentMode::FullFile => match diff.render_variant {
             RenderVariant::HeadVersion => " (HEAD)".into(),
             RenderVariant::BaseVersion => " (base)".into(),
             _ => String::new(),
         },
         ContentMode::Diff => {
-            let sbs = if state.render_variant == RenderVariant::SideBySide {
+            let sbs = if diff.render_variant == RenderVariant::SideBySide {
                 " sbs"
             } else {
                 ""
             };
-            if state.diff_algorithm != state.default_diff_algorithm {
-                let algo = state.diff_algorithm.label();
+            if diff.diff_algorithm != diff.default_diff_algorithm {
+                let algo = diff.diff_algorithm.label();
                 format!(" (diff:{algo}{sbs})")
             } else if !sbs.is_empty() {
                 format!(" (diff{sbs})")
@@ -459,20 +446,21 @@ fn build_title(
         }
     };
 
-    let ws_label = if state.ignore_whitespace { " -w" } else { "" };
+    let ws_label = if diff.ignore_whitespace { " -w" } else { "" };
 
     // Show diff base indicator for reviewed files when not using merge base.
-    let base_label = if !state.show_merge_base {
-        let has_reviewed_commit = matches!(
-            &entry.status,
-            ReviewStatus::Reviewed {
+    let base_label = if !diff.show_merge_base {
+        let has_reviewed_commit = match &diff.review_status {
+            Some(ReviewStatusModel::Reviewed {
                 reviewed_commit: Some(_),
                 ..
-            } | ReviewStatus::Changed {
+            })
+            | Some(ReviewStatusModel::Changed {
                 reviewed_commit: Some(_),
                 ..
-            }
-        );
+            }) => true,
+            _ => false,
+        };
         if has_reviewed_commit {
             " [since review]"
         } else {
@@ -484,7 +472,7 @@ fn build_title(
 
     let hunk_info = if total_hunks == 0 {
         String::new()
-    } else if let Some(idx) = tui_state.current_hunk_index(state) {
+    } else if let Some(idx) = tui_state.current_hunk_index_at(diff.cursor.line) {
         format!(" \u{2014} {}/{total_hunks}", idx + 1)
     } else {
         String::new()
@@ -500,10 +488,10 @@ fn build_title(
 fn build_inline_diff(
     ds: &DiffStyle,
     default_bg: Color,
-    hunks: &[DiffHunk],
+    hunks: &[DiffHunkModel],
     head_content: Option<&str>,
-    head_blame: &[crate::git::BlameLine],
-    base_blame: &[crate::git::BlameLine],
+    head_blame: &[BlameLineModel],
+    base_blame: &[BlameLineModel],
     inner_w: usize,
 ) -> BuiltContent {
     let head_lines: Vec<&str> = head_content
@@ -575,10 +563,10 @@ fn build_inline_diff(
     let blame_fg = *ds.blame_fg;
 
     // Blame lookups: line numbers are 1-indexed, blame vecs are 0-indexed.
-    let hblame = |lineno: Option<u32>| -> Option<&crate::git::BlameLine> {
+    let hblame = |lineno: Option<u32>| -> Option<&BlameLineModel> {
         lineno.and_then(|n| head_blame.get((n as usize).wrapping_sub(1)))
     };
-    let bblame = |lineno: Option<u32>| -> Option<&crate::git::BlameLine> {
+    let bblame = |lineno: Option<u32>| -> Option<&BlameLineModel> {
         lineno.and_then(|n| base_blame.get((n as usize).wrapping_sub(1)))
     };
 
@@ -829,10 +817,10 @@ fn build_inline_diff(
 fn build_side_by_side_diff(
     ds: &DiffStyle,
     default_bg: Color,
-    hunks: &[DiffHunk],
+    hunks: &[DiffHunkModel],
     head_content: Option<&str>,
-    head_blame: &[crate::git::BlameLine],
-    base_blame: &[crate::git::BlameLine],
+    head_blame: &[BlameLineModel],
+    base_blame: &[BlameLineModel],
     inner_w: usize,
 ) -> BuiltContent {
     let head_lines: Vec<&str> = head_content
@@ -887,10 +875,10 @@ fn build_side_by_side_diff(
     let divider_style = Style::default().fg(*ds.gutter_fg);
 
     // Blame lookups.
-    let hblame = |lineno: Option<u32>| -> Option<&crate::git::BlameLine> {
+    let hblame = |lineno: Option<u32>| -> Option<&BlameLineModel> {
         lineno.and_then(|n| head_blame.get((n as usize).wrapping_sub(1)))
     };
-    let bblame = |lineno: Option<u32>| -> Option<&crate::git::BlameLine> {
+    let bblame = |lineno: Option<u32>| -> Option<&BlameLineModel> {
         lineno.and_then(|n| base_blame.get((n as usize).wrapping_sub(1)))
     };
 
@@ -906,7 +894,7 @@ fn build_side_by_side_diff(
                      content: &str,
                      style: Style,
                      emphasis: Option<(&[super::word_diff::DiffSpan<'_>], Style)>,
-                     blame: Option<&crate::git::BlameLine>|
+                     blame: Option<&BlameLineModel>|
      -> Vec<Span<'static>> {
         let bg = style.bg.unwrap_or(default_bg);
         let gutter_style = Style::default().fg(gutter_fg).bg(bg);
@@ -1185,9 +1173,9 @@ fn build_side_by_side_diff(
 fn build_full_file_head(
     ds: &DiffStyle,
     default_bg: Color,
-    hunks: &[DiffHunk],
+    hunks: &[DiffHunkModel],
     head_content: Option<&str>,
-    blame: &[crate::git::BlameLine],
+    blame: &[BlameLineModel],
     inner_w: usize,
 ) -> BuiltContent {
     let content = match head_content {
@@ -1315,9 +1303,9 @@ fn build_full_file_head(
 fn build_full_file_base(
     ds: &DiffStyle,
     default_bg: Color,
-    hunks: &[DiffHunk],
+    hunks: &[DiffHunkModel],
     base_content: Option<&str>,
-    blame: &[crate::git::BlameLine],
+    blame: &[BlameLineModel],
     inner_w: usize,
 ) -> BuiltContent {
     let content = match base_content {
@@ -1442,7 +1430,7 @@ fn build_full_file_base(
 const BLAME_COL_WIDTH: usize = 30;
 
 /// Format a blame annotation for display, padded/truncated to `BLAME_COL_WIDTH`.
-fn format_blame(blame: Option<&crate::git::BlameLine>) -> String {
+fn format_blame(blame: Option<&BlameLineModel>) -> String {
     match blame {
         Some(bl) => {
             // "abc1234 2024-03-15 Author" — hash(7) + space + date(10) + space + author.
@@ -1472,7 +1460,7 @@ fn make_line(
     default_bg: Color,
     gutter_w: usize,
     inner_w: usize,
-    blame: Option<&crate::git::BlameLine>,
+    blame: Option<&BlameLineModel>,
 ) -> Line<'static> {
     let bg = content_style.bg.unwrap_or(default_bg);
     let gutter_style = Style::default().fg(gutter_fg).bg(bg);
@@ -1530,7 +1518,7 @@ fn make_line_with_emphasis(
     default_bg: Color,
     gutter_w: usize,
     inner_w: usize,
-    blame: Option<&crate::git::BlameLine>,
+    blame: Option<&BlameLineModel>,
 ) -> Line<'static> {
     let bg = base_style.bg.unwrap_or(default_bg);
     let gutter_style = Style::default().fg(gutter_fg).bg(bg);
