@@ -64,7 +64,7 @@ pub struct MouseEvent {
     pub button: Option<MouseButton>,
     /// Optional pane-local coordinates (for diagnostics and fallback).
     pub local_pos: Option<(u16, u16)>,
-    /// Semantic hit target resolved by the adapter via `InteractionMap`.
+    /// Semantic hit target resolved by the adapter via its backend hit map.
     pub semantic_hit: Option<PointerSemanticHit>,
     pub modifiers: InputModifiers,
 }
@@ -92,7 +92,7 @@ pub struct PointerSemanticHit {
     pub pane_id: PaneId,
     /// UI-neutral application target under the pointer.
     pub target: AppTarget,
-    /// Region id from `InteractionRegion.id` when available.
+    /// Backend region id when available.
     pub region_id: Option<String>,
     /// Optional text-precise anchor for cursor/selection semantics.
     pub text_anchor: Option<TextAnchor>,

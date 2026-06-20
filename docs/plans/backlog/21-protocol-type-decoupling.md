@@ -52,8 +52,8 @@ That coupling blocks clean layering and makes future interfaces harder to add.
 - If renames are applied, update both client and server in the same stage so
   the project remains buildable/runnable end-to-end.
 - Update comments to reflect ownership (shared vs server-local).
-- Keep transport protocol models separate from core `InputEvent`,
-  `RenderModel`, and `InteractionMap` contracts introduced in Stage 20.
+- Keep transport protocol models separate from core `InputEvent` and
+  AppModel-backed interaction contracts.
 
 ### Naming Guidance
 

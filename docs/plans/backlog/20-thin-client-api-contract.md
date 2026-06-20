@@ -114,8 +114,9 @@ This stage adopts a stricter model:
 - Core-owned interpretation prevents behavior drift between interfaces.
 - Prompt handshake keeps UX flexible (UI) while preserving semantic ownership
   (core).
-- Stage 20's `RenderModel + InteractionMap` scaffold was later superseded by
-  `AppModel` plus backend-owned hit maps.
+- Stage 20's initial `RenderModel + InteractionMap` scaffold was later
+  superseded by `AppModel` plus backend-owned hit maps and removed from active
+  code.
 - Snapshot-plus-delta model balances correctness and performance:
   - snapshots are safest for reconnect/resync,
   - deltas avoid heavy redraw/state copy costs during normal interaction.
@@ -123,8 +124,8 @@ This stage adopts a stricter model:
 ## Deliverables
 
 - A new design doc section or module-level docs describing the contract.
-- Skeleton Rust types for `InputEvent`, prompt handshake, effects, render
-  model, interaction map, and error categories.
+- Skeleton Rust types for `InputEvent`, prompt handshake, effects, and error
+  categories.
 - Internal service traits/APIs for feature use-cases.
 - A mapping table from current TUI hotspots to target core entrypoint and
   service methods.
@@ -134,10 +135,11 @@ This stage adopts a stricter model:
 - [x] Core interaction API is documented and committed in code as interfaces/types.
 - [x] A complete `InputEvent` list exists for current TUI actions.
 - [x] Prompt handshake contract is documented and represented in code types.
-- [x] Initial `RenderModel + InteractionMap` scaffolding is documented and
-      represented in code types. Stage 23a supersedes this as the final shared
-      UI boundary.
-- [x] Pane world models are defined for each interactive pane class.
+- [x] Initial `RenderModel + InteractionMap` scaffolding was documented.
+      Stage 23a superseded this as the final shared UI boundary, and the
+      scaffold types were later removed from active code.
+- [x] Pane world model concerns were folded into `AppModel` and backend-owned
+      hit maps.
 - [x] Pointer mapping rules (native -> pane-local -> semantic hit) are
       documented for both TUI and GUI adapters.
 - [x] Snapshot-vs-delta policy is documented with reconnect/resync rules.
@@ -151,6 +153,7 @@ This stage adopts a stricter model:
 - UI prompt widgets capture text; core requests prompts and interprets results.
 - Core interaction uses a single input entrypoint for UI adapters.
 - Processed rendering was initially scaffolded as `RenderModel +
-  InteractionMap`; Stage 23a supersedes that with `AppModel` as shared
-  conceptual app state and backend-owned hit maps.
+  InteractionMap`; Stage 23a superseded that with `AppModel` as shared
+  conceptual app state and backend-owned hit maps, and the scaffold types were
+  removed from active code.
 - Snapshot/resync policy remains relevant for reconnect and state reloads.

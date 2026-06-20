@@ -26,8 +26,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
 - In scope: key/mouse/resize/focus translation into `InputEvent`, local prompt
   widget handling, and dispatch wiring.
 - In scope: moving command parsing semantics behind core input interpretation.
-- In scope: mapping native pointer coordinates through `InteractionMap`
-  semantics from Stage 20.
+- In scope: mapping native pointer coordinates through backend-owned hit maps
+  into semantic app targets.
 - Out of scope: reconnect/failover transport concerns (Stage 24).
 
 ## Requirements
@@ -37,7 +37,7 @@ clean reuse in GUI and increases coupling to TUI-only state.
 
 2. Implement pointer translation contract for TUI:
    - native terminal row/column -> pane-local coordinates,
-   - pane-local coordinates -> semantic hit via `InteractionMap`,
+   - pane-local coordinates -> semantic hit via TUI-owned hit maps,
    - semantic hit emitted as `InputEvent`.
 
 3. `keys` layer responsibilities become:
