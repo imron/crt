@@ -145,6 +145,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
 - Moved style configuration out of `AppState` as a transitional step. A later
   Stage 23 app-boundary slice should make shared config app-owned and keep
   renderer-specific style conversion at the TUI/GUI edge.
+- Removed legacy unscoped command/search prompt fallbacks from the TUI input
+  adapter so prompt submit semantics stay behind the core interaction engine.
 
 ## Acceptance Criteria
 
