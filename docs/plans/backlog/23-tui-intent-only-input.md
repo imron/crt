@@ -1,6 +1,6 @@
 # Stage 23: TUI Input Adapter Refactor
 
-## Status: In Progress
+## Status: Complete
 
 ## Order
 
@@ -13,7 +13,7 @@
 
 ## Goal
 
-Refactor TUI input handling so `src/keys.rs` acts as a thin adapter from
+Refactor TUI input handling so `src/tui/input.rs` acts as a thin adapter from
 terminal events to core `InputEvent` messages, without domain decision logic.
 
 ## Why
@@ -73,7 +73,7 @@ clean reuse in GUI and increases coupling to TUI-only state.
 ## Deliverables
 
 - Input adapter translation and dispatch plumbing.
-- Refactored `src/keys.rs` with no business-rule helpers.
+- Refactored `src/tui/input.rs` with no business-rule helpers.
 - Updated app loop forwarding `InputEvent` values to core.
 
 ## Progress
@@ -116,8 +116,9 @@ clean reuse in GUI and increases coupling to TUI-only state.
   semantic pane/cursor effects.
 - Migrated drag selection, double-click copy, and selection highlighting to
   semantic text anchors instead of raw terminal content coordinates.
-- Moved core-effect application and app-state update helpers out of `keys.rs`
-  into the App update step so key handling remains an input/prompt adapter.
+- Moved core-effect application and app-state update helpers out of
+  `tui::input` into the App update step so key handling remains an
+  input/prompt adapter.
 - Moved terminal input and rendering modules under the `tui` module boundary.
 - Moved the terminal runtime shell into `tui::Tui`, leaving the mixed
   AppState/TUI state split for a later Stage 23 slice.
@@ -157,17 +158,20 @@ clean reuse in GUI and increases coupling to TUI-only state.
   of dispatching to the core interaction engine directly.
 - Centralized TUI runtime core input dispatch so key and mouse events share
   the same context selection and effect application boundary.
+- Completed the TUI input adapter boundary: terminal events now normalize in
+  `tui::input`, core interpretation runs through the runtime dispatch helper,
+  and shared configuration is owned by `App`.
 
 ## Acceptance Criteria
 
-- [ ] `src/keys.rs` does not call domain logic directly.
-- [ ] `src/keys.rs` does not interpret semantic commands directly.
-- [ ] Pointer interactions in TUI are emitted as semantic hits/events, not raw
+- [x] `src/tui/input.rs` does not call domain logic directly.
+- [x] `src/tui/input.rs` does not interpret semantic commands directly.
+- [x] Pointer interactions in TUI are emitted as semantic hits/events, not raw
       terminal coordinates.
-- [ ] All existing keybindings still function.
-- [ ] Command mode behavior remains compatible.
-- [ ] Input adapter path is reusable by non-terminal UI clients.
-- [ ] Shared style/theme config is owned by `App` configuration, while TUI/GUI
+- [x] All existing keybindings still function.
+- [x] Command mode behavior remains compatible.
+- [x] Input adapter path is reusable by non-terminal UI clients.
+- [x] Shared style/theme config is owned by `App` configuration, while TUI/GUI
       adapters own only renderer-specific style conversion.
 
 ## Resolved Decisions
