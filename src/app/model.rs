@@ -8,8 +8,7 @@ use crate::app::AppState;
 use crate::config::DiffAlgorithm;
 use crate::core::{PromptId, PromptKind, TextAnchor};
 use crate::model::{
-    ChangeKind, ConnectionContext, ContentMode, LineKind, PaneFocus, RenderVariant,
-    ReviewStatus as DomainReviewStatus,
+    self, ChangeKind, ConnectionContext, ContentMode, LineKind, PaneFocus, RenderVariant,
 };
 
 #[derive(Debug, Clone)]
@@ -319,18 +318,18 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
     }
 }
 
-impl From<&DomainReviewStatus> for ReviewStatus {
-    fn from(status: &DomainReviewStatus) -> Self {
+impl From<&model::ReviewStatus> for ReviewStatus {
+    fn from(status: &model::ReviewStatus) -> Self {
         match status {
-            DomainReviewStatus::Unreviewed => Self::Unreviewed,
-            DomainReviewStatus::Reviewed {
+            model::ReviewStatus::Unreviewed => Self::Unreviewed,
+            model::ReviewStatus::Reviewed {
                 at,
                 reviewed_commit,
             } => Self::Reviewed {
                 at: at.clone(),
                 reviewed_commit: reviewed_commit.clone(),
             },
-            DomainReviewStatus::Changed {
+            model::ReviewStatus::Changed {
                 at,
                 reviewed_commit,
             } => Self::Changed {
@@ -356,10 +355,7 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::config::Config;
-    use crate::model::{
-        ChangeKind, DiffContent, DiffHunk as DomainDiffHunk, DiffLine as DomainDiffLine,
-        FileChange, FileEntry, LineKind, ReviewStatus as DomainReviewStatus,
-    };
+    use crate::model::{self, ChangeKind, DiffContent, FileChange, FileEntry, LineKind};
 
     fn test_context() -> ConnectionContext {
         ConnectionContext {
@@ -371,7 +367,7 @@ mod tests {
         }
     }
 
-    fn file(path: &str, status: DomainReviewStatus, hunks: Vec<DomainDiffHunk>) -> FileEntry {
+    fn file(path: &str, status: model::ReviewStatus, hunks: Vec<model::DiffHunk>) -> FileEntry {
         FileEntry {
             change: FileChange {
                 path: path.to_string(),
@@ -387,21 +383,21 @@ mod tests {
         }
     }
 
-    fn hunk() -> DomainDiffHunk {
-        DomainDiffHunk {
+    fn hunk() -> model::DiffHunk {
+        model::DiffHunk {
             old_start: 1,
             old_lines: 2,
             new_start: 1,
             new_lines: 2,
             header: "@@ -1,2 +1,2 @@".to_string(),
             lines: vec![
-                DomainDiffLine {
+                model::DiffLine {
                     kind: LineKind::Context,
                     content: "fn main() {".to_string(),
                     old_lineno: Some(1),
                     new_lineno: Some(1),
                 },
-                DomainDiffLine {
+                model::DiffLine {
                     kind: LineKind::Addition,
                     content: "    run();".to_string(),
                     old_lineno: None,
@@ -411,15 +407,15 @@ mod tests {
         }
     }
 
-    fn reviewed() -> DomainReviewStatus {
-        DomainReviewStatus::Reviewed {
+    fn reviewed() -> model::ReviewStatus {
+        model::ReviewStatus::Reviewed {
             at: "2026-01-01T00:00:00Z".to_string(),
             reviewed_commit: Some("abc".to_string()),
         }
     }
 
-    fn changed() -> DomainReviewStatus {
-        DomainReviewStatus::Changed {
+    fn changed() -> model::ReviewStatus {
+        model::ReviewStatus::Changed {
             at: "2026-01-01T00:00:00Z".to_string(),
             reviewed_commit: Some("def".to_string()),
         }
@@ -433,7 +429,7 @@ mod tests {
             vec![
                 file("c.rs", reviewed(), Vec::new()),
                 file("b.rs", changed(), Vec::new()),
-                file("a.rs", DomainReviewStatus::Unreviewed, Vec::new()),
+                file("a.rs", model::ReviewStatus::Unreviewed, Vec::new()),
             ],
         );
         app.state.selected_file = app
@@ -481,7 +477,7 @@ mod tests {
             test_context(),
             vec![file(
                 "src/main.rs",
-                DomainReviewStatus::Unreviewed,
+                model::ReviewStatus::Unreviewed,
                 vec![hunk()],
             )],
         );
@@ -527,7 +523,7 @@ mod tests {
             test_context(),
             vec![file(
                 "src/lib.rs",
-                DomainReviewStatus::Unreviewed,
+                model::ReviewStatus::Unreviewed,
                 Vec::new(),
             )],
         );
