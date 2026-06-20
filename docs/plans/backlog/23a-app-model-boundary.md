@@ -1,6 +1,6 @@
 # Stage 23a: AppModel Boundary
 
-## Status: Backlog
+## Status: In Progress
 
 ## Order
 
@@ -59,10 +59,16 @@ toolkit widgets.
 
 ## Acceptance Criteria
 
-- [ ] The AppModel architecture is documented as the current target.
-- [ ] Existing Stage 20 `RenderModel` wording is explicitly superseded.
-- [ ] Each implementation slice has a dedicated plan with acceptance criteria.
-- [ ] Stage 24 depends on completion of the AppModel boundary work.
+- [x] The AppModel architecture is documented as the current target.
+- [x] Existing Stage 20 `RenderModel` wording is explicitly superseded.
+- [x] Each implementation slice has a dedicated plan with acceptance criteria.
+- [x] Stage 24 depends on completion of the AppModel boundary work.
+
+## Progress
+
+- Corrected architecture docs so `AppModel` is the current shared UI model,
+  while Stage 20 `RenderModel`/`InteractionMap` types are documented as
+  scaffolding superseded by the AppModel migration.
 
 ## Resolved Decisions
 

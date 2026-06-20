@@ -1,6 +1,6 @@
 # Stage 23b: AppModel Contract Correction
 
-## Status: Backlog
+## Status: Complete
 
 ## Order
 
@@ -43,10 +43,10 @@ contract scaffolding that has been superseded.
 
 ## Acceptance Criteria
 
-- [ ] Docs consistently use `AppModel` for shared renderable app state.
-- [ ] Docs state that terminal cells and GUI pixels are UI-adapter concerns.
-- [ ] Docs state that backend hit maps are owned by TUI/GUI adapters.
-- [ ] No current architecture doc presents `RenderModel` as the final shared
+- [x] Docs consistently use `AppModel` for shared renderable app state.
+- [x] Docs state that terminal cells and GUI pixels are UI-adapter concerns.
+- [x] Docs state that backend hit maps are owned by TUI/GUI adapters.
+- [x] No current architecture doc presents `RenderModel` as the final shared
       UI boundary.
-- [ ] No current architecture doc points new work at removed `src/keys.rs` or
+- [x] No current architecture doc points new work at removed `src/keys.rs` or
       `src/ui` modules.
