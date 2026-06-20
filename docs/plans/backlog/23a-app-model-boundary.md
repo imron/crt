@@ -78,6 +78,9 @@ toolkit widgets.
 - Converted TUI rendering to consume `AppModel` for app content. The renderer
   now updates only TUI-owned render caches; viewport-dependent app scroll
   clamping happens in the TUI runtime after rendering.
+- Routed TUI pointer hits through `AppModel` and semantic app targets. File
+  selection now reaches app update code as a file index rather than a rendered
+  TUI row, while terminal coordinates remain inside the TUI adapter.
 
 ## Resolved Decisions
 

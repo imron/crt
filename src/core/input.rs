@@ -90,10 +90,20 @@ pub enum MouseButton {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PointerSemanticHit {
     pub pane_id: PaneId,
+    /// UI-neutral application target under the pointer.
+    pub target: AppTarget,
     /// Region id from `InteractionRegion.id` when available.
     pub region_id: Option<String>,
     /// Optional text-precise anchor for cursor/selection semantics.
     pub text_anchor: Option<TextAnchor>,
+}
+
+/// Application-domain target under a pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppTarget {
+    File { index: usize },
+    DiffText { anchor: TextAnchor },
+    Pane { pane_id: PaneId },
 }
 
 /// Text-precise position in pane semantic space.
