@@ -1,14 +1,14 @@
 //! TUI-side application of core effects.
 
 use super::state::TuiState;
-use crate::app::{AppSession, AppState};
+use crate::app::{App, AppState};
 use crate::core::{
     CoreEffect, DefinitionResultsEffect, PaneEffect, PaneId, PromptKind, SearchResultsEffect,
 };
 use crate::review_types::PaneFocus;
 
 pub fn apply_core_effects(
-    session: &mut AppSession,
+    app: &mut App,
     tui_state: &mut TuiState,
     effects: Vec<CoreEffect>,
 ) -> bool {
@@ -39,39 +39,39 @@ pub fn apply_core_effects(
                 tui_state.show_help = false;
             }
             CoreEffect::SearchResults(effect) => {
-                apply_search_results_effect(session, tui_state, effect);
+                apply_search_results_effect(app, tui_state, effect);
             }
             CoreEffect::DefinitionResults(effect) => {
-                apply_definition_results_effect(session, tui_state, effect);
+                apply_definition_results_effect(app, tui_state, effect);
             }
             CoreEffect::TogglePaneFocus => {
-                toggle_pane_focus(&mut session.app.state, tui_state);
+                toggle_pane_focus(&mut app.state, tui_state);
                 tui_state.clear_status_message();
             }
             CoreEffect::TogglePaneVisibility(PaneId::FileList) => {
-                toggle_pane_visibility(&mut session.app.state, tui_state, PaneFocus::FileList);
+                toggle_pane_visibility(&mut app.state, tui_state, PaneFocus::FileList);
                 tui_state.clear_status_message();
             }
             CoreEffect::TogglePaneVisibility(PaneId::Diff) => {
-                toggle_pane_visibility(&mut session.app.state, tui_state, PaneFocus::Diff);
+                toggle_pane_visibility(&mut app.state, tui_state, PaneFocus::Diff);
                 tui_state.clear_status_message();
             }
             CoreEffect::TogglePaneVisibility(_) => {}
             CoreEffect::Pane(PaneEffect::ActivateFileListSelection) => {
                 if tui_state.show_diff_pane {
-                    session.app.state.pane_focus = PaneFocus::Diff;
+                    app.state.pane_focus = PaneFocus::Diff;
                 }
             }
             effect => app_effects.push(effect),
         }
     }
 
-    let app_output = session.app.apply_core_effects(tui_state, app_effects);
+    let app_output = app.apply_core_effects(tui_state, app_effects);
     let app_handled = app_output.handled;
     let save_layout = app_output.save_layout;
     tui_state.apply_app_output(app_output);
     if save_layout {
-        save_layout_config(session, tui_state);
+        save_layout_config(app, tui_state);
     }
     app_handled || handled
 }
@@ -112,7 +112,7 @@ fn toggle_pane_visibility(state: &mut AppState, tui_state: &mut TuiState, pane: 
 }
 
 fn apply_search_results_effect(
-    session: &mut AppSession,
+    app: &mut App,
     tui_state: &mut TuiState,
     effect: SearchResultsEffect,
 ) {
@@ -163,9 +163,7 @@ fn apply_search_results_effect(
                 .and_then(|results| results.matches.get(results.selected).cloned());
             tui_state.search_results = None;
             if let Some(search_match) = selected {
-                let output = session
-                    .app
-                    .navigate_to_search_match(tui_state, &search_match);
+                let output = app.navigate_to_search_match(tui_state, &search_match);
                 tui_state.apply_app_output(output);
             }
         }
@@ -173,7 +171,7 @@ fn apply_search_results_effect(
 }
 
 fn apply_definition_results_effect(
-    session: &mut AppSession,
+    app: &mut App,
     tui_state: &mut TuiState,
     effect: DefinitionResultsEffect,
 ) {
@@ -202,18 +200,18 @@ fn apply_definition_results_effect(
                 .and_then(|results| results.definitions.get(results.selected).cloned());
             tui_state.definition_results = None;
             if let Some(definition) = selected {
-                let output = session.app.navigate_to_definition(tui_state, &definition);
+                let output = app.navigate_to_definition(tui_state, &definition);
                 tui_state.apply_app_output(output);
             }
         }
     }
 }
 
-fn save_layout_config(session: &AppSession, tui_state: &TuiState) {
-    if let Some(path) = session.config_path() {
+fn save_layout_config(app: &App, tui_state: &TuiState) {
+    if let Some(path) = app.config_path() {
         let layout = crate::config::LayoutConfig {
             file_list_width: tui_state.file_list_width,
-            diff_algorithm: Some(session.app.state.diff_algorithm),
+            diff_algorithm: Some(app.state.diff_algorithm),
         };
         crate::config::save_layout(path, &layout);
     }
