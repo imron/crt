@@ -122,17 +122,14 @@ impl Tui {
                 self.handle_event(ev);
             }
 
-            self.process_app_work().await;
+            self.process_app_background_work().await;
 
             // Process pending command (search, definition, etc.).
             if let Some(cmd) = self.tui_state.pending_command.take() {
                 self.process_pending_command(cmd).await;
             }
 
-            // Check for server-pushed notifications (from other clients).
-            self.process_notifications().await;
-
-            self.process_app_work().await;
+            self.process_app_background_work().await;
 
             if self.tui_state.should_suspend {
                 self.tui_state.should_suspend = false;
@@ -397,8 +394,8 @@ impl Tui {
         }
     }
 
-    async fn process_app_work(&mut self) {
-        let status = self.app.process_pending_work().await;
+    async fn process_app_background_work(&mut self) {
+        let status = self.app.process_background_work().await;
         self.tui_state.apply_status_update(status);
     }
 
@@ -536,12 +533,6 @@ impl Tui {
                     .set_status_message("Unsupported pending command");
             }
         }
-    }
-
-    /// Check for server-pushed notifications and refresh state if needed.
-    async fn process_notifications(&mut self) {
-        let status = self.app.process_notifications().await;
-        self.tui_state.apply_status_update(status);
     }
 
     /// Select the word under the given semantic position and copy it.
