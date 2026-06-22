@@ -1,6 +1,6 @@
 # Stage 23h: App Session Owns Client and Config
 
-## Status: Backlog
+## Status: Complete
 
 ## Order
 
@@ -76,13 +76,23 @@ should not know how config and initial review data are loaded.
 
 ## Acceptance Criteria
 
-- [ ] `src/tui/runtime.rs` has no `Client` field.
-- [ ] `src/tui/runtime.rs` does not call `crate::config::load()`.
-- [ ] `src/tui/runtime.rs` does not call `list_changed_files()` during
+- [x] `src/tui/runtime.rs` has no `Client` field.
+- [x] `src/tui/runtime.rs` does not call `crate::config::load()`.
+- [x] `src/tui/runtime.rs` does not call `list_changed_files()` during
       construction.
-- [ ] Config remains app-owned and available to renderers through `App`.
-- [ ] Startup behavior remains unchanged for `crt <base>` and `--reset`.
-- [ ] `cargo test` passes.
+- [x] Config remains app-owned and available to renderers through `App`.
+- [x] Startup behavior remains unchanged for `crt <base>` and `--reset`.
+- [x] `cargo test` passes.
+
+## Progress
+
+- Added `AppSession`, which owns `App`, the server client, and config
+  persistence context.
+- Moved config loading, config path resolution, initial `list_changed_files()`,
+  and first-file initialization behind `AppSession::load`.
+- Changed `tui::run` and `Tui::new` so the TUI receives an app-owned session
+  and only initializes terminal/presentation state.
+- Removed config path ownership from `TuiState`.
 
 ## Notes
 
