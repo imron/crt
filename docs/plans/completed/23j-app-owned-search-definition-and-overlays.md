@@ -1,6 +1,6 @@
 # Stage 23j: App-Owned Search, Definition, and Overlay Workflows
 
-## Status: Backlog
+## Status: Completed
 
 ## Order
 
@@ -69,12 +69,21 @@ selection input back to the app.
 
 ## Acceptance Criteria
 
-- [ ] `src/tui/runtime.rs` no longer calls `search_codebase()` directly.
-- [ ] `src/tui/runtime.rs` no longer calls `find_definition()` directly.
-- [ ] `TuiState` no longer stores `SearchResults` or `DefinitionResults`.
-- [ ] Search and definition result overlays are represented in `AppModel`.
-- [ ] Existing search and definition workflows remain compatible.
-- [ ] `cargo test` passes.
+- [x] `src/tui/runtime.rs` no longer calls `search_codebase()` directly.
+- [x] `src/tui/runtime.rs` no longer calls `find_definition()` directly.
+- [x] `TuiState` no longer stores `SearchResults` or `DefinitionResults`.
+- [x] Search and definition result overlays are represented in `AppModel`.
+- [x] Existing search and definition workflows remain compatible.
+- [x] `cargo test` passes.
+
+## Completed Notes
+
+- Search and definition command execution is now queued as app work from parsed
+  app commands.
+- `AppState` owns conceptual search and definition overlay state.
+- `AppModel` projects overlay data for TUI/GUI renderers.
+- TUI keeps only renderer-specific search overlay scroll state.
+- The event loop keeps one app background/progress step per turn.
 
 ## Notes
 

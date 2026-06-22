@@ -151,14 +151,6 @@ pub fn handle_key_event(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> Key
         return handle_diff_search_input(tui_state, key);
     }
 
-    if tui_state.search_results.is_some() {
-        return dispatch_core_input(key);
-    }
-
-    if tui_state.definition_results.is_some() {
-        return dispatch_core_input(key);
-    }
-
     if tui_state.show_help {
         return dispatch_core_input(key);
     }

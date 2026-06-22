@@ -86,13 +86,13 @@ pub fn draw(frame: &mut Frame, model: &AppModel, tui_state: &mut TuiState, style
     }
 
     // Search results overlay.
-    if tui_state.search_results.is_some() {
-        draw_search_results_overlay(frame, tui_state, styles);
+    if model.search_results.is_some() {
+        draw_search_results_overlay(frame, model, tui_state, styles);
     }
 
     // Definition results overlay.
-    if tui_state.definition_results.is_some() {
-        draw_definition_results_overlay(frame, tui_state, styles);
+    if model.definition_results.is_some() {
+        draw_definition_results_overlay(frame, model, styles);
     }
 
     // Help overlay on top of everything else.
@@ -423,8 +423,13 @@ fn draw_diff_search_input(
 // ---------------------------------------------------------------------------
 
 /// Draw the search results overlay as a centered popup.
-fn draw_search_results_overlay(frame: &mut Frame, tui_state: &TuiState, styles: &StyleConfig) {
-    let results = match &tui_state.search_results {
+fn draw_search_results_overlay(
+    frame: &mut Frame,
+    model: &AppModel,
+    tui_state: &mut TuiState,
+    styles: &StyleConfig,
+) {
+    let results = match &model.search_results {
         Some(r) => r,
         None => return,
     };
@@ -456,6 +461,13 @@ fn draw_search_results_overlay(frame: &mut Frame, tui_state: &TuiState, styles: 
     // Build content lines.
     let inner_height = overlay_height.saturating_sub(2) as usize; // borders
     let total = results.matches.len();
+    if total == 0 {
+        tui_state.search_results_scroll = 0;
+    } else if results.selected < tui_state.search_results_scroll {
+        tui_state.search_results_scroll = results.selected;
+    } else if results.selected >= tui_state.search_results_scroll + inner_height {
+        tui_state.search_results_scroll = results.selected.saturating_sub(inner_height - 1);
+    }
     let scope_label = if results.diff_only { " (diff)" } else { "" };
     let title = format!(
         " Search: /{}/{} — {} matches ",
@@ -469,11 +481,11 @@ fn draw_search_results_overlay(frame: &mut Frame, tui_state: &TuiState, styles: 
             Style::default().fg(*hs.text_fg),
         )));
     } else {
-        let visible_start = results.scroll;
+        let visible_start = tui_state.search_results_scroll;
         let visible_end = (visible_start + inner_height).min(total);
         for i in visible_start..visible_end {
             let m = &results.matches[i];
-            let is_selected = i == results.selected;
+            let is_selected = m.selected;
             let style = if is_selected {
                 Style::default()
                     .fg(ratatui::style::Color::Black)
@@ -513,8 +525,8 @@ fn draw_search_results_overlay(frame: &mut Frame, tui_state: &TuiState, styles: 
 // ---------------------------------------------------------------------------
 
 /// Draw the definition results overlay as a centered popup.
-fn draw_definition_results_overlay(frame: &mut Frame, tui_state: &TuiState, styles: &StyleConfig) {
-    let results = match &tui_state.definition_results {
+fn draw_definition_results_overlay(frame: &mut Frame, model: &AppModel, styles: &StyleConfig) {
+    let results = match &model.definition_results {
         Some(r) => r,
         None => return,
     };
@@ -550,8 +562,8 @@ fn draw_definition_results_overlay(frame: &mut Frame, tui_state: &TuiState, styl
             Style::default().fg(*hs.text_fg),
         )));
     } else {
-        for (i, def) in results.definitions.iter().enumerate() {
-            let is_selected = i == results.selected;
+        for def in &results.definitions {
+            let is_selected = def.selected;
             let style = if is_selected {
                 Style::default()
                     .fg(ratatui::style::Color::Black)
