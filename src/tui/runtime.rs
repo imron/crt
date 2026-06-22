@@ -122,13 +122,13 @@ impl Tui {
                 self.handle_event(ev);
             }
 
-            self.process_app_background_work().await;
-
             // Process pending command (search, definition, etc.).
             if let Some(cmd) = self.tui_state.pending_command.take() {
                 self.process_pending_command(cmd).await;
             }
 
+            // Let the app drain queued work and background client updates
+            // before the next render.
             self.process_app_background_work().await;
 
             if self.tui_state.should_suspend {
