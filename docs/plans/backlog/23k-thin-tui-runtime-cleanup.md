@@ -26,7 +26,8 @@ TUI state fields that exist only to drive app workflows.
 ## Target TUI Responsibilities
 
 - Terminal setup/restore, raw mode, alternate screen, focus events.
-- Crossterm event normalization into app/core input.
+- Crossterm event normalization into app/core input, without deciding app
+  keybinding semantics.
 - Prompt text editing mechanics and prompt cursor placement.
 - Ratatui rendering of `AppModel`.
 - TUI-owned render caches and hit maps from terminal cells to semantic targets.
@@ -38,6 +39,7 @@ TUI state fields that exist only to drive app workflows.
 
 - Config values and config persistence.
 - Client/service access and app workflows.
+- Keybinding interpretation and app-mode-specific input semantics.
 - Review/reload/search/definition/notification semantics.
 - App status messages and conceptual overlays.
 - App model projection.
@@ -81,7 +83,11 @@ TUI state fields that exist only to drive app workflows.
 - [ ] `src/tui/runtime.rs` has no app snapshot reload implementation.
 - [ ] `src/tui/runtime.rs` does not load or persist app config directly.
 - [ ] `TuiState` contains only terminal/render/prompt/clipboard/pointer state.
-- [ ] TUI renders from `AppModel` and sends semantic input to App.
+- [ ] TUI renders from `AppModel` and sends normalized native input plus
+      semantic pointer hits to App.
+- [ ] App-owned code, not TUI code, decides what app keybindings such as `r`,
+      navigation keys, search keys, definition keys, diff mode keys, and
+      command keys mean.
 - [ ] The App can plausibly be reused by a GUI without copying TUI workflow
       code.
 - [ ] `cargo test` passes.
