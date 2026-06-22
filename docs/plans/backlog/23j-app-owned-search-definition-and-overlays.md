@@ -80,3 +80,13 @@ selection input back to the app.
 
 - App-owned overlay state should remain UI-agnostic. TUI-specific scroll math
   for how many overlay rows fit on screen should remain in TUI.
+- Preserve a clean single-pass TUI event loop while moving search/definition
+  into App. The target shape is: render from `app.model()`, collect normalized
+  input, pass that input to App, apply TUI-only effects, and let App make one
+  background/progress step before the next render. Avoid reintroducing separate
+  TUI calls for review, refresh, notifications, search, or definition
+  workflows.
+- Prefer input-oriented App API names. The UI adapter produces normalized
+  `InputEvent`s, so `handle_input`, `process_input`, or `process_inputs` are a
+  better fit than `process_ui_event`; "UI event" is too broad and sounds like
+  terminal/widget mechanics rather than app input.
