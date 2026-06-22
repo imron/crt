@@ -54,7 +54,7 @@ pub trait AppViewport {
 pub struct AppOutput {
     pub handled: bool,
     pub status: Option<StatusUpdate>,
-    pub pending_review_toggle: bool,
+    pending_review_toggle: bool,
     pub should_suspend: bool,
     pub should_quit: bool,
     pub pending_command: Option<Command>,
@@ -86,6 +86,12 @@ impl AppOutput {
 
     fn request_review_toggle(&mut self) {
         self.pending_review_toggle = true;
+    }
+
+    pub(super) fn take_pending_review_toggle(&mut self) -> bool {
+        let pending = self.pending_review_toggle;
+        self.pending_review_toggle = false;
+        pending
     }
 
     fn request_suspend(&mut self) {

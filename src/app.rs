@@ -3,6 +3,7 @@
 pub mod model;
 mod update;
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 
 use self::model::AppModel;
@@ -12,13 +13,20 @@ use crate::core::InputEvent;
 use crate::core::diff;
 use crate::core::interaction::{CoreEffect, CoreInteractionEngine, InteractionContext};
 use crate::core::review;
+use crate::protocol::NotificationKind;
 use crate::review_types::{
     ConnectionContext, ContentMode, DefinitionLocation, FileEntry, PaneFocus, RenderVariant,
-    SearchMatch,
+    ReviewActionResult, ReviewStatus, SearchMatch,
 };
 use anyhow::Result;
 
 pub use update::{AppOutput, AppViewport, StatusUpdate};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppWork {
+    ToggleSelectedReview,
+    ReloadFileSnapshot,
+}
 
 // ---------------------------------------------------------------------------
 // Jump stack
@@ -52,6 +60,7 @@ pub struct App {
     pub config: Config,
     client: Option<Client>,
     config_path: Option<PathBuf>,
+    pending_work: VecDeque<AppWork>,
 }
 
 impl App {
@@ -65,6 +74,7 @@ impl App {
             config,
             client: None,
             config_path: None,
+            pending_work: VecDeque::new(),
         }
     }
 
@@ -133,6 +143,33 @@ impl App {
         Ok(self.client()?.drain_notifications().await)
     }
 
+    pub async fn process_pending_work(&mut self) -> Option<StatusUpdate> {
+        let mut status = None;
+        while let Some(work) = self.pending_work.pop_front() {
+            let work_status = match work {
+                AppWork::ToggleSelectedReview => self.toggle_selected_review().await,
+                AppWork::ReloadFileSnapshot => self.reload_file_snapshot().await,
+            };
+            if work_status.is_some() {
+                status = work_status;
+            }
+        }
+        status
+    }
+
+    pub async fn process_notifications(&mut self) -> Option<StatusUpdate> {
+        let notifications = match self.drain_notifications().await {
+            Ok(notifications) => notifications,
+            Err(e) => return Some(StatusUpdate::Set(format!("Notification error: {e}"))),
+        };
+
+        if notification_requires_snapshot_reload(&notifications) {
+            return self.reload_file_snapshot().await;
+        }
+
+        None
+    }
+
     pub fn model(&self) -> AppModel {
         AppModel::from_state(&self.state)
     }
@@ -150,6 +187,10 @@ impl App {
         event: InputEvent,
         context: &InteractionContext,
     ) -> Vec<CoreEffect> {
+        if matches!(event, InputEvent::FocusGained) {
+            self.pending_work.push_back(AppWork::ReloadFileSnapshot);
+            return Vec::new();
+        }
         self.state.core_interaction.handle_input(event, context)
     }
 
@@ -158,7 +199,11 @@ impl App {
         viewport: &impl AppViewport,
         effects: Vec<CoreEffect>,
     ) -> AppOutput {
-        update::apply_core_effects(&mut self.state, viewport, effects)
+        let mut output = update::apply_core_effects(&mut self.state, viewport, effects);
+        if output.take_pending_review_toggle() {
+            self.pending_work.push_back(AppWork::ToggleSelectedReview);
+        }
+        output
     }
 
     pub fn navigate_to_search_match(
@@ -176,6 +221,91 @@ impl App {
     ) -> AppOutput {
         update::navigate_to_definition(&mut self.state, viewport, definition)
     }
+
+    async fn toggle_selected_review(&mut self) -> Option<StatusUpdate> {
+        let entry = self.state.files.get(self.state.selected_file)?;
+        let path = entry.change.path.clone();
+        let is_reviewed = matches!(entry.status, ReviewStatus::Reviewed { .. });
+
+        let result = if is_reviewed {
+            self.unmark_reviewed(&path).await
+        } else {
+            self.mark_reviewed(&path).await
+        };
+
+        match result {
+            Ok(action_result) => {
+                self.apply_review_result(&action_result);
+                None
+            }
+            Err(e) => {
+                let verb = if is_reviewed { "unmark" } else { "mark" };
+                Some(StatusUpdate::Set(format!("Failed to {verb} reviewed: {e}")))
+            }
+        }
+    }
+
+    async fn reload_file_snapshot(&mut self) -> Option<StatusUpdate> {
+        match self.list_changed_files().await {
+            Ok(result) => {
+                self.replace_file_snapshot(result.files);
+                None
+            }
+            Err(e) => Some(StatusUpdate::Set(format!("Failed to reload files: {e}"))),
+        }
+    }
+
+    fn replace_file_snapshot(&mut self, files: Vec<FileEntry>) {
+        let selected_path = review::selected_path(&self.state.files, self.state.selected_file);
+        let saved_cursor = self.state.diff_line_cursor;
+        let saved_col = self.state.diff_col_cursor;
+        let saved_scroll = self.state.diff_scroll;
+        let saved_content_mode = self.state.content_mode;
+        let saved_render_variant = self.state.render_variant;
+
+        self.state.files = files;
+        review::sort_files(&mut self.state.files);
+        self.state.selected_file =
+            review::restore_selection_by_path(&self.state.files, selected_path.as_deref());
+
+        let restored_same_file = selected_path.as_deref().is_some_and(|path| {
+            self.state
+                .files
+                .get(self.state.selected_file)
+                .is_some_and(|entry| entry.change.path == path)
+        });
+
+        self.state.refresh_current_file_diff();
+        self.state.load_head_content();
+        self.state.load_blame();
+
+        if restored_same_file {
+            self.state.content_mode = saved_content_mode;
+            self.state.render_variant = saved_render_variant;
+            self.state.diff_line_cursor = saved_cursor;
+            self.state.diff_col_cursor = saved_col;
+            self.state.diff_scroll = saved_scroll;
+        } else {
+            self.state.on_file_changed();
+        }
+    }
+
+    fn apply_review_result(&mut self, result: &ReviewActionResult) {
+        self.state.selected_file =
+            review::apply_review_result(&mut self.state.files, self.state.selected_file, result);
+        self.state.on_file_changed();
+    }
+}
+
+fn notification_requires_snapshot_reload(notifications: &[Notification]) -> bool {
+    notifications.iter().any(|notification| {
+        matches!(
+            notification.kind,
+            NotificationKind::ReviewChanged { .. }
+                | NotificationKind::ReviewsCleared
+                | NotificationKind::ReviewsMigrated { .. }
+        )
+    })
 }
 
 /// Central application state for review data and domain interaction.
@@ -428,7 +558,41 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::CoreEffect;
+    use crate::protocol::NotificationKind;
     use crate::review_types::{ChangeKind, DiffContent, FileChange, FileEntry, ReviewStatus};
+
+    struct EmptyViewport;
+
+    impl AppViewport for EmptyViewport {
+        fn hunk_start_rows(&self) -> &[usize] {
+            &[]
+        }
+
+        fn hunk_end_rows(&self) -> &[usize] {
+            &[]
+        }
+
+        fn hunk_first_change_rows(&self) -> &[usize] {
+            &[]
+        }
+
+        fn diff_gutter_cols(&self) -> usize {
+            0
+        }
+
+        fn diff_content_height(&self) -> usize {
+            0
+        }
+
+        fn diff_view_height(&self) -> usize {
+            0
+        }
+
+        fn diff_rendered_text(&self) -> &[String] {
+            &[]
+        }
+    }
 
     fn test_context() -> ConnectionContext {
         ConnectionContext {
@@ -441,18 +605,37 @@ mod tests {
     }
 
     fn test_file(path: &str) -> FileEntry {
+        test_file_with_status(path, ReviewStatus::Unreviewed)
+    }
+
+    fn test_file_with_status(path: &str, status: ReviewStatus) -> FileEntry {
         FileEntry {
             change: FileChange {
                 path: path.to_string(),
                 old_path: None,
                 kind: ChangeKind::Modified,
             },
-            status: ReviewStatus::Unreviewed,
+            status,
             diff: DiffContent {
                 hunks: Vec::new(),
                 is_binary: false,
                 diff_hash: format!("hash-{path}"),
             },
+        }
+    }
+
+    fn reviewed() -> ReviewStatus {
+        ReviewStatus::Reviewed {
+            at: "2026-06-22T00:00:00Z".to_string(),
+            reviewed_commit: Some("reviewed-head".to_string()),
+        }
+    }
+
+    fn notification(kind: NotificationKind) -> Notification {
+        Notification {
+            base_ref: "main".to_string(),
+            head_ref: "feature".to_string(),
+            kind,
         }
     }
 
@@ -465,5 +648,102 @@ mod tests {
 
         assert_eq!(app.config.layout.file_list_width, expected_width);
         assert_eq!(app.state.files.len(), 1);
+    }
+
+    #[test]
+    fn focus_gained_queues_snapshot_reload_in_app() {
+        let mut app = App::new(Config::default(), test_context(), vec![test_file("a.rs")]);
+
+        let effects = app.handle_input(InputEvent::FocusGained, &InteractionContext::default());
+
+        assert!(effects.is_empty());
+        assert_eq!(
+            app.pending_work.pop_front(),
+            Some(AppWork::ReloadFileSnapshot)
+        );
+    }
+
+    #[test]
+    fn review_effect_queues_review_work_in_app() {
+        let mut app = App::new(Config::default(), test_context(), vec![test_file("a.rs")]);
+
+        let output = app.apply_core_effects(&EmptyViewport, vec![CoreEffect::ReviewToggle]);
+
+        assert!(output.handled);
+        assert_eq!(
+            app.pending_work.pop_front(),
+            Some(AppWork::ToggleSelectedReview)
+        );
+    }
+
+    #[test]
+    fn app_applies_review_result_and_advances_selection() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("a.rs"), test_file("b.rs")],
+        );
+
+        app.apply_review_result(&ReviewActionResult {
+            file_path: "a.rs".to_string(),
+            status: reviewed(),
+        });
+
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "b.rs");
+        assert!(matches!(
+            app.state
+                .files
+                .iter()
+                .find(|entry| entry.change.path == "a.rs")
+                .map(|entry| &entry.status),
+            Some(ReviewStatus::Reviewed { .. })
+        ));
+    }
+
+    #[test]
+    fn app_snapshot_replacement_preserves_selected_path_and_cursor() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("a.rs"), test_file("b.rs")],
+        );
+        app.state.selected_file = 1;
+        app.state.diff_line_cursor = 7;
+        app.state.diff_col_cursor = 3;
+        app.state.diff_scroll = 5;
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::HeadVersion;
+
+        app.replace_file_snapshot(vec![
+            test_file("c.rs"),
+            test_file_with_status("b.rs", reviewed()),
+            test_file("a.rs"),
+        ]);
+
+        let selected = &app.state.files[app.state.selected_file];
+        assert_eq!(selected.change.path, "b.rs");
+        assert_eq!(app.state.diff_line_cursor, 7);
+        assert_eq!(app.state.diff_col_cursor, 3);
+        assert_eq!(app.state.diff_scroll, 5);
+        assert_eq!(app.state.content_mode, ContentMode::FullFile);
+        assert_eq!(app.state.render_variant, RenderVariant::HeadVersion);
+    }
+
+    #[test]
+    fn review_notifications_require_snapshot_reload() {
+        assert!(notification_requires_snapshot_reload(&[notification(
+            NotificationKind::ReviewChanged {
+                file_path: "a.rs".to_string(),
+            },
+        )]));
+        assert!(notification_requires_snapshot_reload(&[notification(
+            NotificationKind::ReviewsCleared,
+        )]));
+        assert!(notification_requires_snapshot_reload(&[notification(
+            NotificationKind::ReviewsMigrated { count: 3 },
+        )]));
+        assert!(!notification_requires_snapshot_reload(&[notification(
+            NotificationKind::CommentChanged { comment_id: 7 },
+        )]));
     }
 }

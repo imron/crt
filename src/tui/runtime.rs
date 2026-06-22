@@ -22,10 +22,9 @@ use super::state::{DefinitionResults, LastPointerClick, MouseSelection, SearchRe
 use super::{input, render};
 use crate::app::{App, AppState, JumpLocation};
 use crate::core::command::Command;
-use crate::core::review;
 use crate::core::search as core_search;
 use crate::core::{CoreEffect, InputEvent, InteractionContext, PaneId, TextAnchor};
-use crate::review_types::{PaneFocus, ReviewStatus};
+use crate::review_types::PaneFocus;
 
 /// How long the "Press Ctrl-C again" prompt stays active.
 const CTRL_C_TIMEOUT: Duration = Duration::from_secs(3);
@@ -123,11 +122,7 @@ impl Tui {
                 self.handle_event(ev);
             }
 
-            // Process pending review toggle.
-            if self.tui_state.pending_review_toggle {
-                self.tui_state.pending_review_toggle = false;
-                self.process_review_toggle().await;
-            }
+            self.process_app_work().await;
 
             // Process pending command (search, definition, etc.).
             if let Some(cmd) = self.tui_state.pending_command.take() {
@@ -137,11 +132,7 @@ impl Tui {
             // Check for server-pushed notifications (from other clients).
             self.process_notifications().await;
 
-            // Refresh file list on focus gain.
-            if self.tui_state.pending_refresh {
-                self.tui_state.pending_refresh = false;
-                self.reload_file_list().await;
-            }
+            self.process_app_work().await;
 
             if self.tui_state.should_suspend {
                 self.tui_state.should_suspend = false;
@@ -187,8 +178,8 @@ impl Tui {
                 // ratatui handles resize automatically on next draw.
             }
             Event::FocusGained => {
-                // Terminal regained focus — schedule a full refresh.
-                self.tui_state.pending_refresh = true;
+                let dispatch = CoreInputDispatch::Interaction(InputEvent::FocusGained);
+                self.dispatch_core_input(dispatch);
             }
             _ => {}
         }
@@ -406,30 +397,9 @@ impl Tui {
         }
     }
 
-    /// Toggle the review status of the currently selected file.
-    async fn process_review_toggle(&mut self) {
-        let entry = match self.app.state.files.get(self.app.state.selected_file) {
-            Some(e) => e,
-            None => return,
-        };
-
-        let path = entry.change.path.clone();
-        let is_reviewed = matches!(entry.status, ReviewStatus::Reviewed { .. });
-
-        let result = if is_reviewed {
-            self.app.unmark_reviewed(&path).await
-        } else {
-            self.app.mark_reviewed(&path).await
-        };
-
-        match result {
-            Ok(action_result) => self.apply_review_result(&action_result),
-            Err(e) => {
-                let verb = if is_reviewed { "unmark" } else { "mark" };
-                self.tui_state
-                    .set_status_message(format!("Failed to {verb} reviewed: {e}"));
-            }
-        }
+    async fn process_app_work(&mut self) {
+        let status = self.app.process_pending_work().await;
+        self.tui_state.apply_status_update(status);
     }
 
     /// Process a pending command set by the key handler.
@@ -570,89 +540,8 @@ impl Tui {
 
     /// Check for server-pushed notifications and refresh state if needed.
     async fn process_notifications(&mut self) {
-        let notifications = match self.app.drain_notifications().await {
-            Ok(notifications) => notifications,
-            Err(e) => {
-                self.tui_state
-                    .set_status_message(format!("Notification error: {e}"));
-                return;
-            }
-        };
-        if notifications.is_empty() {
-            return;
-        }
-
-        // Any review-related notification triggers a full file list reload.
-        let needs_reload = notifications.iter().any(|n| {
-            matches!(
-                n.kind,
-                crate::protocol::NotificationKind::ReviewChanged { .. }
-                    | crate::protocol::NotificationKind::ReviewsCleared
-                    | crate::protocol::NotificationKind::ReviewsMigrated { .. }
-            )
-        });
-
-        if needs_reload {
-            self.reload_file_list().await;
-        }
-    }
-
-    /// Reload the file list from the server, preserving selection and cursor.
-    async fn reload_file_list(&mut self) {
-        let selected_path =
-            review::selected_path(&self.app.state.files, self.app.state.selected_file);
-
-        // Save cursor/scroll position to restore after reload.
-        let saved_cursor = self.app.state.diff_line_cursor;
-        let saved_col = self.app.state.diff_col_cursor;
-        let saved_scroll = self.app.state.diff_scroll;
-        let saved_content_mode = self.app.state.content_mode;
-        let saved_render_variant = self.app.state.render_variant;
-
-        match self.app.list_changed_files().await {
-            Ok(result) => {
-                self.app.state.files = result.files;
-                review::sort_files(&mut self.app.state.files);
-                // Restore selection by path.
-                let prev_selected = self.app.state.selected_file;
-                self.app.state.selected_file = review::restore_selection_by_path(
-                    &self.app.state.files,
-                    selected_path.as_deref(),
-                );
-
-                // Refresh diff and content for the selected file.
-                self.app.state.refresh_current_file_diff();
-                self.app.state.load_head_content();
-                self.app.state.load_blame();
-
-                // Restore cursor/scroll if we're still on the same file.
-                if self.app.state.selected_file == prev_selected {
-                    self.app.state.content_mode = saved_content_mode;
-                    self.app.state.render_variant = saved_render_variant;
-                    self.app.state.diff_line_cursor = saved_cursor;
-                    self.app.state.diff_col_cursor = saved_col;
-                    self.app.state.diff_scroll = saved_scroll;
-                    self.tui_state.clamp_cursor_and_scroll(&mut self.app.state);
-                } else {
-                    self.app.state.on_file_changed();
-                }
-            }
-            Err(e) => {
-                self.tui_state
-                    .set_status_message(format!("Failed to reload files: {e}"));
-            }
-        }
-    }
-
-    /// Apply a review action result from the server: update the file's status,
-    /// re-sort the file list, and auto-advance if needed.
-    fn apply_review_result(&mut self, result: &crate::review_types::ReviewActionResult) {
-        self.app.state.selected_file = review::apply_review_result(
-            &mut self.app.state.files,
-            self.app.state.selected_file,
-            result,
-        );
-        self.app.state.on_file_changed();
+        let status = self.app.process_notifications().await;
+        self.tui_state.apply_status_update(status);
     }
 
     /// Select the word under the given semantic position and copy it.

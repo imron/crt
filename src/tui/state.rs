@@ -127,14 +127,10 @@ pub struct TuiState {
     pub show_help: bool,
     /// Transient status bar message (e.g. "Press Ctrl-C again to quit").
     pub status_message: Option<(String, Instant)>,
-    /// Set when the runtime should toggle the selected file review state.
-    pub pending_review_toggle: bool,
     /// Set to true to suspend the process (Ctrl-Z).
     pub should_suspend: bool,
     /// Set to true to exit the event loop.
     pub should_quit: bool,
-    /// Set to true when the terminal regains focus.
-    pub pending_refresh: bool,
     /// Pending command to execute asynchronously in the TUI runtime.
     pub pending_command: Option<Command>,
     /// Active search results overlay, if any.
@@ -186,10 +182,8 @@ impl Default for TuiState {
             dragging_border: false,
             show_help: false,
             status_message: None,
-            pending_review_toggle: false,
             should_suspend: false,
             should_quit: false,
-            pending_refresh: false,
             pending_command: None,
             search_results: None,
             definition_results: None,
@@ -415,7 +409,6 @@ impl TuiState {
 
     pub fn apply_app_output(&mut self, output: AppOutput) {
         self.apply_status_update(output.status);
-        self.pending_review_toggle |= output.pending_review_toggle;
         self.should_suspend |= output.should_suspend;
         self.should_quit |= output.should_quit;
         if let Some(command) = output.pending_command {
@@ -570,22 +563,19 @@ mod tests {
     #[test]
     fn app_outputs_set_tui_runtime_intents() {
         let mut state = TuiState::default();
-
-        state.apply_app_output(AppOutput {
-            handled: true,
-            status: Some(StatusUpdate::Set("Searching...".to_string())),
-            pending_review_toggle: true,
-            should_suspend: true,
-            should_quit: true,
-            pending_command: Some(Command::SearchAll {
-                pattern: "needle".to_string(),
-            }),
-            save_layout: false,
-            show_comments: Some(true),
+        let mut output = AppOutput::default();
+        output.handled = true;
+        output.status = Some(StatusUpdate::Set("Searching...".to_string()));
+        output.should_suspend = true;
+        output.should_quit = true;
+        output.pending_command = Some(Command::SearchAll {
+            pattern: "needle".to_string(),
         });
+        output.show_comments = Some(true);
+
+        state.apply_app_output(output);
 
         assert!(state.has_status_message());
-        assert!(state.pending_review_toggle);
         assert!(state.should_suspend);
         assert!(state.should_quit);
         assert!(state.show_comments);
