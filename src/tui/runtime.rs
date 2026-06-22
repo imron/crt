@@ -129,7 +129,8 @@ impl Tui {
 
             // Let the app drain queued work and background client updates
             // before the next render.
-            self.process_app_background_work().await;
+            let status = self.app.process_background_work().await;
+            self.tui_state.apply_status_update(status);
 
             if self.tui_state.should_suspend {
                 self.tui_state.should_suspend = false;
@@ -392,11 +393,6 @@ impl Tui {
                 }
             }
         }
-    }
-
-    async fn process_app_background_work(&mut self) {
-        let status = self.app.process_background_work().await;
-        self.tui_state.apply_status_update(status);
     }
 
     /// Process a pending command set by the key handler.
