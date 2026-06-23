@@ -427,7 +427,7 @@ mod tests {
     #[test]
     fn mouse_input_event_maps_file_list_hit() {
         let state = test_state();
-        let model = AppModel::from_state(&state, 0);
+        let model = AppModel::from_state(&state);
         let tui_state = TuiState {
             file_list_area: Rect::new(0, 0, 30, 10),
             file_list_row_to_file: vec![Some(0)],
@@ -471,7 +471,7 @@ mod tests {
     fn mouse_input_event_maps_diff_hit_to_content_anchor() {
         let mut state = test_state();
         state.diff_scroll = 10;
-        let model = AppModel::from_state(&state, 0);
+        let model = AppModel::from_state(&state);
         let tui_state = TuiState {
             diff_area: Rect::new(0, 0, 80, 20),
             diff_gutter_cols: 4,

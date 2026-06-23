@@ -107,7 +107,7 @@ impl Tui {
         let mut tui_dirty = true;
 
         loop {
-            let current_revision = self.app.model_revision();
+            let current_revision = self.app.state.model_revision();
             if tui_dirty || last_rendered_revision != Some(current_revision) {
                 last_rendered_revision = Some(self.render_current_frame()?);
                 tui_dirty = false;
@@ -217,7 +217,7 @@ impl Tui {
             self.app.state.file_list_scroll,
         );
         if before != after {
-            self.app.mark_model_changed();
+            self.app.state.mark_model_changed();
         }
         Ok(revision)
     }
