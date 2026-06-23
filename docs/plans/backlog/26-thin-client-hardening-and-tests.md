@@ -12,7 +12,7 @@
 - Stage 21 (`21-protocol-type-decoupling.md`)
 - Stage 22 (`22-extract-domain-usecases-from-tui.md`)
 - Stage 23 (`23-tui-intent-only-input.md`)
-- Stage 23k (`23k-thin-tui-runtime-cleanup.md`)
+- Stage 23k (`23k-thin-tui-module-splitting.md`)
 - Stage 24 (`24-client-reconnect-failover-supervisor.md`)
 - Stage 25 (`25-embedded-lifecycle-alignment.md`)
 

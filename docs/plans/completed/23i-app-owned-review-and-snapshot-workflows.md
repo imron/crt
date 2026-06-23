@@ -79,7 +79,8 @@ Ambiguous or deferred:
 - Search and definition service execution still live in the TUI runtime after
   this stage and are covered by Stage 23j.
 - Remaining TUI presentation cleanup, including pane/layout presentation
-  state, is covered by Stage 23k and the later AppModel plans.
+  state, is covered by Stage 23j and the later AppModel plans. Large-module
+  splitting is covered by Stage 23k after the ownership boundary lands.
 
 ## Requirements
 
