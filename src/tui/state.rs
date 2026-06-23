@@ -56,12 +56,6 @@ pub struct LastPointerClick {
 }
 
 pub struct TuiState {
-    /// Current file list pane width (configurable, resizable by drag).
-    pub file_list_width: u16,
-    /// Whether the file list pane is visible.
-    pub show_file_list: bool,
-    /// Whether the diff pane is visible.
-    pub show_diff_pane: bool,
     /// Whether inline comments are visible in the diff pane.
     pub show_comments: bool,
     pub diff_cache: Option<DiffCache>,
@@ -129,9 +123,6 @@ impl Default for InputMode {
 impl Default for TuiState {
     fn default() -> Self {
         Self {
-            file_list_width: 0,
-            show_file_list: true,
-            show_diff_pane: true,
             show_comments: false,
             diff_cache: None,
             hunk_start_rows: Vec::new(),
@@ -165,11 +156,8 @@ impl Default for TuiState {
 }
 
 impl TuiState {
-    pub fn new(file_list_width: u16) -> Self {
-        Self {
-            file_list_width,
-            ..Self::default()
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Maximum diff scroll offset for the last rendered line.
@@ -231,9 +219,9 @@ impl TuiState {
     }
 
     pub fn pane_at(&self, col: u16, row: u16) -> Option<PaneFocus> {
-        if self.show_file_list && self.file_list_area.contains((col, row).into()) {
+        if self.file_list_area.contains((col, row).into()) {
             Some(PaneFocus::FileList)
-        } else if self.show_diff_pane && self.diff_area.contains((col, row).into()) {
+        } else if self.diff_area.contains((col, row).into()) {
             Some(PaneFocus::Diff)
         } else {
             None
@@ -484,13 +472,12 @@ mod tests {
     }
 
     #[test]
-    fn layout_width_is_tui_presentation_state() {
-        let state = TuiState::new(48);
+    fn tui_state_keeps_terminal_presentation_state() {
+        let state = TuiState::new();
 
-        assert_eq!(state.file_list_width, 48);
-        assert!(state.show_file_list);
-        assert!(state.show_diff_pane);
         assert!(!state.show_comments);
+        assert_eq!(state.file_list_area, Rect::default());
+        assert_eq!(state.diff_area, Rect::default());
     }
 
     #[test]

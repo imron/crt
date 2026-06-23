@@ -326,6 +326,7 @@ mod tests {
             DiffAlgorithm::Myers,
             test_context(),
             vec![test_file("src/lib.rs")],
+            30,
         )
     }
 
@@ -472,7 +473,6 @@ mod tests {
         state.diff_scroll = 10;
         let model = AppModel::from_state(&state);
         let tui_state = TuiState {
-            show_file_list: false,
             diff_area: Rect::new(0, 0, 80, 20),
             diff_gutter_cols: 4,
             ..TuiState::default()

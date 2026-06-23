@@ -14,6 +14,7 @@ use crate::review_types::{
 #[derive(Debug, Clone)]
 pub struct AppModel {
     pub context: ConnectionContext,
+    pub layout: AppLayout,
     pub file_list: FileList,
     pub diff: DiffPanel,
     pub focus: PaneFocus,
@@ -23,6 +24,13 @@ pub struct AppModel {
     pub definition_results: Option<DefinitionResultsOverlay>,
     pub status: Option<Status>,
     pub selection: Option<SemanticSelection>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppLayout {
+    pub file_list_visible: bool,
+    pub diff_visible: bool,
+    pub file_list_width: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,6 +212,11 @@ impl AppModel {
     pub(crate) fn from_state(state: &AppState) -> Self {
         Self {
             context: state.context.clone(),
+            layout: AppLayout {
+                file_list_visible: state.show_file_list,
+                diff_visible: state.show_diff_pane,
+                file_list_width: state.file_list_width,
+            },
             file_list: file_list_model(state),
             diff: diff_panel_model(state),
             focus: state.pane_focus,
@@ -664,6 +677,12 @@ mod tests {
         let model = app.model();
 
         assert_eq!(model.focus, PaneFocus::FileList);
+        assert!(model.layout.file_list_visible);
+        assert!(model.layout.diff_visible);
+        assert_eq!(
+            model.layout.file_list_width,
+            Config::default().layout.file_list_width
+        );
         assert!(model.prompt.is_none());
         assert!(model.overlays.is_empty());
         assert!(model.status.is_none());

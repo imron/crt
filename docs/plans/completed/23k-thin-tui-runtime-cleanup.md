@@ -1,6 +1,6 @@
 # Stage 23k: Thin TUI Runtime Cleanup
 
-## Status: Backlog
+## Status: Completed
 
 ## Order
 
@@ -79,18 +79,59 @@ TUI state fields that exist only to drive app workflows.
 
 ## Acceptance Criteria
 
-- [ ] `src/tui/runtime.rs` has no direct review/search/definition RPC calls.
-- [ ] `src/tui/runtime.rs` has no app snapshot reload implementation.
-- [ ] `src/tui/runtime.rs` does not load or persist app config directly.
-- [ ] `TuiState` contains only terminal/render/prompt/clipboard/pointer state.
-- [ ] TUI renders from `AppModel` and sends normalized native input plus
+- [x] `src/tui/runtime.rs` has no direct review/search/definition RPC calls.
+- [x] `src/tui/runtime.rs` has no app snapshot reload implementation.
+- [x] `src/tui/runtime.rs` does not load or persist app config directly.
+- [x] `TuiState` contains only terminal/render/prompt/clipboard/pointer state.
+- [x] TUI renders from `AppModel` and sends normalized native input plus
       semantic pointer hits to App.
-- [ ] App-owned code, not TUI code, decides what app keybindings such as `r`,
+- [x] App-owned code, not TUI code, decides what app keybindings such as `r`,
       navigation keys, search keys, definition keys, diff mode keys, and
       command keys mean.
-- [ ] The App can plausibly be reused by a GUI without copying TUI workflow
+- [x] The App can plausibly be reused by a GUI without copying TUI workflow
       code.
-- [ ] `cargo test` passes.
+- [x] `cargo test` passes.
+
+## Boundary Audit
+
+App owns:
+
+- client/service access and review/search/definition/snapshot/notification
+  workflows,
+- keybinding interpretation and parsed command execution,
+- conceptual pane visibility and file-list width,
+- layout config persistence,
+- conceptual search/definition overlay state,
+- `AppModel` projection.
+
+TUI owns:
+
+- crossterm event capture and normalization,
+- prompt text editing buffers and cursor positions,
+- terminal setup/restore/suspend mechanics,
+- ratatui rendering, terminal pane rectangles, hit maps, render caches, and
+  TUI-only search overlay scroll windowing,
+- pointer drag tracking and clipboard emission,
+- TUI-only transient status for terminal mechanics such as copy messages and
+  Ctrl-C confirmation.
+
+Remaining intentional boundary:
+
+- `src/tui/runtime.rs` clamps app cursor/scroll after rendering because the
+  limits depend on terminal-rendered row counts. A later viewport/layout
+  snapshot plan should revisit whether this becomes an app input/effect using
+  a UI-provided viewport model.
+
+## Completed Notes
+
+- Pane visibility and file-list width moved from `TuiState` into app-owned
+  state/config and are exposed through `AppModel.layout`.
+- File-list width drag now reports the new width to `App`, which persists
+  layout config.
+- TUI effects no longer mutate app pane focus/visibility or persist config.
+- Double-click path copy reads from `AppModel`, not directly from `AppState`.
+- Added app/model tests for app-owned layout and TUI state tests for the
+  remaining terminal presentation state.
 
 ## Notes
 

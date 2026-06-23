@@ -85,7 +85,8 @@ impl App {
     pub fn new(config: Config, context: ConnectionContext, files: Vec<FileEntry>) -> Self {
         let diff_algorithm =
             diff::resolve_diff_algorithm(&context.worktree, config.layout.diff_algorithm);
-        let state = AppState::new(diff_algorithm, context, files);
+        let file_list_width = config.layout.file_list_width;
+        let state = AppState::new(diff_algorithm, context, files, file_list_width);
 
         Self {
             state,
@@ -113,8 +114,24 @@ impl App {
         Ok(app)
     }
 
-    pub fn config_path(&self) -> Option<&PathBuf> {
+    fn config_path(&self) -> Option<&PathBuf> {
         self.config_path.as_ref()
+    }
+
+    pub fn set_file_list_width(&mut self, width: u16) {
+        self.config.layout.file_list_width = width;
+        self.state.file_list_width = width;
+        self.save_layout_config();
+    }
+
+    fn save_layout_config(&self) {
+        if let Some(path) = self.config_path() {
+            let layout = crate::config::LayoutConfig {
+                file_list_width: self.config.layout.file_list_width,
+                diff_algorithm: Some(self.state.diff_algorithm),
+            };
+            crate::config::save_layout(path, &layout);
+        }
     }
 
     fn client(&self) -> Result<&Client> {
@@ -238,6 +255,9 @@ impl App {
         }
         if let Some(command) = output.take_pending_command() {
             self.pending_work.push_back(AppWork::RunCommand(command));
+        }
+        if output.save_layout {
+            self.save_layout_config();
         }
         output
     }
@@ -463,6 +483,12 @@ pub struct AppState {
     pub selected_file: usize,
     /// Which pane has keyboard focus.
     pub pane_focus: PaneFocus,
+    /// Whether the file list pane is conceptually visible.
+    pub show_file_list: bool,
+    /// Whether the diff pane is conceptually visible.
+    pub show_diff_pane: bool,
+    /// App-owned file list pane width from layout config.
+    pub file_list_width: u16,
     /// What content the diff pane shows (diff vs. full file).
     pub content_mode: ContentMode,
     /// How the diff pane content is rendered.
@@ -525,6 +551,7 @@ impl AppState {
         diff_algorithm: crate::config::DiffAlgorithm,
         context: ConnectionContext,
         mut files: Vec<FileEntry>,
+        file_list_width: u16,
     ) -> Self {
         review::sort_files(&mut files);
 
@@ -534,6 +561,9 @@ impl AppState {
             // Index 0 is the first unreviewed file (due to sort order).
             selected_file: 0,
             pane_focus: PaneFocus::FileList,
+            show_file_list: true,
+            show_diff_pane: true,
+            file_list_width,
             content_mode: ContentMode::Diff,
             render_variant: RenderVariant::Inline,
             diff_scroll: 0,
@@ -708,7 +738,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{CoreEffect, DefinitionResultsEffect, SearchResultsEffect};
+    use crate::core::{CoreEffect, DefinitionResultsEffect, PaneId, SearchResultsEffect};
     use crate::protocol::NotificationKind;
     use crate::review_types::{ChangeKind, DiffContent, FileChange, FileEntry, ReviewStatus};
 
@@ -952,6 +982,26 @@ mod tests {
         );
 
         assert!(app.state.definition_results.is_none());
+    }
+
+    #[test]
+    fn app_owns_pane_visibility_and_layout_width() {
+        let mut app = App::new(Config::default(), test_context(), vec![test_file("a.rs")]);
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::TogglePaneVisibility(PaneId::FileList)],
+        );
+
+        assert!(!app.state.show_file_list);
+        assert!(app.state.show_diff_pane);
+        assert_eq!(app.state.pane_focus, PaneFocus::Diff);
+
+        app.set_file_list_width(72);
+
+        assert_eq!(app.state.file_list_width, 72);
+        assert_eq!(app.config.layout.file_list_width, 72);
+        assert_eq!(app.model().layout.file_list_width, 72);
     }
 
     #[test]

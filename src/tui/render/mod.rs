@@ -37,12 +37,12 @@ pub fn draw(frame: &mut Frame, model: &AppModel, tui_state: &mut TuiState, style
     let status_area = vertical[1];
 
     // Compute pane layout based on visibility.
-    match (tui_state.show_file_list, tui_state.show_diff_pane) {
+    match (model.layout.file_list_visible, model.layout.diff_visible) {
         (true, true) => {
             let panes = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
-                    Constraint::Max(tui_state.file_list_width),
+                    Constraint::Max(model.layout.file_list_width),
                     Constraint::Min(1),
                 ])
                 .split(main_area);
