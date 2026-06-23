@@ -92,6 +92,7 @@ pub struct DefinitionResults {
 pub struct App {
     pub state: AppState,
     pub config: Config,
+    model_revision: u64,
     client: Option<Client>,
     config_path: Option<PathBuf>,
     embedded_server: Option<tokio_util::sync::CancellationToken>,
@@ -108,6 +109,7 @@ impl App {
         Self {
             state,
             config,
+            model_revision: 0,
             client: None,
             config_path: None,
             embedded_server: None,
@@ -152,6 +154,7 @@ impl App {
         app.client = Some(client);
         app.config_path = config_path;
         app.state.on_file_changed();
+        app.bump_model_revision();
         Ok(app)
     }
 
@@ -164,9 +167,25 @@ impl App {
     }
 
     pub fn set_file_list_width(&mut self, width: u16) {
+        if self.state.file_list_width == width && self.config.layout.file_list_width == width {
+            return;
+        }
         self.config.layout.file_list_width = width;
         self.state.file_list_width = width;
+        self.bump_model_revision();
         self.save_layout_config();
+    }
+
+    pub fn model_revision(&self) -> u64 {
+        self.model_revision
+    }
+
+    pub fn mark_model_changed(&mut self) {
+        self.bump_model_revision();
+    }
+
+    fn bump_model_revision(&mut self) {
+        self.model_revision = self.model_revision.wrapping_add(1);
     }
 
     fn save_layout_config(&self) {
@@ -266,7 +285,7 @@ impl App {
     }
 
     pub fn model(&self) -> AppModel {
-        AppModel::from_state(&self.state)
+        AppModel::from_state(&self.state, self.model_revision)
     }
 
     pub fn interaction_context(&self) -> InteractionContext {
@@ -295,6 +314,9 @@ impl App {
         effects: Vec<CoreEffect>,
     ) -> AppOutput {
         let mut output = update::apply_core_effects(&mut self.state, viewport, effects);
+        if output.model_changed {
+            self.bump_model_revision();
+        }
         if output.take_pending_review_toggle() {
             self.pending_work.push_back(AppWork::ToggleSelectedReview);
         }
@@ -312,7 +334,11 @@ impl App {
         viewport: &impl AppViewport,
         search_match: &SearchMatch,
     ) -> AppOutput {
-        update::navigate_to_search_match(&mut self.state, viewport, search_match)
+        let output = update::navigate_to_search_match(&mut self.state, viewport, search_match);
+        if output.model_changed {
+            self.bump_model_revision();
+        }
+        output
     }
 
     pub fn navigate_to_definition(
@@ -320,7 +346,11 @@ impl App {
         viewport: &impl AppViewport,
         definition: &DefinitionLocation,
     ) -> AppOutput {
-        update::navigate_to_definition(&mut self.state, viewport, definition)
+        let output = update::navigate_to_definition(&mut self.state, viewport, definition);
+        if output.model_changed {
+            self.bump_model_revision();
+        }
+        output
     }
 
     async fn toggle_selected_review(&mut self) -> Option<StatusUpdate> {
@@ -337,6 +367,7 @@ impl App {
         match result {
             Ok(action_result) => {
                 self.apply_review_result(&action_result);
+                self.bump_model_revision();
                 None
             }
             Err(e) => {
@@ -350,6 +381,7 @@ impl App {
         match self.list_changed_files().await {
             Ok(result) => {
                 self.replace_file_snapshot(result.files);
+                self.bump_model_revision();
                 None
             }
             Err(e) => Some(StatusUpdate::Set(format!("Failed to reload files: {e}"))),
@@ -436,6 +468,7 @@ impl App {
                         matches,
                         selected: 0,
                     });
+                    self.bump_model_revision();
                     Some(StatusUpdate::Clear)
                 }
             },
@@ -466,6 +499,7 @@ impl App {
                             definitions,
                             selected: 0,
                         });
+                        self.bump_model_revision();
                         Some(StatusUpdate::Clear)
                     }
                 }
@@ -494,6 +528,7 @@ impl App {
                 self.state.selected_file = file_index;
                 self.state.on_file_changed();
                 self.state.diff_line_cursor = (line_number as usize).saturating_sub(1);
+                self.bump_model_revision();
                 Some(StatusUpdate::Clear)
             }
             core_search::LocationTarget::External {

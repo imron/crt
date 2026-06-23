@@ -53,6 +53,7 @@ pub trait AppViewport {
 #[derive(Debug, Default)]
 pub struct AppOutput {
     pub handled: bool,
+    pub model_changed: bool,
     pub status: Option<StatusUpdate>,
     pending_review_toggle: bool,
     pub should_suspend: bool,
@@ -82,6 +83,10 @@ impl AppOutput {
 
     fn clear_status(&mut self) {
         self.status = Some(StatusUpdate::Clear);
+    }
+
+    fn mark_model_changed(&mut self) {
+        self.model_changed = true;
     }
 
     fn request_review_toggle(&mut self) {
@@ -152,6 +157,9 @@ pub(super) fn apply_core_effects(
     let mut update = AppOutput::default();
     for effect in effects {
         update.handled = true;
+        if core_effect_may_change_model(&effect) {
+            update.mark_model_changed();
+        }
         match effect {
             CoreEffect::RequestPrompt(_) => {}
             CoreEffect::Status(status) => {
@@ -239,6 +247,25 @@ pub(super) fn apply_core_effects(
         }
     }
     update
+}
+
+fn core_effect_may_change_model(effect: &CoreEffect) -> bool {
+    matches!(
+        effect,
+        CoreEffect::DiffSearch(_)
+            | CoreEffect::DiffCursor(_)
+            | CoreEffect::SearchResults(_)
+            | CoreEffect::DefinitionResults(_)
+            | CoreEffect::Pane(_)
+            | CoreEffect::NavigateFile(_)
+            | CoreEffect::JumpHunk(_)
+            | CoreEffect::TogglePaneFocus
+            | CoreEffect::TogglePaneVisibility(_)
+            | CoreEffect::ToggleInlineDiff
+            | CoreEffect::CycleViewMode
+            | CoreEffect::CycleDiffAlgorithm
+            | CoreEffect::ToggleDiffBase
+    )
 }
 
 fn apply_search_results_effect(
@@ -333,6 +360,10 @@ fn apply_definition_results_effect(
 
 /// Apply a parsed command emitted by the core interaction engine.
 fn apply_command(state: &mut AppState, update: &mut AppOutput, command: CommandParse) {
+    if command_changes_model(&command) {
+        update.mark_model_changed();
+    }
+
     match command {
         CommandParse::Empty => {}
         CommandParse::NeedsArgument { usage } | CommandParse::NeedsWord { usage } => {
@@ -390,6 +421,13 @@ fn apply_command(state: &mut AppState, update: &mut AppOutput, command: CommandP
             }
         }
     }
+}
+
+fn command_changes_model(command: &CommandParse) -> bool {
+    matches!(
+        command,
+        CommandParse::Parsed(Command::SetBlame(_) | Command::SetWhitespaceIgnored(_))
+    )
 }
 
 fn apply_diff_search(
@@ -666,6 +704,7 @@ pub(super) fn navigate_to_search_match(
     m: &crate::review_types::SearchMatch,
 ) -> AppOutput {
     let mut update = AppOutput::handled();
+    update.mark_model_changed();
     let target = core_search::resolve_search_target(&state.files, m);
     navigate_to_location_target(state, view, &mut update, target);
     update
@@ -677,6 +716,7 @@ pub(super) fn navigate_to_definition(
     def: &crate::review_types::DefinitionLocation,
 ) -> AppOutput {
     let mut update = AppOutput::handled();
+    update.mark_model_changed();
     let target = core_search::resolve_definition_target(&state.files, def);
     navigate_to_location_target(state, view, &mut update, target);
     update
@@ -778,6 +818,7 @@ fn pop_jump_stack(state: &mut AppState, view: &impl AppViewport, update: &mut Ap
         state.content_mode = loc.content_mode;
         state.render_variant = loc.render_variant;
         clamp_cursor_and_scroll(state, view);
+        update.mark_model_changed();
         update.set_status(format!("Jump stack: {} remaining", state.jump_stack.len()));
     } else {
         update.set_status("Jump stack empty");

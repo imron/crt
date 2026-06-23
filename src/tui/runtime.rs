@@ -18,7 +18,7 @@ use ratatui::backend::CrosstermBackend;
 
 use super::effects::apply_core_effects;
 use super::input::{CoreInputDispatch, KeyInputResult};
-use super::state::{LastPointerClick, MouseSelection, TuiState};
+use super::state::{LastPointerClick, MouseSelection, STATUS_MSG_TIMEOUT, TuiState};
 use super::{input, render};
 use crate::app::App;
 use crate::core::{CoreEffect, InputEvent, InteractionContext, PaneId, TextAnchor};
@@ -26,6 +26,10 @@ use crate::review_types::PaneFocus;
 
 /// How long the "Press Ctrl-C again" prompt stays active.
 const CTRL_C_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How often the TUI gives the app a chance to process background work while
+/// waiting for terminal input.
+const APP_TICK_INTERVAL: Duration = Duration::from_millis(100);
 
 /// The terminal UI runtime. Owns terminal interaction and presentation state.
 pub struct Tui {
@@ -71,7 +75,7 @@ impl Tui {
         result
     }
 
-    /// Async event loop: render → wait for event → dispatch → repeat.
+    /// Async event loop: render app model, wait for input or app tick, update.
     ///
     /// Terminal events are polled on a blocking thread and sent over an
     /// async channel, keeping the tokio runtime responsive for server
@@ -99,37 +103,46 @@ impl Tui {
             }
         });
 
+        let mut last_rendered_revision = None;
+        let mut tui_dirty = true;
+
         loop {
-            self.render_current_frame()?;
-
-            // Wait for the next terminal event, with a timeout so that
-            // transient status messages get cleared by re-rendering.
-            let ev = if self.tui_state.has_status_message() {
-                match tokio::time::timeout(Duration::from_secs(1), event_rx.recv()).await {
-                    Ok(Some(ev)) => ev,
-                    Ok(None) => break,  // channel closed
-                    Err(_) => continue, // timeout — re-render to clear message
-                }
-            } else {
-                match event_rx.recv().await {
-                    Some(ev) => ev,
-                    None => break,
-                }
-            };
-            self.handle_event(ev);
-
-            // Drain any additional queued events before re-rendering.
-            while let Ok(ev) = event_rx.try_recv() {
-                self.handle_event(ev);
+            let current_revision = self.app.model_revision();
+            if tui_dirty || last_rendered_revision != Some(current_revision) {
+                last_rendered_revision = Some(self.render_current_frame()?);
+                tui_dirty = false;
             }
 
-            // Let the app drain queued work and background client updates
-            // before the next render.
+            tokio::select! {
+                maybe_ev = event_rx.recv() => {
+                    match maybe_ev {
+                        Some(ev) => {
+                            tui_dirty = true;
+                            self.handle_event(ev);
+
+                            while let Ok(ev) = event_rx.try_recv() {
+                                self.handle_event(ev);
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                _ = tokio::time::sleep(APP_TICK_INTERVAL) => {}
+            }
+
+            if self.tui_state.expire_status_message(STATUS_MSG_TIMEOUT) {
+                tui_dirty = true;
+            }
+
             let status = self.app.process_background_work().await;
+            if status.is_some() {
+                tui_dirty = true;
+            }
             self.tui_state.apply_status_update(status);
 
             if self.tui_state.should_suspend {
                 self.tui_state.should_suspend = false;
+                tui_dirty = true;
                 self.suspend()?;
             }
 
@@ -184,15 +197,29 @@ impl Tui {
         apply_core_effects(&mut self.app, &mut self.tui_state, effects)
     }
 
-    fn render_current_frame(&mut self) -> Result<()> {
+    fn render_current_frame(&mut self) -> Result<u64> {
         let model = self.app.model();
+        let revision = model.revision;
         let styles = &self.app.config.style;
         let tui_state = &mut self.tui_state;
         self.terminal
             .draw(|frame| render::draw(frame, &model, tui_state, styles))?;
+        let before = (
+            self.app.state.diff_line_cursor,
+            self.app.state.diff_scroll,
+            self.app.state.file_list_scroll,
+        );
         self.tui_state.clamp_cursor_and_scroll(&mut self.app.state);
         self.tui_state.clamp_file_list_scroll(&mut self.app.state);
-        Ok(())
+        let after = (
+            self.app.state.diff_line_cursor,
+            self.app.state.diff_scroll,
+            self.app.state.file_list_scroll,
+        );
+        if before != after {
+            self.app.mark_model_changed();
+        }
+        Ok(revision)
     }
 
     fn core_effects_for_input(&mut self, dispatch: CoreInputDispatch) -> Vec<CoreEffect> {

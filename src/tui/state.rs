@@ -9,6 +9,9 @@ use crate::core::{AppTarget, PaneId, PointerSemanticHit, PromptId, TextAnchor};
 use crate::review_types::PaneFocus;
 use ratatui::layout::Rect;
 
+/// Status message timeout.
+pub const STATUS_MSG_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Current terminal input mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputMode {
@@ -371,18 +374,21 @@ impl TuiState {
         }
     }
 
-    pub fn has_status_message(&self) -> bool {
+    #[cfg(test)]
+    fn has_status_message(&self) -> bool {
         self.status_message.is_some()
     }
 
-    pub fn expire_status_message(&mut self, timeout: Duration) {
+    pub fn expire_status_message(&mut self, timeout: Duration) -> bool {
         if self
             .status_message
             .as_ref()
             .is_some_and(|(_, when)| when.elapsed() > timeout)
         {
             self.clear_status_message();
+            return true;
         }
+        false
     }
 
     pub fn quit_confirmation_active(&self, timeout: Duration) -> bool {
