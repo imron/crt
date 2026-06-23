@@ -107,9 +107,9 @@ This stage makes runtime behavior match the intended model.
 
 - Ensure socket cleanup on all exit paths.
 
-### CLI Orchestration
+### App Startup Orchestration
 
-- Keep startup `connect_or_start` flow.
+- Keep the app-owned startup `connect_or_start` flow.
 - Keep embedded lifecycle process-coupled (host exits -> embedded exits).
 
 ## Acceptance Criteria

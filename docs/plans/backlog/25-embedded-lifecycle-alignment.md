@@ -32,7 +32,7 @@ clear lifecycle model.
 
 ## Requirements
 
-1. Keep `connect_or_start` startup behavior as the primary flow.
+1. Keep app-owned `connect_or_start` startup behavior as the primary flow.
 
 2. Ensure embedded lifecycle is process-coupled:
    - host process exits -> embedded server exits,

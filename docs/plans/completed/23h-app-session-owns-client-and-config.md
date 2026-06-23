@@ -64,8 +64,8 @@ should not know how config and initial review data are loaded.
    of a raw `Client` plus `ConnectionContext`, or make `tui::run(...)` call a
    narrow app constructor and never touch the raw client directly.
 
-6. Keep startup connection/bootstrap in CLI-level code until Stage 24 supplies
-   a reusable reconnecting supervisor.
+6. Keep reconnect/failover supervision deferred until Stage 24, but keep
+   startup connection/bootstrap behind the app-owned runtime boundary.
 
 ## Deliverables
 
@@ -94,6 +94,8 @@ should not know how config and initial review data are loaded.
 - Changed `tui::run` and `Tui::new` so the TUI receives an already-loaded
   `App` and only initializes terminal/presentation state.
 - Removed config path ownership from `TuiState`.
+- Moved review-mode connect/start/init and reset handling behind `App`, so the
+  CLI no longer constructs the raw client for normal review startup.
 
 ## Notes
 

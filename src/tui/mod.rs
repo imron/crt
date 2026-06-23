@@ -12,5 +12,8 @@ mod state;
 
 pub async fn run(app: App) -> Result<()> {
     let mut tui = runtime::Tui::new(app).context("Failed to initialize TUI")?;
-    tui.run().await
+    let result = tui.run().await;
+    let app = tui.into_app();
+    app.shutdown().await;
+    result
 }
