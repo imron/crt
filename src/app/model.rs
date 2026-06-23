@@ -6,7 +6,7 @@
 
 use crate::app::AppState;
 use crate::config::DiffAlgorithm;
-use crate::core::{PromptId, PromptKind, TextAnchor};
+use crate::core::TextAnchor;
 use crate::review_types::{
     self, ChangeKind, ConnectionContext, ContentMode, LineKind, PaneFocus, RenderVariant,
 };
@@ -19,12 +19,8 @@ pub struct AppModel {
     pub file_list: FileList,
     pub diff: DiffPanel,
     pub focus: PaneFocus,
-    pub prompt: Option<Prompt>,
-    pub overlays: Vec<Overlay>,
     pub search_results: Option<SearchResultsOverlay>,
     pub definition_results: Option<DefinitionResultsOverlay>,
-    pub status: Option<Status>,
-    pub selection: Option<SemanticSelection>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,34 +135,6 @@ pub struct TextRange {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Prompt {
-    pub id: PromptId,
-    pub kind: PromptKind,
-    pub value: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Overlay {
-    pub kind: OverlayKind,
-    pub title: String,
-    pub items: Vec<OverlayItem>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OverlayKind {
-    SearchResults,
-    DefinitionResults,
-    Help,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OverlayItem {
-    pub id: String,
-    pub label: String,
-    pub selected: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchResultsOverlay {
     pub query: String,
     pub diff_only: bool,
@@ -197,18 +165,6 @@ pub struct DefinitionResultItem {
     pub selected: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Status {
-    pub text: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SemanticSelection {
-    pub pane: PaneFocus,
-    pub start: TextAnchor,
-    pub end: TextAnchor,
-}
-
 impl AppModel {
     pub(crate) fn from_state(state: &AppState) -> Self {
         Self {
@@ -222,12 +178,8 @@ impl AppModel {
             file_list: file_list_model(state),
             diff: diff_panel_model(state),
             focus: state.pane_focus,
-            prompt: None,
-            overlays: Vec::new(),
             search_results: search_results_model(state),
             definition_results: definition_results_model(state),
-            status: None,
-            selection: None,
         }
     }
 
@@ -665,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn model_has_semantic_slots_for_ui_concepts() {
+    fn model_projects_core_ui_concepts() {
         let app = App::new(
             Config::default(),
             test_context(),
@@ -679,15 +631,14 @@ mod tests {
         let model = app.model();
 
         assert_eq!(model.focus, PaneFocus::FileList);
+        assert_eq!(model.revision, app.state.model_revision());
         assert!(model.layout.file_list_visible);
         assert!(model.layout.diff_visible);
         assert_eq!(
             model.layout.file_list_width,
             Config::default().layout.file_list_width
         );
-        assert!(model.prompt.is_none());
-        assert!(model.overlays.is_empty());
-        assert!(model.status.is_none());
-        assert!(model.selection.is_none());
+        assert!(model.search_results.is_none());
+        assert!(model.definition_results.is_none());
     }
 }

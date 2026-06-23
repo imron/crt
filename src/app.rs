@@ -152,7 +152,6 @@ impl App {
         app.client = Some(client);
         app.config_path = config_path;
         app.state.on_file_changed();
-        app.state.mark_model_changed();
         Ok(app)
     }
 
@@ -169,8 +168,7 @@ impl App {
             return;
         }
         self.config.layout.file_list_width = width;
-        self.state.file_list_width = width;
-        self.state.mark_model_changed();
+        self.state.set_file_list_width(width);
         self.save_layout_config();
     }
 
@@ -342,7 +340,6 @@ impl App {
         match result {
             Ok(action_result) => {
                 self.apply_review_result(&action_result);
-                self.state.mark_model_changed();
                 None
             }
             Err(e) => {
@@ -356,7 +353,6 @@ impl App {
         match self.list_changed_files().await {
             Ok(result) => {
                 self.replace_file_snapshot(result.files);
-                self.state.mark_model_changed();
                 None
             }
             Err(e) => Some(StatusUpdate::Set(format!("Failed to reload files: {e}"))),
@@ -396,6 +392,7 @@ impl App {
         } else {
             self.state.on_file_changed();
         }
+        self.state.mark_model_changed();
     }
 
     fn apply_review_result(&mut self, result: &ReviewActionResult) {
@@ -503,7 +500,6 @@ impl App {
                 self.state.selected_file = file_index;
                 self.state.on_file_changed();
                 self.state.diff_line_cursor = (line_number as usize).saturating_sub(1);
-                self.state.mark_model_changed();
                 Some(StatusUpdate::Clear)
             }
             core_search::LocationTarget::External {
@@ -715,6 +711,13 @@ impl AppState {
         self.model_revision = self.model_revision.wrapping_add(1);
     }
 
+    pub fn set_file_list_width(&mut self, width: u16) {
+        if self.file_list_width != width {
+            self.file_list_width = width;
+            self.mark_model_changed();
+        }
+    }
+
     /// The currently selected file, if any.
     pub fn selected_file_entry(&self) -> Option<&FileEntry> {
         self.files.get(self.selected_file)
@@ -741,6 +744,11 @@ impl AppState {
 
     /// Load content for the currently selected file from the working tree.
     pub fn load_head_content(&mut self) {
+        self.load_head_content_raw();
+        self.mark_model_changed();
+    }
+
+    fn load_head_content_raw(&mut self) {
         self.head_content = None;
         if let Some(entry) = self.files.get(self.selected_file) {
             let path = entry.change.path.clone();
@@ -750,6 +758,11 @@ impl AppState {
 
     /// Load base content for the currently selected file from git.
     pub fn load_base_content(&mut self) {
+        self.load_base_content_raw();
+        self.mark_model_changed();
+    }
+
+    fn load_base_content_raw(&mut self) {
         self.base_content = None;
         if let Some(entry) = self.files.get(self.selected_file) {
             let path = entry.change.path.clone();
@@ -760,6 +773,11 @@ impl AppState {
 
     /// Load blame data for the currently selected file.
     pub fn load_blame(&mut self) {
+        self.load_blame_raw();
+        self.mark_model_changed();
+    }
+
+    fn load_blame_raw(&mut self) {
         self.head_blame.clear();
         self.base_blame.clear();
 
@@ -780,6 +798,11 @@ impl AppState {
     /// using the current diff algorithm and whitespace settings. Updates the
     /// cached diff in place without changing cursor position.
     pub fn refresh_current_file_diff(&mut self) {
+        self.refresh_current_file_diff_raw();
+        self.mark_model_changed();
+    }
+
+    fn refresh_current_file_diff_raw(&mut self) {
         if let Some(entry) = self.files.get(self.selected_file) {
             let path = entry.change.path.clone();
             let diff_base = self.effective_diff_base().to_string();
@@ -802,6 +825,11 @@ impl AppState {
     /// Reload the diff for the currently selected file, respecting
     /// the `ignore_whitespace` flag.
     pub fn reload_current_diff(&mut self) {
+        self.reload_current_diff_raw();
+        self.mark_model_changed();
+    }
+
+    fn reload_current_diff_raw(&mut self) {
         if let Some(entry) = self.files.get(self.selected_file) {
             let path = entry.change.path.clone();
             let diff_base = self.effective_diff_base().to_string();
@@ -830,16 +858,15 @@ impl AppState {
     /// the appropriate file content from the working tree.
     pub fn on_file_changed(&mut self) {
         self.reviewed_diff_expanded = false;
-        // Refresh the diff for this file from the working tree.
-        self.refresh_current_file_diff();
-        self.load_head_content();
-        self.load_blame();
+        self.refresh_current_file_diff_raw();
+        self.load_head_content_raw();
+        self.load_blame_raw();
 
         // Reload base content if we're currently in base view.
         if self.content_mode == ContentMode::FullFile
             && self.render_variant == RenderVariant::BaseVersion
         {
-            self.load_base_content();
+            self.load_base_content_raw();
         } else {
             self.base_content = None;
         }
@@ -853,6 +880,7 @@ impl AppState {
         self.diff_line_cursor = first_hunk_row;
         self.diff_col_cursor = 0;
         self.diff_scroll = first_hunk_row;
+        self.mark_model_changed();
     }
 }
 
