@@ -1,227 +1,314 @@
 //! MCP adapter over stdio.
 //!
-//! This module is a thin protocol adapter: it speaks MCP JSON-RPC on stdin /
-//! stdout and forwards supported tool calls to the shared reconnecting client.
+//! This module is a thin protocol adapter. `rmcp` owns the external MCP
+//! handshake, tool discovery, schemas, and stdio transport; tool methods
+//! forward to the shared reconnecting crt client.
+
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::tool::ToolCallContext;
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::{
+    CallToolRequestParams, CallToolResult, ListToolsResult, PaginatedRequestParams,
+    ServerCapabilities, ServerInfo, Tool,
+};
+use rmcp::service::RequestContext;
+use rmcp::{RoleServer, ServerHandler, ServiceExt, tool, tool_router};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 
 use crate::client::Client;
 use crate::review_types::{ActiveReviewSession, ConnectionContext};
 
-const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct EmptyParams {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SelectReviewSessionParams {
+    #[schemars(description = "Zero-based index from list_review_sessions")]
+    pub index: Option<usize>,
+    #[schemars(description = "Worktree path from list_review_sessions")]
+    pub worktree: Option<String>,
+    #[schemars(description = "Base ref from list_review_sessions")]
+    pub base_ref: Option<String>,
+    #[schemars(description = "Merge-base hash from list_review_sessions")]
+    pub merge_base: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetFileDiffParams {
+    #[schemars(description = "Path to a changed file, relative to the review worktree")]
+    pub file_path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchCodebaseParams {
+    #[schemars(description = "Regular expression to search for")]
+    pub pattern: String,
+    #[schemars(description = "Use 'all' for the worktree or 'diff' for changed files only")]
+    pub scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FindDefinitionParams {
+    #[schemars(description = "Symbol name to locate")]
+    pub symbol: String,
+    #[schemars(description = "Optional file path relative to the worktree")]
+    pub context_file: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct CrtMcp {
+    client: Arc<Client>,
+    selected: Arc<Mutex<Option<ConnectionContext>>>,
+    tool_router: ToolRouter<Self>,
+}
+
+impl std::fmt::Debug for CrtMcp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CrtMcp")
+            .field("tools", &self.list_tool_names())
+            .finish()
+    }
+}
+
+#[tool_router]
+impl CrtMcp {
+    #[tool(
+        description = "List active crt review sessions registered by connected clients. Use this before selecting a session for scoped review tools."
+    )]
+    async fn list_review_sessions(&self, Parameters(_params): Parameters<EmptyParams>) -> String {
+        match self.client.list_repos().await {
+            Ok(result) => to_json(&result),
+            Err(e) => format!("Error listing review sessions: {e:#}"),
+        }
+    }
+
+    #[tool(
+        description = "Select an active crt review session by index or identifying fields. Scoped tools use the selected session."
+    )]
+    async fn select_review_session(
+        &self,
+        Parameters(params): Parameters<SelectReviewSessionParams>,
+    ) -> String {
+        let sessions = match self.client.list_repos().await {
+            Ok(result) => result.sessions,
+            Err(e) => return format!("Error listing review sessions: {e:#}"),
+        };
+        let selected = match select_session(&params, &sessions) {
+            Ok(selected) => selected,
+            Err(e) => return format!("Error selecting review session: {e:#}"),
+        };
+        match self
+            .client
+            .init(&selected.worktree, &selected.base_ref)
+            .await
+        {
+            Ok(context) => {
+                *self.selected.lock().await = Some(context.clone());
+                to_json(&context)
+            }
+            Err(e) => format!("Error initializing selected review session: {e:#}"),
+        }
+    }
+
+    #[tool(
+        description = "List files changed in the selected review scope, including review status and diff metadata."
+    )]
+    async fn list_changed_files(&self, Parameters(_params): Parameters<EmptyParams>) -> String {
+        if let Err(e) = self.require_selected().await {
+            return format!("Error: {e:#}");
+        }
+        match self.client.list_changed_files().await {
+            Ok(result) => to_json(&result),
+            Err(e) => format!("Error listing changed files: {e:#}"),
+        }
+    }
+
+    #[tool(description = "Return the diff for one changed file in the selected review scope.")]
+    async fn get_file_diff(&self, Parameters(params): Parameters<GetFileDiffParams>) -> String {
+        if let Err(e) = self.require_selected().await {
+            return format!("Error: {e:#}");
+        }
+        match self.client.get_file_diff(&params.file_path).await {
+            Ok(result) => to_json(&result),
+            Err(e) => format!("Error getting file diff: {e:#}"),
+        }
+    }
+
+    #[tool(
+        description = "Search the selected review worktree or current diff for a regular expression."
+    )]
+    async fn search_codebase(
+        &self,
+        Parameters(params): Parameters<SearchCodebaseParams>,
+    ) -> String {
+        if let Err(e) = self.require_selected().await {
+            return format!("Error: {e:#}");
+        }
+        let scope = params.scope.as_deref().unwrap_or("all");
+        match self.client.search_codebase(&params.pattern, scope).await {
+            Ok(result) => to_json(&result),
+            Err(e) => format!("Error searching codebase: {e:#}"),
+        }
+    }
+
+    #[tool(description = "Find likely definitions for a symbol in the selected review worktree.")]
+    async fn find_definition(
+        &self,
+        Parameters(params): Parameters<FindDefinitionParams>,
+    ) -> String {
+        if let Err(e) = self.require_selected().await {
+            return format!("Error: {e:#}");
+        }
+        match self
+            .client
+            .find_definition(&params.symbol, params.context_file.as_deref())
+            .await
+        {
+            Ok(result) => to_json(&result),
+            Err(e) => format!("Error finding definition: {e:#}"),
+        }
+    }
+
+    #[tool(
+        description = "Summarize the selected review scope with changed-file counts and per-file review status."
+    )]
+    async fn list_review_summary(&self, Parameters(_params): Parameters<EmptyParams>) -> String {
+        let context = match self.require_selected().await {
+            Ok(context) => context,
+            Err(e) => return format!("Error: {e:#}"),
+        };
+        match self.client.list_changed_files().await {
+            Ok(files) => {
+                let value = serde_json::json!({
+                    "base_ref": context.base_ref,
+                    "head_ref": context.head_ref,
+                    "merge_base": context.merge_base,
+                    "total_files": files.files.len(),
+                    "reviewed_files": files.files.iter().filter(|entry| matches!(
+                        entry.status,
+                        crate::review_types::ReviewStatus::Reviewed { .. }
+                    )).count(),
+                    "unreviewed_files": files.files.iter().filter(|entry| matches!(
+                        entry.status,
+                        crate::review_types::ReviewStatus::Unreviewed
+                            | crate::review_types::ReviewStatus::Changed { .. }
+                    )).count(),
+                    "files": files.files,
+                });
+                to_json(&value)
+            }
+            Err(e) => format!("Error summarizing review: {e:#}"),
+        }
+    }
+}
+
+impl CrtMcp {
+    pub fn new(client: Arc<Client>, selected: Option<ConnectionContext>) -> Self {
+        Self {
+            client,
+            selected: Arc::new(Mutex::new(selected)),
+            tool_router: Self::tool_router(),
+        }
+    }
+
+    pub fn list_tool_names(&self) -> Vec<String> {
+        self.tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
+    }
+
+    async fn require_selected(&self) -> Result<ConnectionContext> {
+        self.selected.lock().await.clone().context(
+            "No review session selected. Call list_review_sessions, then select_review_session.",
+        )
+    }
+}
+
+impl ServerHandler for CrtMcp {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+            concat!(
+                "crt MCP Server. Start with list_review_sessions to discover active review ",
+                "sessions registered by connected crt clients, then call select_review_session ",
+                "before scoped tools such as list_changed_files or get_file_diff."
+            )
+            .to_string(),
+        )
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, rmcp::ErrorData> {
+        Ok(ListToolsResult {
+            tools: self.tool_router.list_all(),
+            meta: None,
+            next_cursor: None,
+        })
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let tcc = ToolCallContext::new(self, request, context);
+        self.tool_router.call(tcc).await
+    }
+
+    fn get_tool(&self, name: &str) -> Option<Tool> {
+        self.tool_router.get(name).cloned()
+    }
+}
 
 pub async fn run(client: Client, context: Option<ConnectionContext>) -> Result<()> {
-    let result = run_loop(&client, context).await;
+    let client = Arc::new(client);
+    let handler = CrtMcp::new(Arc::clone(&client), context);
+    let service = handler.serve(rmcp::transport::stdio()).await?;
+    let result = service.waiting().await;
     client.shutdown().await;
-    result
-}
-
-async fn run_loop(client: &Client, mut context: Option<ConnectionContext>) -> Result<()> {
-    let stdin = tokio::io::stdin();
-    let mut reader = BufReader::new(stdin);
-    let mut stdout = tokio::io::stdout();
-    let mut line = String::new();
-
-    loop {
-        line.clear();
-        let n = reader
-            .read_line(&mut line)
-            .await
-            .context("Failed to read MCP request")?;
-        if n == 0 {
-            break;
-        }
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let request: Value = match serde_json::from_str(trimmed) {
-            Ok(request) => request,
-            Err(e) => {
-                write_response(
-                    &mut stdout,
-                    json_rpc_error(Value::Null, -32700, format!("Parse error: {e}")),
-                )
-                .await?;
-                continue;
-            }
-        };
-
-        if request.get("id").is_none() {
-            continue;
-        }
-
-        let response = handle_request(client, &mut context, request).await;
-        write_response(&mut stdout, response).await?;
-    }
-
+    result?;
     Ok(())
-}
-
-async fn write_response(stdout: &mut tokio::io::Stdout, response: Value) -> Result<()> {
-    let mut line = serde_json::to_string(&response).context("Failed to serialize MCP response")?;
-    line.push('\n');
-    stdout
-        .write_all(line.as_bytes())
-        .await
-        .context("Failed to write MCP response")?;
-    stdout
-        .flush()
-        .await
-        .context("Failed to flush MCP response")?;
-    Ok(())
-}
-
-async fn handle_request(
-    client: &Client,
-    context: &mut Option<ConnectionContext>,
-    request: Value,
-) -> Value {
-    let id = request.get("id").cloned().unwrap_or(Value::Null);
-    let Some(method) = request.get("method").and_then(Value::as_str) else {
-        return json_rpc_error(id, -32600, "Invalid request: missing method");
-    };
-
-    match method {
-        "initialize" => json_rpc_success(
-            id,
-            json!({
-                "protocolVersion": MCP_PROTOCOL_VERSION,
-                "capabilities": {
-                    "tools": {}
-                },
-                "serverInfo": {
-                    "name": "crt",
-                    "version": env!("CARGO_PKG_VERSION")
-                }
-            }),
-        ),
-        "tools/list" => json_rpc_success(id, json!({ "tools": tool_schemas() })),
-        "tools/call" => {
-            let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
-            match handle_tool_call(client, context, params).await {
-                Ok(result) => json_rpc_success(id, result),
-                Err(e) => json_rpc_error(id, -32000, format!("{e:#}")),
-            }
-        }
-        _ => json_rpc_error(id, -32601, format!("Method '{method}' not found")),
-    }
-}
-
-async fn handle_tool_call(
-    client: &Client,
-    context: &mut Option<ConnectionContext>,
-    params: Value,
-) -> Result<Value> {
-    let name = params
-        .get("name")
-        .and_then(Value::as_str)
-        .context("tools/call missing tool name")?;
-    let arguments = params
-        .get("arguments")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-
-    let value = match name {
-        "list_review_sessions" => serde_json::to_value(client.list_repos().await?)?,
-        "select_review_session" => {
-            let sessions = client.list_repos().await?.sessions;
-            let selected = select_session(&arguments, &sessions)?;
-            let init = client.init(&selected.worktree, &selected.base_ref).await?;
-            *context = Some(init.clone());
-            serde_json::to_value(init)?
-        }
-        "list_changed_files" => {
-            selected_context(context)?;
-            serde_json::to_value(client.list_changed_files().await?)?
-        }
-        "get_file_diff" => {
-            selected_context(context)?;
-            let file_path = required_string_arg(&arguments, "file_path")?;
-            serde_json::to_value(client.get_file_diff(file_path).await?)?
-        }
-        "search_codebase" => {
-            selected_context(context)?;
-            let pattern = required_string_arg(&arguments, "pattern")?;
-            let scope = arguments
-                .get("scope")
-                .and_then(Value::as_str)
-                .unwrap_or("all");
-            serde_json::to_value(client.search_codebase(pattern, scope).await?)?
-        }
-        "find_definition" => {
-            selected_context(context)?;
-            let symbol = required_string_arg(&arguments, "symbol")?;
-            let context_file = arguments.get("context_file").and_then(Value::as_str);
-            serde_json::to_value(client.find_definition(symbol, context_file).await?)?
-        }
-        "list_review_summary" => {
-            let context = selected_context(context)?;
-            let files = client.list_changed_files().await?;
-            json!({
-                "base_ref": context.base_ref,
-                "head_ref": context.head_ref,
-                "merge_base": context.merge_base,
-                "total_files": files.files.len(),
-                "reviewed_files": files.files.iter().filter(|entry| matches!(
-                    entry.status,
-                    crate::review_types::ReviewStatus::Reviewed { .. }
-                )).count(),
-                "unreviewed_files": files.files.iter().filter(|entry| matches!(
-                    entry.status,
-                    crate::review_types::ReviewStatus::Unreviewed
-                        | crate::review_types::ReviewStatus::Changed { .. }
-                )).count(),
-                "files": files.files,
-            })
-        }
-        _ => anyhow::bail!("Unknown tool '{name}'"),
-    };
-
-    Ok(json!({
-        "content": [{
-            "type": "text",
-            "text": serde_json::to_string_pretty(&value)?,
-        }],
-        "isError": false,
-    }))
-}
-
-fn selected_context(context: &Option<ConnectionContext>) -> Result<&ConnectionContext> {
-    context.as_ref().context(
-        "No review session selected. Call list_review_sessions, then select_review_session.",
-    )
 }
 
 fn select_session(
-    arguments: &Value,
+    params: &SelectReviewSessionParams,
     sessions: &[ActiveReviewSession],
 ) -> Result<ActiveReviewSession> {
     if sessions.is_empty() {
         anyhow::bail!("No active review sessions are registered with the crt server");
     }
 
-    if let Some(index) = arguments.get("index").and_then(Value::as_u64) {
+    if let Some(index) = params.index {
         return sessions
-            .get(index as usize)
+            .get(index)
             .cloned()
             .with_context(|| format!("session index {index} is out of range"));
     }
 
-    let worktree = arguments.get("worktree").and_then(Value::as_str);
-    let base_ref = arguments.get("base_ref").and_then(Value::as_str);
-    let merge_base = arguments.get("merge_base").and_then(Value::as_str);
-
     let matches = sessions
         .iter()
         .filter(|session| {
-            worktree.is_none_or(|value| session.worktree == value)
-                && base_ref.is_none_or(|value| session.base_ref == value)
-                && merge_base.is_none_or(|value| session.merge_base == value)
+            params
+                .worktree
+                .as_ref()
+                .is_none_or(|value| session.worktree == *value)
+                && params
+                    .base_ref
+                    .as_ref()
+                    .is_none_or(|value| session.base_ref == *value)
+                && params
+                    .merge_base
+                    .as_ref()
+                    .is_none_or(|value| session.merge_base == *value)
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -235,142 +322,8 @@ fn select_session(
     }
 }
 
-fn required_string_arg<'a>(arguments: &'a Value, name: &str) -> Result<&'a str> {
-    arguments
-        .get(name)
-        .and_then(Value::as_str)
-        .with_context(|| format!("missing string argument '{name}'"))
-}
-
-fn json_rpc_success(id: Value, result: Value) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "result": result,
-    })
-}
-
-fn json_rpc_error(id: Value, code: i64, message: impl Into<String>) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "error": {
-            "code": code,
-            "message": message.into(),
-        },
-    })
-}
-
-fn tool_schemas() -> Value {
-    json!([
-        {
-            "name": "list_review_sessions",
-            "description": "List active crt review sessions registered by connected clients. Use this before selecting a session for scoped review tools.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }
-        },
-        {
-            "name": "select_review_session",
-            "description": "Select an active crt review session by index or identifying fields. Scoped tools use the selected session.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "index": {
-                        "type": "integer",
-                        "description": "Zero-based index from list_review_sessions."
-                    },
-                    "worktree": {
-                        "type": "string",
-                        "description": "Worktree path from list_review_sessions."
-                    },
-                    "base_ref": {
-                        "type": "string",
-                        "description": "Base ref from list_review_sessions."
-                    },
-                    "merge_base": {
-                        "type": "string",
-                        "description": "Merge-base hash from list_review_sessions."
-                    }
-                },
-                "additionalProperties": false
-            }
-        },
-        {
-            "name": "list_changed_files",
-            "description": "List files changed in the current review scope, including review status and diff metadata.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }
-        },
-        {
-            "name": "get_file_diff",
-            "description": "Return the diff for one changed file in the current review scope.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "file_path": {
-                        "type": "string",
-                        "description": "Path to a changed file, relative to the review worktree."
-                    }
-                },
-                "required": ["file_path"],
-                "additionalProperties": false
-            }
-        },
-        {
-            "name": "search_codebase",
-            "description": "Search the worktree or current diff for a regular expression.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "pattern": {
-                        "type": "string",
-                        "description": "Regular expression to search for."
-                    },
-                    "scope": {
-                        "type": "string",
-                        "enum": ["all", "diff"],
-                        "description": "Use 'all' for the worktree or 'diff' for changed files only."
-                    }
-                },
-                "required": ["pattern"],
-                "additionalProperties": false
-            }
-        },
-        {
-            "name": "find_definition",
-            "description": "Find likely definitions for a symbol, optionally using a context file for ranking.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "symbol": {
-                        "type": "string",
-                        "description": "Symbol name to locate."
-                    },
-                    "context_file": {
-                        "type": "string",
-                        "description": "Optional file path relative to the worktree."
-                    }
-                },
-                "required": ["symbol"],
-                "additionalProperties": false
-            }
-        },
-        {
-            "name": "list_review_summary",
-            "description": "Summarize the current review scope with changed-file counts and per-file review status.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }
-        }
-    ])
+fn to_json(value: &impl Serialize) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -378,41 +331,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_schemas_only_advertise_implemented_tools() {
-        let tools = tool_schemas();
-        let names: Vec<_> = tools
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|tool| tool["name"].as_str().unwrap())
-            .collect();
-
-        assert_eq!(
-            names,
-            vec![
-                "list_review_sessions",
-                "select_review_session",
-                "list_changed_files",
-                "get_file_diff",
-                "search_codebase",
-                "find_definition",
-                "list_review_summary"
-            ]
-        );
-    }
-
-    #[test]
-    fn missing_required_string_arg_is_an_error() {
-        let err = required_string_arg(&json!({}), "file_path").unwrap_err();
-
-        assert!(err.to_string().contains("file_path"));
-    }
-
-    #[test]
     fn select_session_can_use_index() {
         let sessions = vec![session("repo-a", "main"), session("repo-b", "main")];
+        let params = SelectReviewSessionParams {
+            index: Some(1),
+            worktree: None,
+            base_ref: None,
+            merge_base: None,
+        };
 
-        let selected = select_session(&json!({ "index": 1 }), &sessions).unwrap();
+        let selected = select_session(&params, &sessions).unwrap();
 
         assert_eq!(selected.repo_root, "repo-b");
     }
@@ -420,8 +348,14 @@ mod tests {
     #[test]
     fn select_session_requires_disambiguation_for_multiple_matches() {
         let sessions = vec![session("repo", "main"), session("repo", "feature")];
+        let params = SelectReviewSessionParams {
+            index: None,
+            worktree: Some("/tmp/repo".to_string()),
+            base_ref: None,
+            merge_base: None,
+        };
 
-        let err = select_session(&json!({ "worktree": "/tmp/repo" }), &sessions).unwrap_err();
+        let err = select_session(&params, &sessions).unwrap_err();
 
         assert!(err.to_string().contains("Multiple active review sessions"));
     }
