@@ -87,10 +87,7 @@ pub fn run() -> Result<()> {
 pub fn run_with_cli(cli: Cli) -> Result<()> {
     match cli.command {
         Some(Command::Server) => cmd_server(),
-        Some(Command::McpServer { .. }) => {
-            println!("crt mcp-server: not yet implemented (stage 14)");
-            Ok(())
-        }
+        Some(Command::McpServer { base }) => cmd_mcp_server(base.or(cli.base), cli.standalone),
         Some(Command::ApplyComments { .. }) => {
             println!("crt apply-comments: not yet implemented (stage 15)");
             Ok(())
@@ -132,4 +129,62 @@ fn cmd_review(base: Option<String>, reset: bool, standalone: bool) -> Result<()>
             app::ReviewStartup::Review(app) => tui::run(app).await.context("TUI error"),
         }
     })
+}
+
+/// `crt mcp-server` — start MCP adapter over stdio.
+fn cmd_mcp_server(base: Option<String>, standalone: bool) -> Result<()> {
+    let base = require_mcp_base(base)?;
+
+    let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
+
+    rt.block_on(async {
+        let socket_path = app::default_socket_path()?;
+        let cwd = std::env::current_dir().context("Failed to determine current directory")?;
+        let client = client::Client::connect_or_start(&socket_path, standalone).await?;
+        let context = client.init(&cwd.to_string_lossy(), &base).await?;
+        mcp::run(client, context).await.context("MCP server error")
+    })
+}
+
+fn require_mcp_base(base: Option<String>) -> Result<String> {
+    base.context(
+        "A base ref is required.\n\nUsage: crt mcp-server --base <BASE>\n\nExample: crt mcp-server --base main",
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn mcp_server_accepts_subcommand_base() {
+        let cli = Cli::parse_from(["crt", "mcp-server", "--base", "main"]);
+
+        match cli.command {
+            Some(Command::McpServer { base }) => {
+                assert_eq!(require_mcp_base(base).unwrap(), "main");
+            }
+            _ => panic!("expected mcp-server command"),
+        }
+    }
+
+    #[test]
+    fn mcp_server_accepts_global_base() {
+        let cli = Cli::parse_from(["crt", "main", "mcp-server"]);
+
+        match cli.command {
+            Some(Command::McpServer { base }) => {
+                assert_eq!(require_mcp_base(base.or(cli.base)).unwrap(), "main");
+            }
+            _ => panic!("expected mcp-server command"),
+        }
+    }
+
+    #[test]
+    fn mcp_server_requires_base() {
+        let err = require_mcp_base(None).unwrap_err();
+
+        assert!(err.to_string().contains("base ref is required"));
+    }
 }

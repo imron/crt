@@ -1,6 +1,6 @@
 # Stage 25: Embedded Lifecycle Alignment
 
-## Status: Backlog
+## Status: Completed
 
 ## Order
 
@@ -32,7 +32,8 @@ clear lifecycle model.
 
 ## Requirements
 
-1. Keep app-owned `connect_or_start` startup behavior as the primary flow.
+1. Keep a single shared `connect_or_start` startup behavior as the primary
+   flow for review and MCP clients.
 
 2. Ensure embedded lifecycle is process-coupled:
    - host process exits -> embedded server exits,
@@ -68,14 +69,31 @@ clear lifecycle model.
 
 ## Acceptance Criteria
 
-- [ ] Embedded host exit always terminates embedded server.
-- [ ] Peers recover via Stage 24 failover behavior.
-- [ ] `crt server` remains explicit and unaffected.
-- [ ] Socket cleanup behavior is consistent across normal and abrupt exits.
-- [ ] Lifecycle/reconnect status remains consumable by both TUI and future GUI
+- [x] Embedded host exit always terminates embedded server.
+- [x] Peers recover via Stage 24 failover behavior.
+- [x] `crt server` remains explicit and unaffected.
+- [x] Socket cleanup behavior is consistent across normal and abrupt exits.
+- [x] Lifecycle/reconnect status remains consumable by both TUI and future GUI
       via core effects/events.
 
 ## Resolved Decisions
 
 - Lifecycle model remains process-coupled for embedded mode.
 - Persistent/background behavior is explicit via `crt server` only.
+
+## Completed Notes
+
+- Kept lifecycle ownership in the shared reconnecting `Client` path introduced
+  by Stage 24, and documented that both TUI and MCP startup use that same
+  connect-or-start behavior.
+- Wired `crt mcp-server --base <base>` through the same socket path,
+  connect-or-start, init, and shutdown lifecycle as review mode.
+- Implemented the MCP stdio adapter for currently server-backed tools:
+  `list_changed_files`, `get_file_diff`, `search_codebase`,
+  `find_definition`, and `list_review_summary`.
+- Left comment-oriented MCP tools for the existing Stage 14 backlog because
+  the corresponding server comment methods still return not implemented.
+- Documented embedded lifecycle semantics in `docs/OVERVIEW.md`: embedded
+  servers are process-coupled, `crt server` is the only persistent mode, and
+  standalone mode uses a private temp socket.
+- Added tests for MCP tool schemas and MCP CLI base resolution.

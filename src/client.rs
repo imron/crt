@@ -56,6 +56,7 @@ impl Default for ReconnectOptions {
 #[derive(Debug, Clone)]
 struct ReconnectPolicy {
     socket_path: PathBuf,
+    cleanup_dir: Option<PathBuf>,
     allow_embedded_start: bool,
     options: ReconnectOptions,
 }
@@ -116,6 +117,14 @@ impl Client {
     }
 
     /// Connect to a running server or start an embedded server if needed.
+    ///
+    /// Non-standalone clients use the shared default socket path, so a server
+    /// started here is visible to peer clients. Standalone clients use a
+    /// process-private socket under the system temp directory; it still uses
+    /// the same socket transport but cannot be discovered through the default
+    /// socket path. Any embedded server started by this client is
+    /// process-coupled: explicit async shutdown cancels it, and `Drop` only
+    /// provides fallback best-effort cancellation.
     pub async fn connect_or_start(socket_path: &Path, standalone: bool) -> Result<Self> {
         Self::connect_or_start_with_options(socket_path, standalone, ReconnectOptions::default())
             .await
@@ -126,17 +135,18 @@ impl Client {
         standalone: bool,
         options: ReconnectOptions,
     ) -> Result<Self> {
-        let socket_path = if standalone {
+        let (socket_path, cleanup_dir) = if standalone {
             let dir = std::env::temp_dir().join(format!("crt-{}", std::process::id()));
             std::fs::create_dir_all(&dir)
                 .with_context(|| format!("Failed to create temp dir {}", dir.display()))?;
-            dir.join("server.sock")
+            (dir.join("server.sock"), Some(dir))
         } else {
-            socket_path.to_path_buf()
+            (socket_path.to_path_buf(), None)
         };
 
         let policy = ReconnectPolicy {
             socket_path: socket_path.clone(),
+            cleanup_dir,
             allow_embedded_start: true,
             options,
         };
@@ -363,6 +373,13 @@ impl Client {
         if let Some(token) = embedded.take() {
             token.cancel();
             tokio::time::sleep(EMBEDDED_SERVER_STARTUP_DELAY).await;
+        }
+        if let Some(dir) = self
+            .reconnect_policy
+            .as_ref()
+            .and_then(|policy| policy.cleanup_dir.as_ref())
+        {
+            let _ = std::fs::remove_dir(dir);
         }
     }
 
