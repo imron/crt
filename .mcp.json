@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "crt": {
-      "command": "/Users/imron/.local/bin/crt",
-      "args": ["mcp-server", "--base", "master"]
-    }
-  }
-}

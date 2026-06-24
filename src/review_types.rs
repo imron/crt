@@ -425,6 +425,19 @@ pub struct TrackRepoResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListReposResult {
     pub repos: Vec<String>,
+    #[serde(default)]
+    pub sessions: Vec<ActiveReviewSession>,
+}
+
+/// An initialized review session currently known by the server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActiveReviewSession {
+    pub repo_root: String,
+    pub worktree: String,
+    pub base_ref: String,
+    pub head_ref: String,
+    pub merge_base: String,
+    pub client_count: usize,
 }
 
 // ---------------------------------------------------------------------------
