@@ -166,7 +166,7 @@ pub struct DefinitionResultItem {
 }
 
 impl AppModel {
-    pub(crate) fn from_state(state: &AppState) -> Self {
+    pub fn from_state(state: &AppState) -> Self {
         Self {
             revision: state.model_revision(),
             context: state.context.clone(),

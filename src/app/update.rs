@@ -6,7 +6,7 @@
 
 mod command;
 mod cursor;
-mod diff_search;
+pub mod diff_search;
 mod navigation;
 mod output;
 mod overlays;
@@ -21,7 +21,7 @@ use crate::review_types::PaneFocus;
 pub use output::{AppOutput, StatusUpdate};
 pub use viewport::AppViewport;
 
-pub(super) fn interaction_context(state: &AppState) -> InteractionContext {
+pub fn interaction_context(state: &AppState) -> InteractionContext {
     InteractionContext {
         focused_pane: Some(match state.pane_focus {
             PaneFocus::FileList => PaneId::FileList,
@@ -36,17 +36,14 @@ pub(super) fn interaction_context(state: &AppState) -> InteractionContext {
     }
 }
 
-pub(super) fn prompt_submit_context(
-    state: &AppState,
-    view: &impl AppViewport,
-) -> InteractionContext {
+pub fn prompt_submit_context(state: &AppState, view: &impl AppViewport) -> InteractionContext {
     InteractionContext {
         fallback_word: navigation::extract_word_at_cursor(state, view),
         ..InteractionContext::default()
     }
 }
 
-pub(super) fn apply_core_effects(
+pub fn apply_core_effects(
     state: &mut AppState,
     view: &impl AppViewport,
     effects: Vec<CoreEffect>,
@@ -143,7 +140,7 @@ pub(super) fn apply_core_effects(
     update
 }
 
-pub(super) fn navigate_to_search_match(
+pub fn navigate_to_search_match(
     state: &mut AppState,
     view: &impl AppViewport,
     m: &crate::review_types::SearchMatch,
@@ -151,7 +148,7 @@ pub(super) fn navigate_to_search_match(
     navigation::navigate_to_search_match(state, view, m)
 }
 
-pub(super) fn navigate_to_definition(
+pub fn navigate_to_definition(
     state: &mut AppState,
     view: &impl AppViewport,
     def: &crate::review_types::DefinitionLocation,

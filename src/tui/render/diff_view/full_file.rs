@@ -13,7 +13,7 @@ use crate::review_types::LineKind;
 // Full-file HEAD: HEAD version with additions highlighted
 // ---------------------------------------------------------------------------
 
-pub(super) fn build_full_file_head(
+pub fn build_full_file_head(
     ds: &DiffStyle,
     default_bg: Color,
     hunks: &[DiffHunk],
@@ -143,7 +143,7 @@ pub(super) fn build_full_file_head(
 // Full-file base: base version with deletions highlighted
 // ---------------------------------------------------------------------------
 
-pub(super) fn build_full_file_base(
+pub fn build_full_file_base(
     ds: &DiffStyle,
     default_bg: Color,
     hunks: &[DiffHunk],

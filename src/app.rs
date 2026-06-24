@@ -326,6 +326,10 @@ impl App {
         update::navigate_to_definition(&mut self.state, viewport, definition)
     }
 
+    pub fn refresh_active_diff_search(&mut self, viewport: &impl AppViewport) -> bool {
+        update::diff_search::refresh_active_diff_search(&mut self.state, viewport)
+    }
+
     async fn toggle_selected_review(&mut self) -> Option<StatusUpdate> {
         let entry = self.state.files.get(self.state.selected_file)?;
         let path = entry.change.path.clone();
@@ -880,7 +884,17 @@ impl AppState {
         self.diff_line_cursor = first_hunk_row;
         self.diff_col_cursor = 0;
         self.diff_scroll = first_hunk_row;
+        self.invalidate_diff_search_matches();
         self.mark_model_changed();
+    }
+
+    pub fn invalidate_diff_search_matches(&mut self) {
+        if self.diff_search_query.is_some()
+            && (!self.diff_search_matches.is_empty() || self.diff_search_current != 0)
+        {
+            self.diff_search_matches.clear();
+            self.diff_search_current = 0;
+        }
     }
 }
 
@@ -924,6 +938,48 @@ mod tests {
 
         fn diff_rendered_text(&self) -> &[String] {
             &[]
+        }
+    }
+
+    struct RenderedViewport {
+        lines: Vec<String>,
+    }
+
+    impl RenderedViewport {
+        fn new(lines: Vec<&str>) -> Self {
+            Self {
+                lines: lines.into_iter().map(str::to_string).collect(),
+            }
+        }
+    }
+
+    impl AppViewport for RenderedViewport {
+        fn hunk_start_rows(&self) -> &[usize] {
+            &[]
+        }
+
+        fn hunk_end_rows(&self) -> &[usize] {
+            &[]
+        }
+
+        fn hunk_first_change_rows(&self) -> &[usize] {
+            &[]
+        }
+
+        fn diff_gutter_cols(&self) -> usize {
+            0
+        }
+
+        fn diff_content_height(&self) -> usize {
+            self.lines.len()
+        }
+
+        fn diff_view_height(&self) -> usize {
+            10
+        }
+
+        fn diff_rendered_text(&self) -> &[String] {
+            &self.lines
         }
     }
 
@@ -1060,6 +1116,55 @@ mod tests {
         assert_eq!(app.state.diff_scroll, 5);
         assert_eq!(app.state.content_mode, ContentMode::FullFile);
         assert_eq!(app.state.render_variant, RenderVariant::HeadVersion);
+    }
+
+    #[test]
+    fn active_diff_search_recomputes_after_file_change() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("a.rs"), test_file("b.rs")],
+        );
+        app.state.diff_search_query = Some("Command".to_string());
+        app.state.diff_search_matches = vec![(8, 1, 8)];
+        app.state.diff_search_current = 0;
+
+        app.state.selected_file = 1;
+        app.state.on_file_changed();
+
+        assert_eq!(app.state.diff_search_query.as_deref(), Some("Command"));
+        assert!(app.state.diff_search_matches.is_empty());
+
+        let view = RenderedViewport::new(vec!["let value = 1;", "    Command::Quit"]);
+        assert!(app.refresh_active_diff_search(&view));
+
+        assert_eq!(app.state.diff_search_matches, vec![(1, 4, 11)]);
+        assert_eq!(app.state.diff_search_current, 0);
+        assert_eq!(app.state.diff_line_cursor, 1);
+
+        app.state.diff_line_cursor = 0;
+
+        assert!(!app.refresh_active_diff_search(&view));
+        assert_eq!(app.state.diff_line_cursor, 0);
+    }
+
+    #[test]
+    fn inline_diff_toggle_switches_between_inline_and_side_by_side() {
+        let mut app = App::new(Config::default(), test_context(), vec![test_file("a.rs")]);
+        app.state.diff_search_query = Some("Command".to_string());
+        app.state.diff_search_matches = vec![(4, 1, 8)];
+
+        assert_eq!(app.state.render_variant, RenderVariant::Inline);
+
+        app.apply_core_effects(&EmptyViewport, vec![CoreEffect::ToggleInlineDiff]);
+
+        assert_eq!(app.state.render_variant, RenderVariant::SideBySide);
+        assert_eq!(app.state.diff_search_query.as_deref(), Some("Command"));
+        assert!(app.state.diff_search_matches.is_empty());
+
+        app.apply_core_effects(&EmptyViewport, vec![CoreEffect::ToggleInlineDiff]);
+
+        assert_eq!(app.state.render_variant, RenderVariant::Inline);
     }
 
     #[test]

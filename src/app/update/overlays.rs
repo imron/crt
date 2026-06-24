@@ -5,7 +5,7 @@ use crate::app::AppState;
 use crate::core::search as core_search;
 use crate::core::{DefinitionResultsEffect, SearchResultsEffect};
 
-pub(super) fn apply_search_results_effect(
+pub fn apply_search_results_effect(
     state: &mut AppState,
     view: &impl AppViewport,
     update: &mut AppOutput,
@@ -63,7 +63,7 @@ pub(super) fn apply_search_results_effect(
     }
 }
 
-pub(super) fn apply_definition_results_effect(
+pub fn apply_definition_results_effect(
     state: &mut AppState,
     view: &impl AppViewport,
     update: &mut AppOutput,

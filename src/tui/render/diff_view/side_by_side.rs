@@ -11,7 +11,7 @@ use crate::review_types::LineKind;
 // Side-by-side diff
 // ---------------------------------------------------------------------------
 
-pub(super) fn build_side_by_side_diff(
+pub fn build_side_by_side_diff(
     ds: &DiffStyle,
     default_bg: Color,
     hunks: &[DiffHunk],

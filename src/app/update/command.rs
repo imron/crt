@@ -3,7 +3,7 @@ use crate::app::AppState;
 use crate::core::command::{Command, CommandParse};
 
 /// Apply a parsed command emitted by the core interaction engine.
-pub(super) fn apply_command(state: &mut AppState, update: &mut AppOutput, command: CommandParse) {
+pub fn apply_command(state: &mut AppState, update: &mut AppOutput, command: CommandParse) {
     match command {
         CommandParse::Empty => {}
         CommandParse::NeedsArgument { usage } | CommandParse::NeedsWord { usage } => {
