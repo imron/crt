@@ -358,6 +358,14 @@ impl Client {
         out
     }
 
+    pub async fn shutdown(&self) {
+        let mut embedded = self.embedded_server.lock().await;
+        if let Some(token) = embedded.take() {
+            token.cancel();
+            tokio::time::sleep(EMBEDDED_SERVER_STARTUP_DELAY).await;
+        }
+    }
+
     /// Make one reconnect attempt when the client is disconnected.
     ///
     /// This is intentionally bounded so UI loops can call it from a tick
