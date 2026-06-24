@@ -32,6 +32,8 @@ pub enum CoreEffect {
     TogglePaneFocus,
     TogglePaneVisibility(PaneId),
     ToggleInlineDiff,
+    ToggleBlame,
+    ToggleWhitespaceIgnored,
     CycleViewMode,
     CycleDiffAlgorithm,
     ToggleDiffBase,
@@ -263,6 +265,20 @@ impl CoreInteractionEngine {
                     && key.key == Key::Char('r') =>
             {
                 vec![CoreEffect::ReviewToggle]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_control_modifier_only(key.modifiers)
+                    && key.key == Key::Char('b') =>
+            {
+                vec![CoreEffect::ToggleBlame]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_control_modifier_only(key.modifiers)
+                    && key.key == Key::Char('w') =>
+            {
+                vec![CoreEffect::ToggleWhitespaceIgnored]
             }
             InputEvent::Key(key)
                 if key.kind == KeyEventKind::Press
@@ -522,9 +538,6 @@ fn diff_cursor_key_effect(key: &super::input::KeyEvent) -> Option<DiffCursorEffe
             Some(DiffCursorEffect::LineUp)
         }
         Key::Char(' ') => Some(DiffCursorEffect::PageDown),
-        Key::Char('b') if key_has_control_modifier_only(key.modifiers) => {
-            Some(DiffCursorEffect::PageUp)
-        }
         Key::Char('d') if key_has_control_modifier_only(key.modifiers) => {
             Some(DiffCursorEffect::HalfPageDown)
         }
@@ -1006,16 +1019,6 @@ mod tests {
             ),
             &Default::default(),
         );
-        let page_up = engine.handle_input(
-            key_event(
-                Key::Char('b'),
-                InputModifiers {
-                    ctrl: true,
-                    ..Default::default()
-                },
-            ),
-            &Default::default(),
-        );
         let half_down = engine.handle_input(
             key_event(
                 Key::Char('d'),
@@ -1048,10 +1051,6 @@ mod tests {
         assert_eq!(
             page_down,
             vec![CoreEffect::DiffCursor(DiffCursorEffect::PageDown)]
-        );
-        assert_eq!(
-            page_up,
-            vec![CoreEffect::DiffCursor(DiffCursorEffect::PageUp)]
         );
         assert_eq!(
             half_down,
@@ -1582,11 +1581,33 @@ mod tests {
             key_event(Key::Char('m'), InputModifiers::default()),
             &InteractionContext::default(),
         );
+        let blame = engine.handle_input(
+            key_event(
+                Key::Char('b'),
+                InputModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+        let whitespace = engine.handle_input(
+            key_event(
+                Key::Char('w'),
+                InputModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
 
         assert_eq!(inline, vec![CoreEffect::ToggleInlineDiff]);
         assert_eq!(view, vec![CoreEffect::CycleViewMode]);
         assert_eq!(algorithm, vec![CoreEffect::CycleDiffAlgorithm]);
         assert_eq!(base, vec![CoreEffect::ToggleDiffBase]);
+        assert_eq!(blame, vec![CoreEffect::ToggleBlame]);
+        assert_eq!(whitespace, vec![CoreEffect::ToggleWhitespaceIgnored]);
     }
 
     #[test]

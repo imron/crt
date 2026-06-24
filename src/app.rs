@@ -1168,6 +1168,31 @@ mod tests {
     }
 
     #[test]
+    fn app_toggles_blame_and_whitespace_from_core_effects() {
+        let mut app = App::new(Config::default(), test_context(), vec![test_file("a.rs")]);
+        app.state.diff_search_query = Some("Command".to_string());
+        app.state.diff_search_matches = vec![(4, 1, 8)];
+
+        app.apply_core_effects(&EmptyViewport, vec![CoreEffect::ToggleBlame]);
+
+        assert!(app.state.show_blame);
+
+        app.apply_core_effects(&EmptyViewport, vec![CoreEffect::ToggleBlame]);
+
+        assert!(!app.state.show_blame);
+
+        app.apply_core_effects(&EmptyViewport, vec![CoreEffect::ToggleWhitespaceIgnored]);
+
+        assert!(app.state.ignore_whitespace);
+        assert_eq!(app.state.diff_search_query.as_deref(), Some("Command"));
+        assert!(app.state.diff_search_matches.is_empty());
+
+        app.apply_core_effects(&EmptyViewport, vec![CoreEffect::ToggleWhitespaceIgnored]);
+
+        assert!(!app.state.ignore_whitespace);
+    }
+
+    #[test]
     fn app_owns_search_overlay_selection() {
         let mut app = App::new(Config::default(), test_context(), vec![test_file("a.rs")]);
         app.state.search_results = Some(SearchResults {

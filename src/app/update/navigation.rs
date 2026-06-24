@@ -86,6 +86,29 @@ pub fn toggle_inline_diff(state: &mut AppState, update: &mut AppOutput) {
     update.clear_status();
 }
 
+pub fn toggle_blame(state: &mut AppState, update: &mut AppOutput) {
+    state.show_blame = !state.show_blame;
+    state.load_blame();
+    let status = if state.show_blame {
+        "Blame: shown"
+    } else {
+        "Blame: hidden"
+    };
+    update.set_status(status);
+}
+
+pub fn toggle_whitespace_ignored(state: &mut AppState, update: &mut AppOutput) {
+    state.ignore_whitespace = !state.ignore_whitespace;
+    state.reload_current_diff();
+    state.invalidate_diff_search_matches();
+    let status = if state.ignore_whitespace {
+        "Whitespace: ignored"
+    } else {
+        "Whitespace: shown"
+    };
+    update.set_status(status);
+}
+
 pub fn cycle_diff_algorithm(state: &mut AppState, update: &mut AppOutput) {
     state.diff_algorithm = state.diff_algorithm.next();
     state.reload_current_diff();
