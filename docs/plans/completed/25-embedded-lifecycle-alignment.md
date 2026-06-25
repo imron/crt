@@ -47,8 +47,7 @@ clear lifecycle model.
    - no dependency on client connection count,
    - explicit start/stop by user.
 
-5. Ensure `crt mcp-server` follows same connect-or-start semantics and does
-   not introduce alternate lifecycle behavior.
+5. Ensure `crt mcp-server` does not introduce alternate lifecycle behavior.
 
 6. Keep lifecycle/status signaling UI-agnostic:
    - lifecycle/reconnect state is surfaced through core interaction
@@ -64,7 +63,7 @@ clear lifecycle model.
 ## Deliverables
 
 - Updated lifecycle orchestration code and comments.
-- Consistent startup behavior across entry modes (`crt`, `crt mcp-server`).
+- Documented startup behavior across entry modes (`crt`, `crt mcp-server`).
 - Updated docs reflecting final lifecycle semantics.
 
 ## Acceptance Criteria
@@ -86,9 +85,8 @@ clear lifecycle model.
 - Kept lifecycle ownership in the shared reconnecting `Client` path introduced
   by Stage 24, and documented that both TUI and MCP startup use that same
   connect-or-start behavior.
-- Wired `crt mcp-server` through the same socket path, connect-or-start, and
-  shutdown lifecycle as review mode. It can start unscoped, discover active
-  review sessions, and select one before running scoped tools.
+- Wired `crt mcp-server` to start unscoped, discover active review sessions,
+  and select one before running scoped tools.
 - Implemented the MCP stdio adapter for currently server-backed tools:
   `list_review_sessions`, `select_review_session`, `list_changed_files`,
   `get_file_diff`, `search_codebase`, `find_definition`, and

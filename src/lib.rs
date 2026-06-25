@@ -36,15 +36,15 @@ pub struct Cli {
     command: Option<Command>,
 
     /// Base ref to diff against (e.g. "main", "v1.0", a commit hash)
-    #[arg(value_name = "BASE", global = true)]
+    #[arg(value_name = "BASE")]
     base: Option<String>,
 
     /// Clear all review state for the current (base, branch) pair and exit
-    #[arg(long, global = true)]
+    #[arg(long)]
     reset: bool,
 
     /// Run with a private embedded server socket
-    #[arg(long, global = true)]
+    #[arg(long)]
     standalone: bool,
 }
 
@@ -53,12 +53,8 @@ enum Command {
     /// Start persistent server (~/.crt/server.sock)
     Server,
 
-    /// Start MCP adapter (stdio transport, connects to server)
-    McpServer {
-        /// Base ref for the review scope
-        #[arg(long)]
-        base: Option<String>,
-    },
+    /// Start MCP adapter (stdio transport, connects to existing server)
+    McpServer,
 
     /// Write review comment markers into worktree source files
     ApplyComments {
@@ -87,7 +83,14 @@ pub fn run() -> Result<()> {
 pub fn run_with_cli(cli: Cli) -> Result<()> {
     match cli.command {
         Some(Command::Server) => cmd_server(),
-        Some(Command::McpServer { base }) => cmd_mcp_server(base.or(cli.base), cli.standalone),
+        Some(Command::McpServer) => {
+            if cli.base.is_some() || cli.reset || cli.standalone {
+                anyhow::bail!(
+                    "`crt mcp-server` does not accept a base ref, --reset, or --standalone"
+                );
+            }
+            cmd_mcp_server()
+        }
         Some(Command::ApplyComments { .. }) => {
             println!("crt apply-comments: not yet implemented (stage 15)");
             Ok(())
@@ -132,18 +135,13 @@ fn cmd_review(base: Option<String>, reset: bool, standalone: bool) -> Result<()>
 }
 
 /// `crt mcp-server` — start MCP adapter over stdio.
-fn cmd_mcp_server(base: Option<String>, standalone: bool) -> Result<()> {
+fn cmd_mcp_server() -> Result<()> {
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
 
     rt.block_on(async {
         let socket_path = app::default_socket_path()?;
-        let cwd = std::env::current_dir().context("Failed to determine current directory")?;
-        let client = client::Client::connect_or_start(&socket_path, standalone).await?;
-        let context = match base {
-            Some(base) => Some(client.init(&cwd.to_string_lossy(), &base).await?),
-            None => None,
-        };
-        mcp::run(client, context).await.context("MCP server error")
+        let client = client::Client::connect(&socket_path).await?;
+        mcp::run(client, None).await.context("MCP server error")
     })
 }
 
@@ -153,27 +151,24 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn mcp_server_accepts_subcommand_base() {
-        let cli = Cli::parse_from(["crt", "mcp-server", "--base", "main"]);
+    fn mcp_server_has_no_base_option() {
+        let err = match Cli::try_parse_from(["crt", "mcp-server", "--base", "main"]) {
+            Ok(_) => panic!("mcp-server should not accept --base"),
+            Err(err) => err,
+        };
 
-        match cli.command {
-            Some(Command::McpServer { base }) => {
-                assert_eq!(base.as_deref(), Some("main"));
-            }
-            _ => panic!("expected mcp-server command"),
-        }
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]
-    fn mcp_server_accepts_global_base() {
+    fn mcp_server_rejects_global_base() {
         let cli = Cli::parse_from(["crt", "main", "mcp-server"]);
+        let err = run_with_cli(cli).unwrap_err();
 
-        match cli.command {
-            Some(Command::McpServer { base }) => {
-                assert_eq!(base.or(cli.base).as_deref(), Some("main"));
-            }
-            _ => panic!("expected mcp-server command"),
-        }
+        assert!(
+            err.to_string().contains("base ref"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -181,10 +176,19 @@ mod tests {
         let cli = Cli::parse_from(["crt", "mcp-server"]);
 
         match cli.command {
-            Some(Command::McpServer { base }) => {
-                assert!(base.or(cli.base).is_none());
-            }
+            Some(Command::McpServer) => {}
             _ => panic!("expected mcp-server command"),
         }
+    }
+
+    #[test]
+    fn mcp_server_rejects_standalone_flag() {
+        let cli = Cli::parse_from(["crt", "--standalone", "mcp-server"]);
+        let err = run_with_cli(cli).unwrap_err();
+
+        assert!(
+            err.to_string().contains("--standalone"),
+            "unexpected error: {err}"
+        );
     }
 }

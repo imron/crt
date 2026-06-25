@@ -148,8 +148,8 @@ tool surface.
 
 - MCP remains a key feature of the app.
 - The adapter uses `rmcp`; manual MCP JSON-RPC handling is superseded.
-- MCP startup can be unscoped; agents choose an active review session through
-  MCP tools.
+- MCP startup is unscoped; agents choose an active review session through MCP
+  tools.
 - Agent-created comments remain out of MCP scope for now.
 
 ## Completed Notes

@@ -111,7 +111,8 @@ boundary, not the TUI runtime, owns client/service workflows.
   disconnected, configurable jitter, reconnect attempts, embedded startup, and
   bind-race retry behavior.
 - Moved connect-or-start ownership from `App` into the shared client so TUI and
-  future MCP/GUI callers use the same runtime recovery path.
+  future interactive clients use the same runtime recovery path. MCP now
+  connects to an existing shared server instead of owning embedded lifecycle.
 - Reconnect now re-runs the original `init` request before reporting
   `Reconnected`.
 - `App` drains client connection events, shows `Reconnecting...` /
