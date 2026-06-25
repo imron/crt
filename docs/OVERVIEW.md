@@ -612,11 +612,13 @@ as a convenience for starting already scoped to the current working tree.
 | `get_file_diff`         | Diff content for a specific file (base..HEAD).   |
 | `search_codebase`       | Regex search across the worktree or changed files. |
 | `find_definition`       | Best-effort symbol definition lookup.            |
-| `list_review_summary`   | High-level overview: files changed and review progress. |
-
-Comment tools (`list_review_comments`, `get_comment_detail`,
-`resolve_comment`, `unresolve_comment`) remain part of the MCP roadmap and
-should be added when the corresponding server comment methods are implemented.
+| `list_review_comments`  | Review comments in the selected scope, filtered by file/resolution status. |
+| `get_comment_detail`    | Full context for a specific review comment.       |
+| `resolve_comment`       | Mark a review comment resolved.                   |
+| `unresolve_comment`     | Mark a review comment unresolved.                 |
+| `mark_file_reviewed`    | Mark a changed file reviewed.                     |
+| `unmark_file_reviewed`  | Clear a changed file's reviewed state.            |
+| `list_review_summary`   | High-level overview: files changed, review progress, and comment counts. |
 
 ## File Markers
 
