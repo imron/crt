@@ -284,6 +284,141 @@ async fn test_multiple_clients() {
 }
 
 #[tokio::test]
+async fn test_comment_lifecycle() {
+    let server = TestServer::start().await;
+    let mut conn = server.connect_and_init().await;
+
+    let create = conn
+        .request(
+            "create_comment",
+            serde_json::json!({
+                "file_path": "file.txt",
+                "line_start": 1,
+                "line_end": 1,
+                "char_start": null,
+                "char_end": null,
+                "anchor_text": "hello",
+                "context_before": "",
+                "context_after": "",
+                "body": "check this",
+            }),
+        )
+        .await;
+    assert!(create["error"].is_null(), "create failed: {create}");
+    let comment = &create["result"]["comment"];
+    let id = comment["id"].as_i64().unwrap();
+    assert_eq!(comment["file_path"], "file.txt");
+    assert_eq!(comment["body"], "check this");
+    assert_eq!(comment["resolved"], false);
+    assert_eq!(comment["anchor_status"], "anchored");
+
+    let list = conn
+        .request(
+            "list_comments",
+            serde_json::json!({
+                "file_path": "file.txt",
+                "include_resolved": false,
+            }),
+        )
+        .await;
+    assert!(list["error"].is_null(), "list failed: {list}");
+    let comments = list["result"]["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0]["id"], id);
+
+    let update = conn
+        .request(
+            "update_comment",
+            serde_json::json!({
+                "id": id,
+                "body": "updated body",
+            }),
+        )
+        .await;
+    assert!(update["error"].is_null(), "update failed: {update}");
+    assert_eq!(update["result"]["comment"]["body"], "updated body");
+
+    let detail = conn
+        .request("get_comment", serde_json::json!({ "id": id }))
+        .await;
+    assert!(detail["error"].is_null(), "get failed: {detail}");
+    assert_eq!(detail["result"]["comment"]["context_before"], "");
+    assert_eq!(detail["result"]["comment"]["context_after"], "");
+
+    let resolved = conn
+        .request("resolve_comment", serde_json::json!({ "id": id }))
+        .await;
+    assert!(resolved["error"].is_null(), "resolve failed: {resolved}");
+    assert_eq!(resolved["result"]["comment"]["resolved"], true);
+
+    let unresolved_only = conn
+        .request(
+            "list_comments",
+            serde_json::json!({
+                "file_path": "file.txt",
+                "include_resolved": false,
+            }),
+        )
+        .await;
+    assert!(
+        unresolved_only["error"].is_null(),
+        "list unresolved failed: {unresolved_only}"
+    );
+    assert_eq!(
+        unresolved_only["result"]["comments"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+
+    let all = conn
+        .request(
+            "list_comments",
+            serde_json::json!({
+                "file_path": "file.txt",
+                "include_resolved": true,
+            }),
+        )
+        .await;
+    assert!(all["error"].is_null(), "list all failed: {all}");
+    assert_eq!(all["result"]["comments"].as_array().unwrap().len(), 1);
+
+    let unresolved = conn
+        .request("unresolve_comment", serde_json::json!({ "id": id }))
+        .await;
+    assert!(
+        unresolved["error"].is_null(),
+        "unresolve failed: {unresolved}"
+    );
+    assert_eq!(unresolved["result"]["comment"]["resolved"], false);
+
+    let deleted = conn
+        .request("delete_comment", serde_json::json!({ "id": id }))
+        .await;
+    assert!(deleted["error"].is_null(), "delete failed: {deleted}");
+    assert_eq!(deleted["result"]["deleted"], true);
+
+    let after_delete = conn
+        .request(
+            "list_comments",
+            serde_json::json!({
+                "file_path": "file.txt",
+                "include_resolved": true,
+            }),
+        )
+        .await;
+    assert!(
+        after_delete["error"].is_null(),
+        "list after delete failed: {after_delete}"
+    );
+    assert_eq!(
+        after_delete["result"]["comments"].as_array().unwrap().len(),
+        0
+    );
+}
+
+#[tokio::test]
 async fn test_explicit_commit_base_does_not_migrate_reviews() {
     let server = TestServer::start().await;
     let head_ref = git_output(&server.repo_dir, &["branch", "--show-current"]);

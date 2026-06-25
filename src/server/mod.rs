@@ -514,14 +514,42 @@ async fn dispatch(
             let db = conn_db.as_ref().unwrap();
             api::handle_reset_reviews(id, ctx, db, &state.notify_tx).await
         }
+        Method::CreateComment => {
+            let ctx = conn_ctx.as_ref().unwrap();
+            let db = conn_db.as_ref().unwrap();
+            api::handle_create_comment(&request.params, id, ctx, db, &state.notify_tx).await
+        }
+        Method::ListComments => {
+            let ctx = conn_ctx.as_ref().unwrap();
+            let db = conn_db.as_ref().unwrap();
+            api::handle_list_comments(&request.params, id, ctx, db).await
+        }
+        Method::GetComment => {
+            let ctx = conn_ctx.as_ref().unwrap();
+            let db = conn_db.as_ref().unwrap();
+            api::handle_get_comment(&request.params, id, ctx, db).await
+        }
+        Method::UpdateComment => {
+            let ctx = conn_ctx.as_ref().unwrap();
+            let db = conn_db.as_ref().unwrap();
+            api::handle_update_comment(&request.params, id, ctx, db, &state.notify_tx).await
+        }
+        Method::ResolveComment => {
+            let ctx = conn_ctx.as_ref().unwrap();
+            let db = conn_db.as_ref().unwrap();
+            api::handle_resolve_comment(&request.params, id, ctx, db, &state.notify_tx).await
+        }
+        Method::UnresolveComment => {
+            let ctx = conn_ctx.as_ref().unwrap();
+            let db = conn_db.as_ref().unwrap();
+            api::handle_unresolve_comment(&request.params, id, ctx, db, &state.notify_tx).await
+        }
+        Method::DeleteComment => {
+            let ctx = conn_ctx.as_ref().unwrap();
+            let db = conn_db.as_ref().unwrap();
+            api::handle_delete_comment(&request.params, id, ctx, db, &state.notify_tx).await
+        }
         Method::GetFileContent
-        | Method::CreateComment
-        | Method::ListComments
-        | Method::GetComment
-        | Method::UpdateComment
-        | Method::ResolveComment
-        | Method::UnresolveComment
-        | Method::DeleteComment
         | Method::ApplyComments
         | Method::ClearComments
         | Method::TrackRepo => JsonRpcResponse::error(

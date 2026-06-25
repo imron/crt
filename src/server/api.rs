@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 use tokio::sync::broadcast;
 
 use super::{ConnectionContext, ServerState};
-use crate::db::Database;
+use crate::db::{Database, NewComment, StoredComment};
 use crate::git;
 use crate::protocol::{
     ERR_INTERNAL, ERR_INVALID_PARAMS, JsonRpcResponse, Notification, NotificationKind,
@@ -667,8 +667,401 @@ pub async fn handle_reset_reviews(
 }
 
 // ---------------------------------------------------------------------------
+// comments
+// ---------------------------------------------------------------------------
+
+pub async fn handle_create_comment(
+    params: &serde_json::Value,
+    id: &serde_json::Value,
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    notify_tx: &broadcast::Sender<Notification>,
+) -> JsonRpcResponse {
+    let p: review_types::CreateCommentParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INVALID_PARAMS,
+                format!("Invalid params: {e}"),
+            );
+        }
+    };
+
+    let merge_base = ctx.merge_base.to_string();
+    let head_ref = ctx.head_scope_key();
+    let new = NewComment {
+        merge_base: merge_base.clone(),
+        head_ref: head_ref.clone(),
+        file_path: p.file_path,
+        line_start: p.line_start,
+        line_end: p.line_end,
+        char_start: p.char_start,
+        char_end: p.char_end,
+        anchor_text: p.anchor_text,
+        context_before: p.context_before,
+        context_after: p.context_after,
+        body: p.body,
+    };
+
+    let stored = {
+        let db_guard = db.lock().await;
+        match db_guard.create_comment(&new) {
+            Ok(comment) => comment,
+            Err(e) => {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INTERNAL,
+                    format!("Failed to create comment: {e:#}"),
+                );
+            }
+        }
+    };
+
+    let _ = notify_tx.send(Notification {
+        base_ref: merge_base,
+        head_ref,
+        kind: NotificationKind::CommentChanged {
+            comment_id: stored.id,
+        },
+    });
+
+    comment_response(id, stored)
+}
+
+pub async fn handle_list_comments(
+    params: &serde_json::Value,
+    id: &serde_json::Value,
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+) -> JsonRpcResponse {
+    let p: review_types::ListCommentsParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INVALID_PARAMS,
+                format!("Invalid params: {e}"),
+            );
+        }
+    };
+
+    let head_ref = ctx.head_scope_key();
+    let comments = {
+        let db_guard = db.lock().await;
+        match db_guard.list_comments(
+            ctx.merge_base_key(),
+            &head_ref,
+            p.file_path.as_deref(),
+            p.include_resolved,
+        ) {
+            Ok(comments) => comments,
+            Err(e) => {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INTERNAL,
+                    format!("Failed to list comments: {e:#}"),
+                );
+            }
+        }
+    };
+
+    let result = review_types::ListCommentsResult {
+        comments: comments.into_iter().map(comment_from_stored).collect(),
+    };
+
+    json_response(id, result)
+}
+
+pub async fn handle_get_comment(
+    params: &serde_json::Value,
+    id: &serde_json::Value,
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+) -> JsonRpcResponse {
+    let p: review_types::GetCommentParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INVALID_PARAMS,
+                format!("Invalid params: {e}"),
+            );
+        }
+    };
+
+    let Some(stored) = load_comment_in_scope(ctx, db, p.id).await else {
+        return JsonRpcResponse::error(
+            id.clone(),
+            ERR_INVALID_PARAMS,
+            format!("Comment {} was not found in the current review scope", p.id),
+        );
+    };
+
+    comment_response(id, stored)
+}
+
+pub async fn handle_update_comment(
+    params: &serde_json::Value,
+    id: &serde_json::Value,
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    notify_tx: &broadcast::Sender<Notification>,
+) -> JsonRpcResponse {
+    let p: review_types::UpdateCommentParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INVALID_PARAMS,
+                format!("Invalid params: {e}"),
+            );
+        }
+    };
+
+    if load_comment_in_scope(ctx, db, p.id).await.is_none() {
+        return JsonRpcResponse::error(
+            id.clone(),
+            ERR_INVALID_PARAMS,
+            format!("Comment {} was not found in the current review scope", p.id),
+        );
+    }
+
+    {
+        let db_guard = db.lock().await;
+        match db_guard.update_comment(p.id, &p.body) {
+            Ok(true) => {}
+            Ok(false) => {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INVALID_PARAMS,
+                    format!("Comment {} was not found", p.id),
+                );
+            }
+            Err(e) => {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INTERNAL,
+                    format!("Failed to update comment: {e:#}"),
+                );
+            }
+        }
+    }
+
+    notify_comment_changed(ctx, notify_tx, p.id);
+    let Some(stored) = load_comment_in_scope(ctx, db, p.id).await else {
+        return JsonRpcResponse::error(
+            id.clone(),
+            ERR_INTERNAL,
+            format!("Comment {} disappeared after update", p.id),
+        );
+    };
+
+    comment_response(id, stored)
+}
+
+pub async fn handle_resolve_comment(
+    params: &serde_json::Value,
+    id: &serde_json::Value,
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    notify_tx: &broadcast::Sender<Notification>,
+) -> JsonRpcResponse {
+    let p: review_types::ResolveCommentParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INVALID_PARAMS,
+                format!("Invalid params: {e}"),
+            );
+        }
+    };
+
+    update_comment_resolved(id, ctx, db, notify_tx, p.id, true).await
+}
+
+pub async fn handle_unresolve_comment(
+    params: &serde_json::Value,
+    id: &serde_json::Value,
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    notify_tx: &broadcast::Sender<Notification>,
+) -> JsonRpcResponse {
+    let p: review_types::UnresolveCommentParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INVALID_PARAMS,
+                format!("Invalid params: {e}"),
+            );
+        }
+    };
+
+    update_comment_resolved(id, ctx, db, notify_tx, p.id, false).await
+}
+
+pub async fn handle_delete_comment(
+    params: &serde_json::Value,
+    id: &serde_json::Value,
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    notify_tx: &broadcast::Sender<Notification>,
+) -> JsonRpcResponse {
+    let p: review_types::DeleteCommentParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INVALID_PARAMS,
+                format!("Invalid params: {e}"),
+            );
+        }
+    };
+
+    if load_comment_in_scope(ctx, db, p.id).await.is_none() {
+        return JsonRpcResponse::error(
+            id.clone(),
+            ERR_INVALID_PARAMS,
+            format!("Comment {} was not found in the current review scope", p.id),
+        );
+    }
+
+    let deleted = {
+        let db_guard = db.lock().await;
+        match db_guard.delete_comment(p.id) {
+            Ok(deleted) => deleted,
+            Err(e) => {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INTERNAL,
+                    format!("Failed to delete comment: {e:#}"),
+                );
+            }
+        }
+    };
+
+    notify_comment_changed(ctx, notify_tx, p.id);
+    json_response(id, review_types::DeleteCommentResult { deleted })
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn json_response<T: serde::Serialize>(id: &serde_json::Value, result: T) -> JsonRpcResponse {
+    match serde_json::to_value(result) {
+        Ok(v) => JsonRpcResponse::success(id.clone(), v),
+        Err(e) => JsonRpcResponse::error(
+            id.clone(),
+            ERR_INTERNAL,
+            format!("Serialization error: {e}"),
+        ),
+    }
+}
+
+fn comment_response(id: &serde_json::Value, stored: StoredComment) -> JsonRpcResponse {
+    json_response(
+        id,
+        review_types::CommentResult {
+            comment: comment_from_stored(stored),
+        },
+    )
+}
+
+fn comment_from_stored(stored: StoredComment) -> review_types::Comment {
+    review_types::Comment::from_stored(&stored, review_types::AnchorStatus::Anchored)
+}
+
+async fn load_comment_in_scope(
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    comment_id: i64,
+) -> Option<StoredComment> {
+    let stored = {
+        let db_guard = db.lock().await;
+        match db_guard.get_comment(comment_id) {
+            Ok(comment) => comment,
+            Err(e) => {
+                eprintln!("Failed to load comment {comment_id}: {e:#}");
+                return None;
+            }
+        }
+    }?;
+
+    if stored.merge_base == ctx.merge_base_key() && stored.head_ref == ctx.head_scope_key() {
+        Some(stored)
+    } else {
+        None
+    }
+}
+
+async fn update_comment_resolved(
+    id: &serde_json::Value,
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    notify_tx: &broadcast::Sender<Notification>,
+    comment_id: i64,
+    resolved: bool,
+) -> JsonRpcResponse {
+    if load_comment_in_scope(ctx, db, comment_id).await.is_none() {
+        return JsonRpcResponse::error(
+            id.clone(),
+            ERR_INVALID_PARAMS,
+            format!("Comment {comment_id} was not found in the current review scope"),
+        );
+    }
+
+    {
+        let db_guard = db.lock().await;
+        let result = if resolved {
+            db_guard.resolve_comment(comment_id)
+        } else {
+            db_guard.unresolve_comment(comment_id)
+        };
+        match result {
+            Ok(true) => {}
+            Ok(false) => {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INVALID_PARAMS,
+                    format!("Comment {comment_id} was not found"),
+                );
+            }
+            Err(e) => {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INTERNAL,
+                    format!("Failed to update comment: {e:#}"),
+                );
+            }
+        }
+    }
+
+    notify_comment_changed(ctx, notify_tx, comment_id);
+    let Some(stored) = load_comment_in_scope(ctx, db, comment_id).await else {
+        return JsonRpcResponse::error(
+            id.clone(),
+            ERR_INTERNAL,
+            format!("Comment {comment_id} disappeared after update"),
+        );
+    };
+
+    comment_response(id, stored)
+}
+
+fn notify_comment_changed(
+    ctx: &ConnectionContext,
+    notify_tx: &broadcast::Sender<Notification>,
+    comment_id: i64,
+) {
+    let _ = notify_tx.send(Notification {
+        base_ref: ctx.merge_base.to_string(),
+        head_ref: ctx.head_scope_key(),
+        kind: NotificationKind::CommentChanged { comment_id },
+    });
+}
 
 fn check_gitignore(repo_root: &Path) {
     let gitignore_path = repo_root.join(".gitignore");
