@@ -8,7 +8,7 @@
 
 ## Depends On
 
-- Stage 19 decisions (`19-shared-server-failover-lifecycle.md`)
+- Stage 19 decisions (`../completed/19-shared-server-failover-lifecycle.md`)
 
 ## Goal
 

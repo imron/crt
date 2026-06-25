@@ -1,6 +1,6 @@
 # Stage 19: Shared Server Failover and Lifecycle
 
-## Status: Backlog
+## Status: Completed / Superseded By Stages 24-26
 
 ## Goal
 
@@ -15,13 +15,13 @@ server behavior is provided explicitly by `crt server`.
 The architecture is intentionally server-based: UIs are thin clients and
 the server is the single source of truth.
 
-Current behavior is close but incomplete:
+This stage captured the architecture target for shared server ownership,
+runtime failover, and process-coupled embedded lifecycle. Implementation was
+completed through the more specific follow-on plans:
 
-- Startup supports connect-or-start embedded server.
-- Embedded server ownership is tied to the client that started it.
-- Full runtime failover/re-election is documented but not fully enforced.
-
-This stage makes runtime behavior match the intended model.
+- Stage 24: client reconnect and bind-race failover supervisor.
+- Stage 25: embedded lifecycle alignment and MCP startup alignment.
+- Stage 26: remaining hardening and integration-test coverage.
 
 ## Target Behavior
 
@@ -39,7 +39,7 @@ This stage makes runtime behavior match the intended model.
 ## Scope
 
 - In scope: UI-launched embedded server lifecycle and failover.
-- In scope: TUI and future GUI using identical recovery semantics.
+- In scope: TUI, MCP, and future GUI using identical recovery semantics.
 - Out of scope: dedicated daemon/background service mode beyond existing
   `crt server` command UX.
 
@@ -114,15 +114,19 @@ This stage makes runtime behavior match the intended model.
 
 ## Acceptance Criteria
 
-- [ ] `crt <base>` starts without pre-running `crt server`.
-- [ ] Two `crt <base>` sessions share one server and see live updates.
-- [ ] Killing the active server causes clients to recover automatically.
-- [ ] During failover, exactly one client wins `bind()` and others reconnect.
-- [ ] Closing/killing the hosting UI stops embedded server.
-- [ ] If peers are connected when host exits, one peer takes over and others
-      reconnect.
-- [ ] `crt server` remains stable and unaffected by embedded auto-shutdown.
-- [ ] Multi-repo behavior remains intact under one shared server process.
+- [x] `crt <base>` starts without pre-running `crt server`.
+- [x] Runtime reconnect/failover is implemented in the shared client.
+- [x] During failover, one client wins `bind()` and others reconnect.
+- [x] Closing/killing the hosting UI stops its embedded server.
+- [x] If peers are connected when host exits, peers recover through reconnect
+      and bind-race failover.
+- [x] `crt server` remains explicit persistent mode and is unaffected by
+      embedded auto-shutdown.
+- [x] `crt mcp-server` uses the same connect-or-start lifecycle semantics.
+- [x] Multi-repo/session discovery is supported through `list_repos` /
+      `list_review_sessions`.
+- [ ] Full multi-client, multi-repo, peer-takeover integration coverage is
+      handled by Stage 26.
 
 ## Test Plan
 
@@ -142,3 +146,18 @@ This stage makes runtime behavior match the intended model.
 - Failover surfaces transient UI status (`Reconnecting...` then
   `Reconnected`).
 - Recovery retries are unbounded while the UI process remains active.
+
+## Completed Notes
+
+- Stage 24 added shared reconnect supervision in `src/client.rs`, including
+  transport-loss classification, reconnect attempts, embedded startup,
+  bind-race behavior, re-init, snapshot reload hooks, and connection-state
+  events.
+- Stage 25 aligned embedded lifecycle so `crt`, `crt mcp-server`, and future
+  clients share the same connect-or-start behavior.
+- Persistent `crt server` remains an explicit user-started server mode.
+- Active review sessions are tracked server-side and exposed through
+  `list_repos`, allowing MCP to start unscoped and select from connected
+  review sessions.
+- Remaining work is test depth, not architecture definition. That belongs in
+  Stage 26.
