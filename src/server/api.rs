@@ -297,7 +297,9 @@ async fn try_migrate_reviews(
 
     // 2. Pick the most recent old scope (first in the list, ordered by
     //    most recent reviewed_at).
-    let (old_merge_base, old_reviews) = old_scopes.into_iter().next().unwrap();
+    let Some((old_merge_base, old_reviews)) = old_scopes.into_iter().next() else {
+        return Ok(None);
+    };
 
     // 3. Run the migration logic on a blocking thread (git operations).
     let worktree = ctx.worktree.clone();
