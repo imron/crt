@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use crt::client::{Client, ClientEvent, ReconnectOptions};
 use crt::core::ConnectionState;
+use crt::protocol::NotificationKind;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::task::JoinHandle;
@@ -35,8 +36,16 @@ impl TestRepo {
     }
 
     async fn start_fake_server(&self) -> JoinHandle<()> {
+        self.start_fake_server_with_init_notification(None).await
+    }
+
+    async fn start_fake_server_with_init_notification(
+        &self,
+        notification_path: Option<&str>,
+    ) -> JoinHandle<()> {
         let socket_path = self.socket_path.clone();
         let repo_dir = self.repo_dir.clone();
+        let notification_path = notification_path.map(str::to_string);
         let handle = tokio::spawn(async move {
             let _ = std::fs::remove_file(&socket_path);
             let listener = UnixListener::bind(&socket_path).unwrap();
@@ -62,6 +71,7 @@ impl TestRepo {
                     "list_changed_files" => serde_json::json!({ "files": [] }),
                     method => panic!("unexpected fake server method: {method}"),
                 };
+                let should_notify_after_init = request["method"] == "init";
                 let response = serde_json::json!({
                     "jsonrpc": "2.0",
                     "result": result,
@@ -74,6 +84,28 @@ impl TestRepo {
                     .write_all(response_line.as_bytes())
                     .await
                     .unwrap();
+                if should_notify_after_init && let Some(file_path) = notification_path.as_deref() {
+                    let notification = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "method": "notification",
+                        "params": {
+                            "base_ref": "HEAD",
+                            "head_ref": "HEAD",
+                            "kind": {
+                                "ReviewChanged": {
+                                    "file_path": file_path,
+                                },
+                            },
+                        },
+                    });
+                    let mut notification_line = serde_json::to_string(&notification).unwrap();
+                    notification_line.push('\n');
+                    stream
+                        .get_mut()
+                        .write_all(notification_line.as_bytes())
+                        .await
+                        .unwrap();
+                }
                 stream.get_mut().flush().await.unwrap();
             }
         });
@@ -148,4 +180,67 @@ async fn reconnects_after_server_death_and_reinitializes() {
         vec![ClientEvent::ConnectionState(ConnectionState::Reconnected)]
     );
     assert!(client.list_changed_files().await.unwrap().files.is_empty());
+}
+
+#[tokio::test]
+async fn reconnect_preserves_notification_delivery() {
+    let repo = TestRepo::new();
+    let server = repo
+        .start_fake_server_with_init_notification(Some("before.txt"))
+        .await;
+    let client = Client::connect_or_start_with_options(
+        &repo.socket_path,
+        false,
+        ReconnectOptions {
+            jitter: Duration::from_millis(0)..=Duration::from_millis(0),
+            embedded_startup_delay: Duration::from_millis(10),
+        },
+    )
+    .await
+    .unwrap();
+
+    client
+        .init(&repo.repo_dir.to_string_lossy(), "HEAD")
+        .await
+        .unwrap();
+    assert_notification_for_path(&client, "before.txt").await;
+
+    server.abort();
+    let _ = server.await;
+    let failed = client.list_changed_files().await.unwrap_err();
+    assert!(failed.to_string().contains("Transient transport error"));
+
+    let server = repo
+        .start_fake_server_with_init_notification(Some("after.txt"))
+        .await;
+
+    let mut reconnected = false;
+    for _ in 0..20 {
+        if client.recover_if_disconnected().await.unwrap() == Some(ConnectionState::Reconnected) {
+            reconnected = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert!(reconnected, "client did not reconnect");
+    assert_notification_for_path(&client, "after.txt").await;
+    server.abort();
+}
+
+async fn assert_notification_for_path(client: &Client, expected_path: &str) {
+    let mut received = Vec::new();
+    for _ in 0..20 {
+        received.extend(client.drain_notifications().await);
+        if received.iter().any(|notification| {
+            matches!(
+                &notification.kind,
+                NotificationKind::ReviewChanged { file_path } if file_path == expected_path
+            )
+        }) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("did not receive notification for {expected_path}: {received:?}");
 }
