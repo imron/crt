@@ -21,30 +21,39 @@ Users and agents need to see all outstanding (and historical) feedback, move bet
 
 ## Requirements
 
-1. A panel (key `3` or command) can be opened that shows comments.
+1. `Shift-C` toggles a comments panel at the bottom of the diff view.
 
-2. Unresolved comments are shown fully; resolved comments are shown collapsed (header + preview). Enter on a collapsed one expands it.
+2. When the panel is open, inline comment blocks are hidden (gutter markers remain visible).
 
-3. The panel allows filtering by file and basic navigation to the comment's location in the diff.
+3. Unresolved comments are shown fully; resolved comments are shown collapsed (header + preview). Enter on a collapsed one expands it.
 
-4. From the panel or when a comment is the current focus, the user can:
+4. The panel allows filtering by file and basic navigation to the comment's location in the diff.
+
+5. When the cursor is on a line with a comment marker, the corresponding comment(s) are shown (fully expanded) in the panel.
+
+6. From the panel or when a comment is the current focus, the user can:
    - resolve / unresolve
    - edit (re-open composer with existing body)
    - delete (with confirmation)
 
-5. { moves to previous comment in the current file's diff; } moves to the next.
+7. { moves to previous comment in the current file's diff; } moves to the next.
 
-6. Changes made in the panel or via lifecycle keys are sent to the server and reflected (via live update or refresh).
+8. Changes made in the panel or via lifecycle keys are sent to the server and reflected (via live update or refresh).
 
-7. The panel and nav work for both unresolved and resolved comments.
+9. The panel and nav work for both unresolved and resolved comments.
+
+10. When the panel is open, pressing `3` moves focus to the panel.
 
 ## Acceptance Criteria
 
-- [ ] `3` (or equivalent) opens/closes the comments panel.
+- [ ] `Shift-C` toggles the comments panel at the bottom of the diff view.
+- [ ] When panel is open, inline blocks are hidden (gutter markers remain).
+- [ ] Cursor on a line with a comment marker shows the comment in the panel.
 - [ ] Resolved comments appear collapsed; Enter expands them.
 - [ ] Navigation from panel jumps the cursor to the comment location.
 - [ ] Resolve, unresolve, edit, and delete work and persist.
 - [ ] { / } cycle through comments in the current file.
+- [ ] `3` moves focus to the panel when it is open.
 - [ ] Live updates from other clients appear in the panel.
 
 ## Implementation Notes

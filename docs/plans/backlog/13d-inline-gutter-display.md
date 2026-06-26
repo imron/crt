@@ -9,27 +9,60 @@
 ## Depends On
 
 - 13c (real AnchorStatus values)
+- Plan 17 (Visual Line Abstraction) – `LineView` / `LineType` model
 - Basic comment data in the app model (minimal load path)
 
 ## Goal
 
-Store and project loaded comments into the app model, make the existing `c` toggle actually control visibility, render unresolved comment blocks inline below the lines they are attached to, and show gutter markers (● unresolved, ○ resolved).
+Store and project loaded comments into the app model, make the existing
+`c` toggle actually control visibility, render unresolved comment blocks
+inline below the lines they are attached to, and show gutter markers
+(● unresolved, ○ resolved).
 
 ## Why
 
-The stage 13 spec requires visual feedback for comments directly in the diff view (inline blocks when visible, gutter indicators always useful, toggle via `c`).
+The stage 13 spec requires visual feedback for comments directly in the
+diff view (inline blocks when visible, gutter indicators always useful,
+toggle via `c`).
 
 ## Requirements
 
-1. Comments for the current scope (or at least the selected file) are available in AppState / AppModel.
+1. Comments for the current scope (or at least the selected file) are
+   available in AppState / AppModel.
 
-2. The `c` / "nocomments" command actually toggles a show_comments flag that affects rendering.
+2. The `c` / "nocomments" command actually toggles a show_comments flag
+   that affects rendering.
 
-3. When show_comments is true, unresolved comments appear as visually distinct inline blocks below their attachment lines in both inline and side-by-side views.
+3. When show_comments is true, unresolved comments appear as visually
+   distinct inline blocks below their attachment lines in both inline
+   and side-by-side views.
 
-4. Lines that have comments show a gutter marker (● or ○) even when the inline block is not currently on screen.
+4. The gutter marker column is always visible when any comments exist on
+   the file, regardless of the `show_comments` state. Markers use the
+   following style:
+   - Single-line comment: `●` (or `○` if resolved)
+   - Multiline comment: `●` at the top, `┃` for continuation lines,
+     `●` at the bottom (same pattern for resolved comments using `○`)
+   - Nested comments inside a block are indicated by additional
+     `●` (or `○`) markers
 
-5. Orphaned and resolved comments are rendered appropriately (resolved may be hidden from inline per spec).
+   Example (multiline comment with a nested single-line comment on the
+   second line):
+
+   ```
+   ●  fn foo() {
+   ●      bar();
+   ┃  }
+   ●
+   ```
+
+   The same gutter pattern can represent multiple comment structures
+   (e.g. outer block + inner single comment, multiple overlapping blocks,
+   etc.). The renderer does not attempt to disambiguate; the actual
+   structure is stored in the comment data.
+
+5. Orphaned and resolved comments are rendered appropriately (resolved
+   may be hidden from inline per spec).
 
 6. The rendering reuses existing diff line / hunk infrastructure.
 
@@ -45,8 +78,10 @@ The stage 13 spec requires visual feedback for comments directly in the diff vie
 
 ## Implementation Notes
 
-- Decide exact block style and placement (below the line range, using borders etc.) while matching the spirit of the example in the spec.
-- Gutter column decision (always show marker, or only when comments exist) can be made here.
+- Decide exact block style and placement (below the line range, using
+  borders etc.) while matching the spirit of the example in the spec.
+- Gutter column decision (always show marker, or only when comments exist)
+  can be made here.
 - Keep display concerns separate from creation and panel (other slices).
 
 ## Depends On / Enables
