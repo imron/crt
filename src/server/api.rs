@@ -158,44 +158,65 @@ pub async fn handle_list_repos(
 // list_changed_files
 // ---------------------------------------------------------------------------
 
+async fn load_reviews_with_migration(
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    notify_tx: &broadcast::Sender<Notification>,
+) -> Result<std::collections::HashMap<String, crate::db::StoredReview>, String> {
+    let head_ref = ctx.head_scope_key();
+
+    let reviews = {
+        let db_guard = db.lock().await;
+        db_guard
+            .load_reviews(ctx.merge_base_key(), &head_ref)
+            .map_err(|e| format!("Failed to load reviews: {e:#}"))?
+    };
+
+    if !reviews.is_empty() {
+        return Ok(reviews);
+    }
+
+    match try_migrate_reviews(ctx, db, notify_tx).await {
+        Ok(Some(migrated)) => Ok(migrated),
+        Ok(None) => Ok(reviews),
+        Err(e) => {
+            eprintln!("Warning: rebase migration failed: {e:#}");
+            Ok(reviews)
+        }
+    }
+}
+
+fn summarize_diff(diff: &review_types::DiffContent) -> review_types::DiffSummary {
+    let mut additions = 0;
+    let mut deletions = 0;
+    for hunk in &diff.hunks {
+        for line in &hunk.lines {
+            match line.kind {
+                review_types::LineKind::Addition => additions += 1,
+                review_types::LineKind::Deletion => deletions += 1,
+                review_types::LineKind::Context => {}
+            }
+        }
+    }
+
+    review_types::DiffSummary {
+        hunks: diff.hunks.len(),
+        additions,
+        deletions,
+        is_binary: diff.is_binary,
+        diff_hash: diff.diff_hash.clone(),
+    }
+}
+
 pub async fn handle_list_changed_files(
     id: &serde_json::Value,
     ctx: &ConnectionContext,
     db: &Arc<Mutex<Database>>,
     notify_tx: &broadcast::Sender<Notification>,
 ) -> JsonRpcResponse {
-    let head_ref = ctx.head_scope_key();
-
-    // Load stored reviews from DB (async lock, then sync DB call).
-    let reviews = {
-        let db_guard = db.lock().await;
-        match db_guard.load_reviews(ctx.merge_base_key(), &head_ref) {
-            Ok(r) => r,
-            Err(e) => {
-                return JsonRpcResponse::error(
-                    id.clone(),
-                    ERR_INTERNAL,
-                    format!("Failed to load reviews: {e:#}"),
-                );
-            }
-        }
-    };
-
-    // --- Rebase migration ---
-    // If no reviews exist for the current scope, check whether reviews
-    // exist under the same head_ref but a different (old) merge_base.
-    // If so, migrate them to the new scope.
-    let reviews = if reviews.is_empty() {
-        match try_migrate_reviews(ctx, db, notify_tx).await {
-            Ok(Some(migrated)) => migrated,
-            Ok(None) => reviews,
-            Err(e) => {
-                eprintln!("Warning: rebase migration failed: {e:#}");
-                reviews
-            }
-        }
-    } else {
-        reviews
+    let reviews = match load_reviews_with_migration(ctx, db, notify_tx).await {
+        Ok(reviews) => reviews,
+        Err(e) => return JsonRpcResponse::error(id.clone(), ERR_INTERNAL, e),
     };
 
     let worktree = ctx.worktree.clone();
@@ -240,6 +261,100 @@ pub async fn handle_list_changed_files(
         }
 
         Ok(review_types::ListChangedFilesResult { files })
+    })
+    .await;
+
+    match git_result {
+        Ok(Ok(list)) => match serde_json::to_value(list) {
+            Ok(v) => JsonRpcResponse::success(id.clone(), v),
+            Err(e) => JsonRpcResponse::error(
+                id.clone(),
+                ERR_INTERNAL,
+                format!("Serialization error: {e}"),
+            ),
+        },
+        Ok(Err(e)) => JsonRpcResponse::error(id.clone(), ERR_INTERNAL, format!("{e:#}")),
+        Err(e) => {
+            JsonRpcResponse::error(id.clone(), ERR_INTERNAL, format!("Git task panicked: {e}"))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// list_file_statuses
+// ---------------------------------------------------------------------------
+
+pub async fn handle_list_file_statuses(
+    id: &serde_json::Value,
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    notify_tx: &broadcast::Sender<Notification>,
+) -> JsonRpcResponse {
+    let reviews = match load_reviews_with_migration(ctx, db, notify_tx).await {
+        Ok(reviews) => reviews,
+        Err(e) => return JsonRpcResponse::error(id.clone(), ERR_INTERNAL, e),
+    };
+
+    let worktree = ctx.worktree.clone();
+    let merge_base = ctx.merge_base.to_string();
+
+    let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let repo = git::Repo::open(&worktree)?;
+        let changes = repo.list_changed_files_workdir(&merge_base)?;
+
+        let mut files = Vec::new();
+        for change in changes {
+            let diff = repo.diff_file_workdir(&merge_base, &change.path)?;
+            let status = match reviews.get(&change.path) {
+                None => review_types::ReviewStatus::Unreviewed,
+                Some(review) if review.diff_hash == diff.diff_hash => {
+                    review_types::ReviewStatus::Reviewed {
+                        at: review.reviewed_at.clone(),
+                        reviewed_commit: if review.reviewed_commit.is_empty() {
+                            None
+                        } else {
+                            Some(review.reviewed_commit.clone())
+                        },
+                    }
+                }
+                Some(review) => review_types::ReviewStatus::Changed {
+                    at: review.reviewed_at.clone(),
+                    reviewed_commit: if review.reviewed_commit.is_empty() {
+                        None
+                    } else {
+                        Some(review.reviewed_commit.clone())
+                    },
+                },
+            };
+
+            let diff = summarize_diff(&diff);
+            files.push(review_types::FileStatusEntry {
+                change,
+                status,
+                diff,
+            });
+        }
+
+        let reviewed_files = files
+            .iter()
+            .filter(|entry| matches!(entry.status, review_types::ReviewStatus::Reviewed { .. }))
+            .count();
+        let unreviewed_files = files
+            .iter()
+            .filter(|entry| matches!(entry.status, review_types::ReviewStatus::Unreviewed))
+            .count();
+        let changed_files = files
+            .iter()
+            .filter(|entry| matches!(entry.status, review_types::ReviewStatus::Changed { .. }))
+            .count();
+
+        Ok(review_types::ListFileStatusesResult {
+            total_files: files.len(),
+            reviewed_files,
+            unreviewed_files,
+            changed_files,
+            files,
+        })
     })
     .await;
 

@@ -321,6 +321,10 @@ impl Client {
         self.call("list_changed_files", serde_json::json!({})).await
     }
 
+    pub async fn list_file_statuses(&self) -> Result<review_types::ListFileStatusesResult> {
+        self.call("list_file_statuses", serde_json::json!({})).await
+    }
+
     pub async fn get_file_diff(&self, file_path: &str) -> Result<review_types::GetFileDiffResult> {
         self.call(
             "get_file_diff",

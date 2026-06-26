@@ -201,6 +201,23 @@ impl CrtMcp {
         }
     }
 
+    #[tool(
+        description = "List changed files with review status and compact diff stats, without full diff hunks. Use this to find files still needing review."
+    )]
+    async fn list_file_statuses(&self, Parameters(_params): Parameters<EmptyParams>) -> String {
+        if let Err(e) = self.require_selected().await {
+            return format!("Error: {e:#}");
+        }
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return format!("Error listing file statuses: {e:#}"),
+        };
+        match client.list_file_statuses().await {
+            Ok(result) => to_json(&result),
+            Err(e) => format!("Error listing file statuses: {e:#}"),
+        }
+    }
+
     #[tool(description = "Return the diff for one changed file in the selected review scope.")]
     async fn get_file_diff(&self, Parameters(params): Parameters<GetFileDiffParams>) -> String {
         if let Err(e) = self.require_selected().await {
@@ -378,7 +395,7 @@ impl CrtMcp {
             Ok(client) => client,
             Err(e) => return format!("Error summarizing review: {e:#}"),
         };
-        let files = match client.list_changed_files().await {
+        let files = match client.list_file_statuses().await {
             Ok(files) => files,
             Err(e) => return format!("Error summarizing review: {e:#}"),
         };
@@ -409,16 +426,10 @@ impl CrtMcp {
             "base_ref": context.base_ref,
             "head_ref": context.head_ref,
             "merge_base": context.merge_base,
-            "total_files": files.files.len(),
-            "reviewed_files": files.files.iter().filter(|entry| matches!(
-                entry.status,
-                crate::review_types::ReviewStatus::Reviewed { .. }
-            )).count(),
-            "unreviewed_files": files.files.iter().filter(|entry| matches!(
-                entry.status,
-                crate::review_types::ReviewStatus::Unreviewed
-                    | crate::review_types::ReviewStatus::Changed { .. }
-            )).count(),
+            "total_files": files.total_files,
+            "reviewed_files": files.reviewed_files,
+            "unreviewed_files": files.unreviewed_files + files.changed_files,
+            "changed_files": files.changed_files,
             "total_comments": comments.comments.len(),
             "resolved_comments": comments.comments.iter().filter(|comment| comment.resolved).count(),
             "unresolved_comments": comments.comments.iter().filter(|comment| !comment.resolved).count(),
@@ -604,6 +615,7 @@ mod tests {
                 "get_comment_detail",
                 "get_file_diff",
                 "list_changed_files",
+                "list_file_statuses",
                 "list_review_comments",
                 "list_review_sessions",
                 "list_review_summary",
