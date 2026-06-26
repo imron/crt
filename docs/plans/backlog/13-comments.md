@@ -19,17 +19,26 @@ the agent-facing interfaces (MCP adapter and file markers).
 
 ## Implementation Plans
 
-This stage is broken into focused sub-plans. Implement in recommended order:
+This stage is broken into focused sub-plans. Implement in recommended
+order (core panel-based flow first):
 
-0. 17-visual-line-abstraction.md (required prerequisite)
 1. 13a-selection-anchor-capture.md
 2. 13b-composer-create.md
 3. 13c-reanchor.md (can be parallel with 13a)
-4. 13d-inline-gutter-display.md
+4. 13d-gutter-display.md
 5. 13e-panel-lifecycle.md
 6. 13f-live-polish-tests.md
 
-Stage 13 depends on the Visual Line Abstraction defined in plan 17.
+Later / optional sub-plans (inline comments + virtual rows):
+
+- 13g-visual-line-abstraction.md
+- 13h-inline-comment-blocks.md (and related)
+
+The core comment functionality (selection/capture, composer, re-anchoring,
+gutter markers, and comments panel) can be built and used without any
+inline comment blocks or changes to line rendering. Inline comment display
+and the associated visual line abstraction are deferred so the panel-first
+UX can be evaluated first.
 
 See the individual sub-plan files under docs/plans/backlog/ for detailed
 requirements, acceptance criteria, and notes for each slice.
@@ -70,40 +79,34 @@ Keybinding decision (recorded here):
 8. **Server interaction**: creating a comment sends `create_comment` to
    the server. The server stores it and notifies other connected clients.
 
-### Comment Display
+### Comment Display (core / panel-first)
 
-9. **`c` toggles inline comment visibility**: pressing `c` (global key)
-   toggles whether comments are shown inline in the diff pane. When off,
-   comments are hidden from the diff but still visible in the comments
-   panel.
+9. **Gutter indicators**: lines with comments show a marker in the gutter.
+   - `●` for unresolved comments.
+   - `○` for resolved comments.
+   Gutter markers are visible whenever comments exist for the file,
+   independent of whether the comments panel is open.
 
-10. **Inline comment blocks** (when visible): unresolved comments
-    displayed below the lines they're attached to, visually distinct
-    (different background, bordered):
+10. **Comments panel**: a togglable panel (Shift-C) for viewing all comments
+     for the current file or scope. The panel appears at the bottom of the
+     diff view. Unresolved comments are shown fully; resolved comments are
+     shown collapsed (header + preview). `Enter` on a collapsed resolved
+     comment expands it. The panel supports:
+     - Filtering by file.
+     - Sorting by file/line/timestamp.
+     - Navigating to a comment's location in the diff.
 
-    ```
-      42 │  fn process(input: &str) -> Result<Output> {
-      43 │+     let parsed = parse(input);
-         │  ┌─ comment ──────────────────────────────────
-         │  │ Does parse() handle empty input? If input is
-         │  │ "", this will silently produce a default value.
-         │  └────────────────────────────────────────────
-      44 │+     transform(parsed)
-    ```
+11. **Cursor-driven panel display**: when the cursor is on a line that has
+     a comment marker in the gutter, the relevant comment(s) are shown
+     (expanded) in the comments panel.
 
-11. **Gutter indicators**: lines with comments show a marker in the
-    gutter, visible even when scrolled past the comment block:
-    - `●` for unresolved comments.
-    - `○` for resolved comments.
+Later / optional (inline comments):
 
-12. **Comments panel**: a togglable panel for viewing all comments for the
-    current file or all files. Unresolved comments shown fully. Resolved
-    comments shown **collapsed** (header line only: file, line range,
-    body preview). `Enter` on a collapsed resolved comment expands it.
-    The panel should support:
-    - Filtering by file.
-    - Sorting by file/line/timestamp.
-    - Navigating to a comment's location in the diff.
+12. **`c` (deferred)**: possible future toggle for showing comments inline
+     in the diff pane.
+
+13. **Inline comment blocks** (deferred): unresolved comments displayed
+     below the lines they're attached to when inline mode is active.
 
 ### Anchor Resolution
 
@@ -158,8 +161,8 @@ Keybinding decision (recorded here):
 - [ ] `Enter` after selection opens the comment input.
 - [ ] Comment input supports multi-line text and `$EDITOR` escalation.
 - [ ] Comments are persisted via the server and survive restart.
-- [ ] `c` toggles inline comment visibility in the diff.
-- [ ] Unresolved comments appear as inline blocks when visible.
+- [ ] `c` (if implemented) toggles inline comment visibility (deferred).
+- [ ] Unresolved comments appear as inline blocks when visible (deferred).
 - [ ] Gutter indicators show `●` (unresolved) and `○` (resolved).
 - [ ] Comments panel lists all comments; resolved are collapsed.
 - [ ] `Enter` on collapsed resolved comment expands it.
@@ -181,7 +184,8 @@ Keybinding decision (recorded here):
 - How should the comment input handle very long comments — scrollable
   input area, or always escalate to `$EDITOR`?
 - Should gutter indicators be visible when inline comments are toggled
-  off with `c`?
+  off with `c`? (Deferred question — panel-first flow uses gutter markers
+  regardless of any inline toggle.)
 
 ## Progress
 

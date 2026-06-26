@@ -35,3 +35,4 @@ making changes.
 - Run formatting tools when appropriate and keep formatting changes explicit.
 - Avoid mixing unrelated changes in a single commit.
 - Do not commit local scratch files or personal data exports.
+- All `.md` files must wrap lines at a maximum of 80 characters.

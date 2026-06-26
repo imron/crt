@@ -11,7 +11,6 @@
 - Existing comment CRUD handlers (`create_comment`, `list_comments`,
   `get_comment`) and the `review_types` definitions for `Comment` and
   `AnchorStatus`.
-- Plan 17 (Visual Line Abstraction) – `LineView` / `LineType` model.
 
 ## Goal
 
