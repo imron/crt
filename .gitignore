@@ -1,5 +1,6 @@
 /target
 .crt/
 .codex/
+.grok/config.toml
 .DS_Store
 .mcp.json
