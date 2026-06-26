@@ -138,10 +138,7 @@ fn cmd_review(base: Option<String>, reset: bool, standalone: bool) -> Result<()>
 fn cmd_mcp_server() -> Result<()> {
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
 
-    rt.block_on(async {
-        let client = client::Client::connect_http_from_env().await?;
-        mcp::run(client, None).await.context("MCP server error")
-    })
+    rt.block_on(async { mcp::run(None, None).await.context("MCP server error") })
 }
 
 #[cfg(test)]

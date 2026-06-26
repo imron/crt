@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::client::Client;
-use crate::review_types::{ActiveReviewSession, ConnectionContext};
+use crate::review_types::{ActiveReviewSession, ConnectionContext, ListReposResult};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EmptyParams {}
@@ -84,9 +84,47 @@ pub struct FindDefinitionParams {
 
 #[derive(Clone)]
 pub struct CrtMcp {
-    client: Arc<Client>,
+    client: ClientProvider,
     selected: Arc<Mutex<Option<ConnectionContext>>>,
     tool_router: ToolRouter<Self>,
+}
+
+#[derive(Clone)]
+struct ClientProvider {
+    client: Arc<Mutex<Option<Arc<Client>>>>,
+}
+
+impl ClientProvider {
+    fn new(client: Option<Client>) -> Self {
+        Self {
+            client: Arc::new(Mutex::new(client.map(Arc::new))),
+        }
+    }
+
+    async fn get(&self) -> Result<Arc<Client>> {
+        if let Some(client) = self.client.lock().await.as_ref().cloned() {
+            return Ok(client);
+        }
+
+        let client = Arc::new(Client::connect_http_from_env().await.with_context(|| {
+            format!(
+                "No crt server is available at {}:{}. Start `crt server` or a crt TUI session first.",
+                std::env::var(crate::server::ENV_HTTP_HOST)
+                    .unwrap_or_else(|_| crate::server::DEFAULT_HTTP_HOST.to_string()),
+                std::env::var(crate::server::ENV_HTTP_PORT)
+                    .unwrap_or_else(|_| crate::server::DEFAULT_HTTP_PORT.to_string())
+            )
+        })?);
+        *self.client.lock().await = Some(Arc::clone(&client));
+        Ok(client)
+    }
+
+    async fn shutdown(&self) {
+        let client = self.client.lock().await.take();
+        if let Some(client) = client {
+            client.shutdown().await;
+        }
+    }
 }
 
 impl std::fmt::Debug for CrtMcp {
@@ -103,7 +141,16 @@ impl CrtMcp {
         description = "List active crt review sessions registered by connected clients. Use this before selecting a session for scoped review tools."
     )]
     async fn list_review_sessions(&self, Parameters(_params): Parameters<EmptyParams>) -> String {
-        match self.client.list_repos().await {
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(_) => {
+                return to_json(&ListReposResult {
+                    repos: Vec::new(),
+                    sessions: Vec::new(),
+                });
+            }
+        };
+        match client.list_repos().await {
             Ok(result) => to_json(&result),
             Err(e) => format!("Error listing review sessions: {e:#}"),
         }
@@ -116,7 +163,11 @@ impl CrtMcp {
         &self,
         Parameters(params): Parameters<SelectReviewSessionParams>,
     ) -> String {
-        let sessions = match self.client.list_repos().await {
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return format!("Error listing review sessions: {e:#}"),
+        };
+        let sessions = match client.list_repos().await {
             Ok(result) => result.sessions,
             Err(e) => return format!("Error listing review sessions: {e:#}"),
         };
@@ -124,11 +175,7 @@ impl CrtMcp {
             Ok(selected) => selected,
             Err(e) => return format!("Error selecting review session: {e:#}"),
         };
-        match self
-            .client
-            .init(&selected.worktree, &selected.base_ref)
-            .await
-        {
+        match client.init(&selected.worktree, &selected.base_ref).await {
             Ok(context) => {
                 *self.selected.lock().await = Some(context.clone());
                 to_json(&context)
@@ -144,7 +191,11 @@ impl CrtMcp {
         if let Err(e) = self.require_selected().await {
             return format!("Error: {e:#}");
         }
-        match self.client.list_changed_files().await {
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return format!("Error listing changed files: {e:#}"),
+        };
+        match client.list_changed_files().await {
             Ok(result) => to_json(&result),
             Err(e) => format!("Error listing changed files: {e:#}"),
         }
@@ -155,7 +206,11 @@ impl CrtMcp {
         if let Err(e) = self.require_selected().await {
             return format!("Error: {e:#}");
         }
-        match self.client.get_file_diff(&params.file_path).await {
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return format!("Error getting file diff: {e:#}"),
+        };
+        match client.get_file_diff(&params.file_path).await {
             Ok(result) => to_json(&result),
             Err(e) => format!("Error getting file diff: {e:#}"),
         }
@@ -171,8 +226,11 @@ impl CrtMcp {
         if let Err(e) = self.require_selected().await {
             return format!("Error: {e:#}");
         }
-        match self
-            .client
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return format!("Error listing review comments: {e:#}"),
+        };
+        match client
             .list_comments(params.file_path.as_deref(), params.include_resolved)
             .await
         {
@@ -188,7 +246,11 @@ impl CrtMcp {
         if let Err(e) = self.require_selected().await {
             return format!("Error: {e:#}");
         }
-        match self.client.get_comment(params.id).await {
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return format!("Error getting review comment: {e:#}"),
+        };
+        match client.get_comment(params.id).await {
             Ok(result) => to_json(&result),
             Err(e) => format!("Error getting review comment: {e:#}"),
         }
@@ -201,7 +263,11 @@ impl CrtMcp {
         if let Err(e) = self.require_selected().await {
             return format!("Error: {e:#}");
         }
-        match self.client.resolve_comment(params.id).await {
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return format!("Error resolving review comment: {e:#}"),
+        };
+        match client.resolve_comment(params.id).await {
             Ok(result) => to_json(&result),
             Err(e) => format!("Error resolving review comment: {e:#}"),
         }
@@ -214,7 +280,11 @@ impl CrtMcp {
         if let Err(e) = self.require_selected().await {
             return format!("Error: {e:#}");
         }
-        match self.client.unresolve_comment(params.id).await {
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return format!("Error unresolving review comment: {e:#}"),
+        };
+        match client.unresolve_comment(params.id).await {
             Ok(result) => to_json(&result),
             Err(e) => format!("Error unresolving review comment: {e:#}"),
         }
@@ -227,7 +297,11 @@ impl CrtMcp {
         if let Err(e) = self.require_selected().await {
             return format!("Error: {e:#}");
         }
-        match self.client.mark_reviewed(&params.file_path).await {
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return format!("Error marking file reviewed: {e:#}"),
+        };
+        match client.mark_reviewed(&params.file_path).await {
             Ok(result) => to_json(&result),
             Err(e) => format!("Error marking file reviewed: {e:#}"),
         }
@@ -240,7 +314,11 @@ impl CrtMcp {
         if let Err(e) = self.require_selected().await {
             return format!("Error: {e:#}");
         }
-        match self.client.unmark_reviewed(&params.file_path).await {
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return format!("Error unmarking file reviewed: {e:#}"),
+        };
+        match client.unmark_reviewed(&params.file_path).await {
             Ok(result) => to_json(&result),
             Err(e) => format!("Error unmarking file reviewed: {e:#}"),
         }
@@ -257,7 +335,11 @@ impl CrtMcp {
             return format!("Error: {e:#}");
         }
         let scope = params.scope.as_deref().unwrap_or("all");
-        match self.client.search_codebase(&params.pattern, scope).await {
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return format!("Error searching codebase: {e:#}"),
+        };
+        match client.search_codebase(&params.pattern, scope).await {
             Ok(result) => to_json(&result),
             Err(e) => format!("Error searching codebase: {e:#}"),
         }
@@ -271,8 +353,11 @@ impl CrtMcp {
         if let Err(e) = self.require_selected().await {
             return format!("Error: {e:#}");
         }
-        match self
-            .client
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return format!("Error finding definition: {e:#}"),
+        };
+        match client
             .find_definition(&params.symbol, params.context_file.as_deref())
             .await
         {
@@ -289,11 +374,15 @@ impl CrtMcp {
             Ok(context) => context,
             Err(e) => return format!("Error: {e:#}"),
         };
-        let files = match self.client.list_changed_files().await {
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return format!("Error summarizing review: {e:#}"),
+        };
+        let files = match client.list_changed_files().await {
             Ok(files) => files,
             Err(e) => return format!("Error summarizing review: {e:#}"),
         };
-        let comments = match self.client.list_comments(None, true).await {
+        let comments = match client.list_comments(None, true).await {
             Ok(comments) => comments,
             Err(e) => return format!("Error summarizing review comments: {e:#}"),
         };
@@ -341,9 +430,9 @@ impl CrtMcp {
 }
 
 impl CrtMcp {
-    pub fn new(client: Arc<Client>, selected: Option<ConnectionContext>) -> Self {
+    pub fn new(client: Option<Client>, selected: Option<ConnectionContext>) -> Self {
         Self {
-            client,
+            client: ClientProvider::new(client),
             selected: Arc::new(Mutex::new(selected)),
             tool_router: Self::tool_router(),
         }
@@ -361,6 +450,10 @@ impl CrtMcp {
         self.selected.lock().await.clone().context(
             "No review session selected. Call list_review_sessions, then select_review_session.",
         )
+    }
+
+    async fn client(&self) -> Result<Arc<Client>> {
+        self.client.get().await
     }
 }
 
@@ -402,12 +495,12 @@ impl ServerHandler for CrtMcp {
     }
 }
 
-pub async fn run(client: Client, context: Option<ConnectionContext>) -> Result<()> {
-    let client = Arc::new(client);
-    let handler = CrtMcp::new(Arc::clone(&client), context);
+pub async fn run(client: Option<Client>, context: Option<ConnectionContext>) -> Result<()> {
+    let handler = CrtMcp::new(client, context);
+    let client_provider = handler.client.clone();
     let service = handler.serve(rmcp::transport::stdio()).await?;
     let result = service.waiting().await;
-    client.shutdown().await;
+    client_provider.shutdown().await;
     result?;
     Ok(())
 }
@@ -500,7 +593,7 @@ mod tests {
         let socket_path = dir.path().join("server.sock");
         let _listener = UnixListener::bind(&socket_path).unwrap();
         let client = Client::connect(&socket_path).await.unwrap();
-        let mcp = CrtMcp::new(Arc::new(client), None);
+        let mcp = CrtMcp::new(Some(client), None);
         let mut names = mcp.list_tool_names();
         names.sort();
 
@@ -522,6 +615,33 @@ mod tests {
                 "unresolve_comment",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn list_sessions_returns_empty_when_crt_server_is_unavailable() {
+        let port = unused_local_port();
+        unsafe {
+            std::env::set_var(crate::server::ENV_HTTP_PORT, port.to_string());
+        }
+        let mcp = CrtMcp::new(None, None);
+
+        let result = mcp.list_review_sessions(Parameters(EmptyParams {})).await;
+
+        unsafe {
+            std::env::remove_var(crate::server::ENV_HTTP_PORT);
+        }
+        let parsed: ListReposResult = serde_json::from_str(&result).unwrap();
+        assert!(parsed.repos.is_empty());
+        assert!(parsed.sessions.is_empty());
+    }
+
+    fn unused_local_port() -> u16 {
+        for port in 30_000..40_000 {
+            if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+                return port;
+            }
+        }
+        panic!("could not find an unused localhost port");
     }
 
     fn session(repo_root: &str, base_ref: &str) -> ActiveReviewSession {
