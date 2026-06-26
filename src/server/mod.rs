@@ -26,7 +26,7 @@ use crate::protocol::{
 use crate::review_types::ActiveReviewSession;
 
 pub const DEFAULT_HTTP_HOST: &str = "127.0.0.1";
-pub const DEFAULT_HTTP_PORT: u16 = 4768;
+pub const DEFAULT_HTTP_PORT: u16 = 25175;
 pub const ENV_HTTP_HOST: &str = "CRT_SERVER_HOST";
 pub const ENV_HTTP_PORT: &str = "CRT_SERVER_PORT";
 
