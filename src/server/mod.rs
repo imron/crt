@@ -308,9 +308,13 @@ async fn accept_loop(
                             eprintln!("Client connected");
                         }
                         let state = Arc::clone(&state);
+                        let connection_cancel = cancel.clone();
                         let v = verbose;
                         tokio::spawn(async move {
-                            let result = handle_connection(stream, state).await;
+                            let result = tokio::select! {
+                                result = handle_connection(stream, state) => result,
+                                _ = connection_cancel.cancelled() => Ok(()),
+                            };
                             if v {
                                 if let Err(e) = result {
                                     eprintln!("Connection error: {e}");
@@ -338,9 +342,13 @@ async fn accept_loop(
                             eprintln!("HTTP client connected");
                         }
                         let state = Arc::clone(&state);
+                        let connection_cancel = cancel.clone();
                         let v = verbose;
                         tokio::spawn(async move {
-                            let result = handle_http_connection(stream, state).await;
+                            let result = tokio::select! {
+                                result = handle_http_connection(stream, state) => result,
+                                _ = connection_cancel.cancelled() => Ok(()),
+                            };
                             if v {
                                 if let Err(e) = result {
                                     eprintln!("HTTP connection error: {e}");
