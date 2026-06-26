@@ -372,6 +372,37 @@ async fn test_list_file_statuses_returns_compact_review_state() {
 }
 
 #[tokio::test]
+async fn test_client_list_file_statuses_uses_compact_contract() {
+    let server = TestServer::start().await;
+    std::fs::write(server.repo_dir.join("file.txt"), "hello\nworld\n").unwrap();
+
+    let client = Client::connect(&server.socket_path).await.unwrap();
+    client
+        .init(&server.repo_dir.to_string_lossy(), "HEAD")
+        .await
+        .unwrap();
+
+    let result = client.list_file_statuses().await.unwrap();
+
+    assert_eq!(result.total_files, 1);
+    assert_eq!(result.reviewed_files, 0);
+    assert_eq!(result.unreviewed_files, 1);
+    assert_eq!(result.changed_files, 0);
+    assert_eq!(result.files.len(), 1);
+    let file = &result.files[0];
+    assert_eq!(file.change.path, "file.txt");
+    assert!(matches!(
+        file.status,
+        crt::review_types::ReviewStatus::Unreviewed
+    ));
+    assert_eq!(file.diff.hunks, 1);
+    assert_eq!(file.diff.additions, 1);
+    assert_eq!(file.diff.deletions, 0);
+    assert!(!file.diff.is_binary);
+    assert!(!file.diff.diff_hash.is_empty());
+}
+
+#[tokio::test]
 async fn test_client_receives_review_notification_while_idle() {
     let server = TestServer::start().await;
     std::fs::write(server.repo_dir.join("file.txt"), "changed\n").unwrap();
