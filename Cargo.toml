@@ -41,6 +41,10 @@ schemars = "1"
 toml = "0.8"
 
 # Async runtime (server)
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 rmcp = { version = "1.8.0", features = ["server", "transport-io"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"

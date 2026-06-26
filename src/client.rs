@@ -9,11 +9,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
+use hyper::header::CONTENT_TYPE;
+use hyper::{Method, Request};
+use hyper_util::rt::TokioIo;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UnixStream};
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::ConnectionState;
@@ -73,8 +79,8 @@ struct UnixClientConnection {
 
 struct HttpClientConnection {
     host: String,
-    reader: BufReader<tokio::net::tcp::OwnedReadHalf>,
-    writer: tokio::net::tcp::OwnedWriteHalf,
+    sender: hyper::client::conn::http1::SendRequest<Full<Bytes>>,
+    _connection_task: JoinHandle<()>,
 }
 
 impl UnixClientConnection {
@@ -100,12 +106,18 @@ impl HttpClientConnection {
         let stream = TcpStream::connect(&addr)
             .await
             .with_context(|| format!("Could not connect to crt HTTP server at {addr}"))?;
+        let io = TokioIo::new(stream);
+        let (sender, connection) = hyper::client::conn::http1::handshake(io)
+            .await
+            .with_context(|| format!("Failed HTTP handshake with crt server at {addr}"))?;
+        let connection_task = tokio::spawn(async move {
+            let _ = connection.await;
+        });
 
-        let (read_half, write_half) = stream.into_split();
         Ok(Self {
             host: addr,
-            reader: BufReader::new(read_half),
-            writer: write_half,
+            sender,
+            _connection_task: connection_task,
         })
     }
 }
@@ -680,63 +692,29 @@ async fn http_call(
     request: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let body = serde_json::to_vec(request).context("Failed to serialize HTTP request")?;
-    let headers = format!(
-        "POST /rpc HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
-        connection.host,
-        body.len()
-    );
+    let http_request = Request::builder()
+        .method(Method::POST)
+        .uri(format!("http://{}/rpc", connection.host))
+        .header(CONTENT_TYPE, "application/json")
+        .body(Full::new(Bytes::from(body)))
+        .context("Failed to build HTTP request")?;
 
-    connection
-        .writer
-        .write_all(headers.as_bytes())
+    let response = connection
+        .sender
+        .send_request(http_request)
         .await
-        .context("Failed to write HTTP request headers")?;
-    connection
-        .writer
-        .write_all(&body)
-        .await
-        .context("Failed to write HTTP request body")?;
-    connection
-        .writer
-        .flush()
-        .await
-        .context("Failed to flush HTTP request")?;
-
-    read_http_response(&mut connection.reader).await
-}
-
-async fn read_http_response<R: tokio::io::AsyncRead + Unpin>(
-    reader: &mut BufReader<R>,
-) -> Result<serde_json::Value> {
-    let mut status = String::new();
-    if reader.read_line(&mut status).await? == 0 {
-        bail!("HTTP server closed the connection");
-    }
-    if !status.contains(" 200 ") {
-        bail!("HTTP server returned {}", status.trim());
+        .context("Failed to send HTTP request")?;
+    let status = response.status();
+    if !status.is_success() {
+        bail!("HTTP server returned {status}");
     }
 
-    let mut content_length = None;
-    loop {
-        let mut header = String::new();
-        let n = reader.read_line(&mut header).await?;
-        if n == 0 {
-            bail!("HTTP server closed the connection while reading headers");
-        }
-        let trimmed = header.trim_end_matches(['\r', '\n']);
-        if trimmed.is_empty() {
-            break;
-        }
-        if let Some((name, value)) = trimmed.split_once(':')
-            && name.eq_ignore_ascii_case("content-length")
-        {
-            content_length = value.trim().parse::<usize>().ok();
-        }
-    }
-
-    let len = content_length.context("HTTP response missing Content-Length")?;
-    let mut body = vec![0; len];
-    reader.read_exact(&mut body).await?;
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .context("Failed to read HTTP response body")?
+        .to_bytes();
     serde_json::from_slice(&body).context("Failed to parse HTTP response body")
 }
 
