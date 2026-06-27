@@ -73,6 +73,9 @@ pub fn draw(frame: &mut Frame, model: &AppModel, tui_state: &mut TuiState, style
         InputMode::DiffSearch => {
             draw_diff_search_input(frame, tui_state, styles, status_area);
         }
+        InputMode::Comment => {
+            draw_status_bar(frame, model, tui_state, styles, status_area);
+        }
         InputMode::Normal => {
             draw_status_bar(frame, model, tui_state, styles, status_area);
         }
@@ -91,6 +94,10 @@ pub fn draw(frame: &mut Frame, model: &AppModel, tui_state: &mut TuiState, style
     // Definition results overlay.
     if model.definition_results.is_some() {
         draw_definition_results_overlay(frame, model, styles);
+    }
+
+    if tui_state.input_mode == InputMode::Comment {
+        draw_comment_input(frame, tui_state, styles);
     }
 
     // Help overlay on top of everything else.
@@ -411,6 +418,50 @@ fn draw_diff_search_input(
         x: cursor_x,
         y: cursor_y,
     });
+}
+
+/// Draw the multi-line review comment composer.
+fn draw_comment_input(frame: &mut Frame, tui_state: &TuiState, styles: &StyleConfig) {
+    let area = frame.area();
+    let width = area.width.saturating_sub(4).clamp(20, 100).min(area.width);
+    let height = area.height.saturating_sub(4).clamp(5, 9).min(area.height);
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height + 1);
+    let popup = Rect::new(x, y, width, height);
+
+    let hs = &styles.help;
+    let body = if tui_state.comment_input.is_empty() {
+        "Write a comment".to_string()
+    } else {
+        tui_state.comment_input.clone()
+    };
+    let composer = Paragraph::new(body)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(*hs.border_fg))
+                .title(" Comment ")
+                .title_bottom(" Ctrl-S submit / Ctrl-E editor / Esc cancel "),
+        )
+        .style(Style::default().fg(*hs.text_fg).bg(*hs.bg));
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(composer, popup);
+
+    let inner_x = popup.x.saturating_add(1);
+    let inner_y = popup.y.saturating_add(1);
+    let (line, col) = comment_cursor_position(&tui_state.comment_input, tui_state.comment_cursor);
+    frame.set_cursor_position(Position {
+        x: inner_x + col.min(popup.width.saturating_sub(2) as usize) as u16,
+        y: inner_y + line.min(popup.height.saturating_sub(2) as usize) as u16,
+    });
+}
+
+fn comment_cursor_position(text: &str, cursor: usize) -> (usize, usize) {
+    let before = &text[..cursor.min(text.len())];
+    let line = before.bytes().filter(|byte| *byte == b'\n').count();
+    let col = before.rsplit('\n').next().unwrap_or("").chars().count();
+    (line, col)
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # Stage 13b: Comment Composer and Creation
 
-## Status: Not Started
+## Status: Complete
 
 ## Order
 
@@ -52,15 +52,15 @@ client/server.
 
 ## Acceptance Criteria
 
-- [ ] After visual selection + Enter, a multi-line input area is presented.
-- [ ] Text can be entered over multiple lines.
-- [ ] Submit (Ctrl-Enter or designated key) creates the comment and clears
+- [x] After visual selection + Enter, a multi-line input area is presented.
+- [x] Text can be entered over multiple lines.
+- [x] Submit (Ctrl-Enter or designated key) creates the comment and clears
       the selection/input.
-- [ ] Escape cancels the composer without creating a comment.
-- [ ] Editor escalation key works and updated text is used on submit.
-- [ ] Comments created this way are stored and retrievable via existing
+- [x] Escape cancels the composer without creating a comment.
+- [x] Editor escalation key works and updated text is used on submit.
+- [x] Comments created this way are stored and retrievable via existing
       list/get APIs.
-- [ ] No changes to display of comments (deferred).
+- [x] No changes to display of comments (deferred).
 
 ## Implementation Notes
 
@@ -77,4 +77,16 @@ client/server.
 
 ## Progress
 
-- (To be filled)
+- Added a first-class comment prompt contract in core. Committing a visual
+  selection now requests a comment composer, and submitting/canceling the
+  prompt emits comment-specific core effects.
+- Added a TUI comment composer mode with multi-line editing, `Ctrl-S` submit,
+  `Ctrl-Enter` submit where supported, `Escape` cancel, and `Ctrl-E`
+  `$EDITOR` escalation.
+- Queued comment creation in the app layer using the captured 13a anchor and
+  the submitted body, then called the existing `create_comment` client API.
+- Added status feedback for empty bodies, cancellation, in-flight creation,
+  creation success, and creation failure.
+- Added focused core, app, and TUI tests for the comment prompt lifecycle,
+  multi-line input, cancellation, editor escalation dispatch, and queued
+  create-comment work.

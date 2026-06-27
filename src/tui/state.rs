@@ -21,6 +21,8 @@ pub enum InputMode {
     Command,
     /// Diff search mode — `/` prompt is active, collecting search query.
     DiffSearch,
+    /// Comment composer mode — multi-line review comment input is active.
+    Comment,
 }
 
 /// An in-progress or completed text selection via mouse drag.
@@ -113,6 +115,10 @@ pub struct TuiState {
     pub diff_search_input: String,
     /// Cursor position within `diff_search_input`.
     pub diff_search_cursor: usize,
+    /// In-progress review comment body.
+    pub comment_input: String,
+    /// Cursor position within `comment_input`.
+    pub comment_cursor: usize,
     /// Active core prompt requested by the interaction engine, if any.
     pub active_core_prompt: Option<PromptId>,
 }
@@ -153,6 +159,8 @@ impl Default for TuiState {
             command_cursor: 0,
             diff_search_input: String::new(),
             diff_search_cursor: 0,
+            comment_input: String::new(),
+            comment_cursor: 0,
             active_core_prompt: None,
         }
     }
@@ -432,6 +440,13 @@ impl TuiState {
         self.diff_search_cursor = self.diff_search_input.len();
     }
 
+    pub fn open_comment_prompt(&mut self, id: PromptId, initial_value: String) {
+        self.active_core_prompt = Some(id);
+        self.input_mode = InputMode::Comment;
+        self.comment_input = initial_value;
+        self.comment_cursor = self.comment_input.len();
+    }
+
     pub fn clear_prompt(&mut self) {
         self.active_core_prompt = None;
         self.input_mode = InputMode::Normal;
@@ -439,6 +454,8 @@ impl TuiState {
         self.command_cursor = 0;
         self.diff_search_input.clear();
         self.diff_search_cursor = 0;
+        self.comment_input.clear();
+        self.comment_cursor = 0;
     }
 }
 
@@ -520,6 +537,8 @@ mod tests {
         assert_eq!(state.command_cursor, 0);
         assert!(state.diff_search_input.is_empty());
         assert_eq!(state.diff_search_cursor, 0);
+        assert!(state.comment_input.is_empty());
+        assert_eq!(state.comment_cursor, 0);
     }
 
     #[test]

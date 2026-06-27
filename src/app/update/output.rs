@@ -1,3 +1,4 @@
+use crate::app::CommentAnchorCapture;
 use crate::core::ConnectionState;
 use crate::core::command::Command;
 
@@ -9,6 +10,7 @@ pub struct AppOutput {
     pub should_suspend: bool,
     pub should_quit: bool,
     pending_command: Option<Command>,
+    pending_comment_create: Option<(CommentAnchorCapture, String)>,
     pub save_layout: bool,
     pub show_comments: Option<bool>,
 }
@@ -60,6 +62,14 @@ impl AppOutput {
 
     pub fn take_pending_command(&mut self) -> Option<Command> {
         self.pending_command.take()
+    }
+
+    pub fn request_comment_create(&mut self, anchor: CommentAnchorCapture, body: String) {
+        self.pending_comment_create = Some((anchor, body));
+    }
+
+    pub fn take_pending_comment_create(&mut self) -> Option<(CommentAnchorCapture, String)> {
+        self.pending_comment_create.take()
     }
 
     pub fn request_layout_save(&mut self) {

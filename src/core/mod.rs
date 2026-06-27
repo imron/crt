@@ -20,9 +20,9 @@ pub use input::{
     MouseEventKind, PointerSemanticHit, TextAnchor,
 };
 pub use interaction::{
-    ConnectionState, CoreEffect, CoreEffects, CoreInteractionEngine, DefinitionResultsEffect,
-    DiffCursorEffect, DiffSearchEffect, InteractionContext, PaneEffect, SearchResultsEffect,
-    VisualSelectionEffect,
+    CommentEffect, ConnectionState, CoreEffect, CoreEffects, CoreInteractionEngine,
+    DefinitionResultsEffect, DiffCursorEffect, DiffSearchEffect, InteractionContext, PaneEffect,
+    SearchResultsEffect, VisualSelectionEffect,
 };
 pub use prompt::{PromptId, PromptKind, PromptRequest};
 pub use render::{PaneId, StatusMessage};

@@ -16,7 +16,7 @@ mod viewport;
 
 use super::AppState;
 use crate::core::navigation::Direction;
-use crate::core::{CoreEffect, DiffSearchEffect, InteractionContext, PaneId};
+use crate::core::{CommentEffect, CoreEffect, DiffSearchEffect, InteractionContext, PaneId};
 use crate::review_types::PaneFocus;
 
 pub use output::{AppOutput, StatusUpdate};
@@ -35,6 +35,7 @@ pub fn interaction_context(state: &AppState) -> InteractionContext {
             && !state.diff_search_matches.is_empty(),
         diff_pane_visible: state.show_diff_pane,
         visual_selection_active: state.visual_selection.is_some(),
+        pending_comment_anchor_active: state.pending_comment_anchor.is_some(),
         ..InteractionContext::default()
     }
 }
@@ -74,6 +75,22 @@ pub fn apply_core_effects(
             }
             CoreEffect::DiffSearch(DiffSearchEffect::Clear) => {
                 diff_search::clear_diff_search(state);
+            }
+            CoreEffect::Comment(CommentEffect::SubmitBody { body }) => {
+                let body = body.trim().to_string();
+                if body.is_empty() {
+                    update.set_status("Comment body is empty");
+                } else if let Some(anchor) = state.pending_comment_anchor.clone() {
+                    update.request_comment_create(anchor, body);
+                    update.set_status("Creating comment...");
+                } else {
+                    update.set_status("No comment anchor captured");
+                }
+            }
+            CoreEffect::Comment(CommentEffect::Cancel) => {
+                state.pending_comment_anchor = None;
+                state.mark_model_changed();
+                update.set_status("Comment canceled");
             }
             CoreEffect::DiffCursor(effect) => {
                 cursor::apply_diff_cursor_effect(state, view, effect);
