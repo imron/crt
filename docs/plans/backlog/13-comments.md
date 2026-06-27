@@ -41,8 +41,9 @@ inline comment blocks or changes to line rendering. Inline comment display
 and the associated visual line abstraction are deferred so the panel-first
 UX can be evaluated first.
 
-See the individual sub-plan files under docs/plans/backlog/ for detailed
-requirements, acceptance criteria, and notes for each slice.
+See the individual sub-plan files under `docs/plans/backlog/` and
+`docs/plans/completed/` for detailed requirements, acceptance criteria, and
+notes for each slice.
 
 Keybinding decision (recorded here):
 - Use `c` in the diff pane to comment on the current line. If the file list
