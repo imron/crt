@@ -38,9 +38,8 @@ const CTRL_C_TIMEOUT: Duration = Duration::from_secs(3);
 /// How often the TUI gives the app a chance to process background work while
 /// waiting for terminal input.
 const APP_TICK_INTERVAL: Duration = Duration::from_millis(100);
-const COMMENT_EDITOR_BEGIN: &str = "<<<<<<< REVIEW";
-const COMMENT_EDITOR_SEPARATOR: &str = "=======";
-const COMMENT_EDITOR_END: &str = ">>>>>>> REVIEW";
+const COMMENT_EDITOR_HEADER: &str = "# Enter your comment below the line.";
+const COMMENT_EDITOR_SEPARATOR: &str = "----------";
 
 /// The terminal UI runtime. Owns terminal interaction and presentation state.
 pub struct Tui {
@@ -658,28 +657,16 @@ fn comment_editor_path() -> PathBuf {
     std::env::temp_dir().join(format!("crt-comment-{}.md", std::process::id()))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CommentEditorTemplate {
-    prefix: String,
-    suffix: String,
-}
-
 fn comment_editor_document(
     anchor: Option<&crate::app::CommentAnchorCapture>,
     body: &str,
-) -> (String, CommentEditorTemplate) {
+) -> (String, String) {
     let Some(anchor) = anchor else {
-        return (
-            body.to_string(),
-            CommentEditorTemplate {
-                prefix: String::new(),
-                suffix: String::new(),
-            },
-        );
+        return (body.to_string(), String::new());
     };
 
     let mut prefix = String::new();
-    prefix.push_str(COMMENT_EDITOR_BEGIN);
+    prefix.push_str(COMMENT_EDITOR_HEADER);
     prefix.push('\n');
     if !anchor.context_before.is_empty() {
         prefix.push_str(&anchor.context_before);
@@ -693,25 +680,18 @@ fn comment_editor_document(
     }
     prefix.push_str(COMMENT_EDITOR_SEPARATOR);
     prefix.push('\n');
-    let suffix = format!("\n{COMMENT_EDITOR_END}\n");
 
     let mut document = prefix.clone();
     document.push_str(body);
-    document.push_str(&suffix);
-    (document, CommentEditorTemplate { prefix, suffix })
+    (document, prefix)
 }
 
-fn strip_comment_editor_template(body: String, template: &CommentEditorTemplate) -> String {
-    if template.prefix.is_empty() && template.suffix.is_empty() {
+fn strip_comment_editor_template(body: String, prefix: &str) -> String {
+    if prefix.is_empty() {
         return body;
     }
-    let Some(without_prefix) = body.strip_prefix(&template.prefix) else {
-        return body;
-    };
-    let Some(stripped) = without_prefix.strip_suffix(&template.suffix) else {
-        return body;
-    };
-    stripped.to_string()
+    body.strip_prefix(prefix)
+        .map_or(body.clone(), ToString::to_string)
 }
 
 fn drain_terminal_events() -> Result<()> {
@@ -982,14 +962,13 @@ mod tests {
 
         assert_eq!(
             document,
-            "<<<<<<< REVIEW\n\
+            "# Enter your comment below the line.\n\
              before\n\
              selected one\n\
              selected two\n\
              after\n\
-             =======\n\
-             draft\n\
-             >>>>>>> REVIEW\n"
+             ----------\n\
+             draft"
         );
         assert_eq!(strip_comment_editor_template(document, &prefix), "draft");
     }
@@ -1007,28 +986,7 @@ mod tests {
             context_after: String::new(),
         };
         let (_document, prefix) = comment_editor_document(Some(&anchor), "draft");
-        let edited = "<<<<<<< REVIEW\nchanged\n=======\ndraft\n>>>>>>> REVIEW\n".to_string();
-
-        assert_eq!(
-            strip_comment_editor_template(edited.clone(), &prefix),
-            edited
-        );
-    }
-
-    #[test]
-    fn editor_template_strip_keeps_changed_closing_marker() {
-        let anchor = crate::app::CommentAnchorCapture {
-            file_path: "src/main.rs".to_string(),
-            line_start: 4,
-            line_end: 4,
-            char_start: None,
-            char_end: None,
-            anchor_text: "selected".to_string(),
-            context_before: String::new(),
-            context_after: String::new(),
-        };
-        let (document, prefix) = comment_editor_document(Some(&anchor), "draft");
-        let edited = document.replace(">>>>>>> REVIEW", ">>>>>>> changed");
+        let edited = "# Enter your comment below the line.\nchanged\n----------\ndraft".to_string();
 
         assert_eq!(
             strip_comment_editor_template(edited.clone(), &prefix),

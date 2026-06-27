@@ -12,12 +12,14 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::state::{InputMode, TuiState};
 use crate::app::model::{AppModel, ReviewStatus};
 use crate::config::{PanelStyle, StyleConfig};
 use crate::git;
+
+const COMMENT_TAB_WIDTH: usize = 4;
 
 /// Draw the entire UI for the current state.
 pub fn draw(frame: &mut Frame, model: &AppModel, tui_state: &mut TuiState, styles: &StyleConfig) {
@@ -425,7 +427,12 @@ fn draw_comment_input(frame: &mut Frame, tui_state: &mut TuiState, styles: &Styl
     let area = frame.area();
     let width = area.width.saturating_sub(4).clamp(20, 100).min(area.width);
     let wrap_width = width.saturating_sub(2).max(1) as usize;
-    let line_count = comment_visual_line_count(&tui_state.comment_input, wrap_width);
+    let body_lines = if tui_state.comment_input.is_empty() {
+        vec!["Write a comment".to_string()]
+    } else {
+        comment_visual_lines(&tui_state.comment_input, wrap_width)
+    };
+    let line_count = body_lines.len();
     let max_height = area.height.saturating_div(2).max(3).min(area.height);
     let min_height = 7.min(max_height);
     let desired_height = saturating_u16(line_count.saturating_add(2));
@@ -435,29 +442,28 @@ fn draw_comment_input(frame: &mut Frame, tui_state: &mut TuiState, styles: &Styl
     let popup = Rect::new(x, y, width, height);
     let inner_height = popup.height.saturating_sub(2) as usize;
 
-    let hs = &styles.help;
-    let body = if tui_state.comment_input.is_empty() {
-        "Write a comment".to_string()
-    } else {
-        tui_state.comment_input.clone()
-    };
     let (line, col) = comment_cursor_position(
         &tui_state.comment_input,
         tui_state.comment_cursor,
         wrap_width,
     );
     keep_comment_cursor_visible(tui_state, line, inner_height, line_count);
-    let composer = Paragraph::new(body)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(*hs.border_fg))
-                .title(" Comment ")
-                .title_bottom(" Ctrl-S submit / Ctrl-E editor / Esc cancel "),
-        )
-        .scroll((saturating_u16(tui_state.comment_scroll), 0))
-        .wrap(Wrap { trim: false })
-        .style(Style::default().fg(*hs.text_fg).bg(*hs.bg));
+    let hs = &styles.help;
+    let composer = Paragraph::new(
+        body_lines
+            .into_iter()
+            .map(Line::from)
+            .collect::<Vec<Line>>(),
+    )
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(*hs.border_fg))
+            .title(" Comment ")
+            .title_bottom(" Ctrl-S submit / Ctrl-Shift-E editor / Esc cancel "),
+    )
+    .scroll((saturating_u16(tui_state.comment_scroll), 0))
+    .style(Style::default().fg(*hs.text_fg).bg(*hs.bg));
 
     frame.render_widget(Clear, popup);
     frame.render_widget(composer, popup);
@@ -494,33 +500,111 @@ fn keep_comment_cursor_visible(
     tui_state.comment_scroll = tui_state.comment_scroll.min(max_scroll);
 }
 
-fn comment_visual_line_count(text: &str, wrap_width: usize) -> usize {
+fn comment_visual_lines(text: &str, wrap_width: usize) -> Vec<String> {
     let wrap_width = wrap_width.max(1);
     if text.is_empty() {
-        return 1;
+        return vec![String::new()];
     }
-    text.split('\n')
-        .map(|line| visual_rows_for_col(line.chars().count(), wrap_width))
-        .sum()
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut col = 0;
+    let mut wrapped_at_boundary = false;
+    for ch in text.chars() {
+        match ch {
+            '\n' => {
+                lines.push(std::mem::take(&mut current));
+                col = 0;
+                wrapped_at_boundary = false;
+            }
+            '\t' => {
+                let spaces = tab_spaces(col);
+                for _ in 0..spaces {
+                    push_wrapped_char(
+                        &mut lines,
+                        &mut current,
+                        &mut col,
+                        &mut wrapped_at_boundary,
+                        wrap_width,
+                        ' ',
+                    );
+                }
+            }
+            ch => {
+                push_wrapped_char(
+                    &mut lines,
+                    &mut current,
+                    &mut col,
+                    &mut wrapped_at_boundary,
+                    wrap_width,
+                    ch,
+                );
+            }
+        }
+    }
+    if !wrapped_at_boundary || !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 fn comment_cursor_position(text: &str, cursor: usize, wrap_width: usize) -> (usize, usize) {
     let wrap_width = wrap_width.max(1);
     let before = &text[..cursor.min(text.len())];
-    let mut visual_line = 0;
-    let mut parts = before.split('\n').peekable();
-    while let Some(part) = parts.next() {
-        let col = part.chars().count();
-        if parts.peek().is_none() {
-            return (visual_line + col / wrap_width, col % wrap_width);
+    let mut row = 0;
+    let mut col = 0;
+    for ch in before.chars() {
+        match ch {
+            '\n' => {
+                row += 1;
+                col = 0;
+            }
+            '\t' => {
+                for _ in 0..tab_spaces(col) {
+                    advance_wrapped_cursor(&mut row, &mut col, wrap_width);
+                }
+            }
+            _ => {
+                advance_wrapped_cursor(&mut row, &mut col, wrap_width);
+            }
         }
-        visual_line += visual_rows_for_col(col, wrap_width);
     }
-    (0, 0)
+    (row, col)
 }
 
-fn visual_rows_for_col(col: usize, wrap_width: usize) -> usize {
-    (col / wrap_width) + 1
+fn push_wrapped_char(
+    lines: &mut Vec<String>,
+    current: &mut String,
+    col: &mut usize,
+    wrapped_at_boundary: &mut bool,
+    wrap_width: usize,
+    ch: char,
+) {
+    if *col >= wrap_width {
+        lines.push(std::mem::take(current));
+        *col = 0;
+        *wrapped_at_boundary = true;
+    }
+    current.push(ch);
+    *col += 1;
+    *wrapped_at_boundary = false;
+    if *col >= wrap_width {
+        lines.push(std::mem::take(current));
+        *col = 0;
+        *wrapped_at_boundary = true;
+    }
+}
+
+fn advance_wrapped_cursor(row: &mut usize, col: &mut usize, wrap_width: usize) {
+    *col += 1;
+    if *col >= wrap_width {
+        *row += 1;
+        *col = 0;
+    }
+}
+
+fn tab_spaces(col: usize) -> usize {
+    COMMENT_TAB_WIDTH - (col % COMMENT_TAB_WIDTH)
 }
 
 // ---------------------------------------------------------------------------
@@ -723,9 +807,25 @@ mod tests {
     fn comment_cursor_position_accounts_for_wrapped_rows() {
         let text = "abcdef\nghi";
 
-        assert_eq!(comment_visual_line_count(text, 4), 3);
+        assert_eq!(
+            comment_visual_lines(text, 4),
+            vec!["abcd".to_string(), "ef".to_string(), "ghi".to_string()]
+        );
+        assert_eq!(comment_cursor_position(text, 4, 4), (1, 0));
         assert_eq!(comment_cursor_position(text, 6, 4), (1, 2));
         assert_eq!(comment_cursor_position(text, 10, 4), (2, 3));
+    }
+
+    #[test]
+    fn comment_visual_lines_expand_tabs() {
+        let text = "\t\ta";
+
+        assert_eq!(
+            comment_visual_lines(text, 10),
+            vec!["        a".to_string()]
+        );
+        assert_eq!(comment_cursor_position(text, 1, 10), (0, 4));
+        assert_eq!(comment_cursor_position(text, 2, 10), (0, 8));
     }
 }
 
