@@ -39,7 +39,7 @@ const CTRL_C_TIMEOUT: Duration = Duration::from_secs(3);
 /// waiting for terminal input.
 const APP_TICK_INTERVAL: Duration = Duration::from_millis(100);
 const COMMENT_EDITOR_HEADER: &str = "# Enter your comment below the dotted line";
-const COMMENT_EDITOR_SEPARATOR: &str = "----------";
+const COMMENT_EDITOR_SEPARATOR: &str = "------ Write your comment after this line ----";
 
 /// The terminal UI runtime. Owns terminal interaction and presentation state.
 pub struct Tui {
@@ -668,6 +668,7 @@ fn comment_editor_document(
     let mut prefix = String::new();
     prefix.push_str(COMMENT_EDITOR_HEADER);
     prefix.push('\n');
+    prefix.push('\n');
     if !anchor.context_before.is_empty() {
         prefix.push_str(&anchor.context_before);
         prefix.push('\n');
@@ -678,6 +679,7 @@ fn comment_editor_document(
         prefix.push_str(&anchor.context_after);
         prefix.push('\n');
     }
+    prefix.push('\n');
     prefix.push_str(COMMENT_EDITOR_SEPARATOR);
     prefix.push('\n');
 
@@ -963,11 +965,13 @@ mod tests {
         assert_eq!(
             document,
             "# Enter your comment below the dotted line\n\
+             \n\
              before\n\
              selected one\n\
              selected two\n\
              after\n\
-             ----------\n\
+             \n\
+             ------ Write your comment after this line ----\n\
              draft"
         );
         assert_eq!(strip_comment_editor_template(document, &prefix), "draft");
@@ -986,8 +990,11 @@ mod tests {
             context_after: String::new(),
         };
         let (_document, prefix) = comment_editor_document(Some(&anchor), "draft");
-        let edited =
-            "# Enter your comment below the dotted line\nchanged\n----------\ndraft".to_string();
+        let edited = "# Enter your comment below the dotted line\n\
+                      changed\n\
+                      ------ Write your comment after this line ----\n\
+                      draft"
+            .to_string();
 
         assert_eq!(
             strip_comment_editor_template(edited.clone(), &prefix),
