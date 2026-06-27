@@ -41,11 +41,11 @@ client/server.
 5. Cancellation discards the body and returns to normal mode (selection may
    also be cleared).
 
-6. A dedicated key inside the composer (e.g. Ctrl-e) writes current text to
-   a temp file, launches $EDITOR, and replaces the composer content with the
-   edited result on exit. The editor file shows the selected lines and
-   surrounding context above a separator; that generated prefix is stripped
-   on return if it is unchanged.
+6. A dedicated key inside the composer writes current text to a temp file,
+   launches $EDITOR, and replaces the composer content with the edited result
+   on exit. The editor file shows the selected lines and surrounding context
+   above an instructional separator; that generated prefix is stripped on
+   return if it is unchanged.
 
 7. Basic status / error feedback is shown for create success or failure.
 
@@ -93,16 +93,19 @@ client/server.
 - Added a first-class comment prompt contract in core. Committing a visual
   selection now requests a comment composer, and submitting/canceling the
   prompt emits comment-specific core effects.
-- Added a TUI comment composer mode with multi-line editing, `Ctrl-S` submit,
-  `Ctrl-Enter` submit where supported, `Escape` cancel, and `Ctrl-E`
-  `$EDITOR` escalation.
+- Added a TUI comment composer mode with multi-line editing, `Ctrl-Space`
+  submit, `Ctrl-S` and `Ctrl-Enter` submit fallbacks, `Escape` cancel, and
+  `Ctrl-Shift-E` `$EDITOR` escalation.
+- Kept standard terminal editing behavior available in the composer:
+  `Ctrl-E` moves to line end, `Ctrl-C` reaches the quit warning, and `Ctrl-Z`
+  reaches process suspend.
 - Queued comment creation in the app layer using the captured 13a anchor and
   the submitted body, then called the existing `create_comment` client API.
 - Added status feedback for empty bodies, cancellation, in-flight creation,
   creation success, and creation failure.
 - Added editor context templates that show the selected lines with
-  surrounding context above a separator, and strip the unchanged generated
-  prefix when the editor exits.
+  surrounding context above an instructional separator, and strip the
+  unchanged generated prefix when the editor exits.
 - Stopped the terminal event-polling thread while `$EDITOR` is active so the
   editor has exclusive control of stdin/stdout/stderr.
 - Added mouse-selection handoff so Enter on a diff-pane mouse selection opens
