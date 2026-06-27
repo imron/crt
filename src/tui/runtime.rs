@@ -38,7 +38,7 @@ const CTRL_C_TIMEOUT: Duration = Duration::from_secs(3);
 /// How often the TUI gives the app a chance to process background work while
 /// waiting for terminal input.
 const APP_TICK_INTERVAL: Duration = Duration::from_millis(100);
-const COMMENT_EDITOR_HEADER: &str = "# Enter your comment below the line.";
+const COMMENT_EDITOR_HEADER: &str = "# Enter your comment below the dotted line";
 const COMMENT_EDITOR_SEPARATOR: &str = "----------";
 
 /// The terminal UI runtime. Owns terminal interaction and presentation state.
@@ -962,7 +962,7 @@ mod tests {
 
         assert_eq!(
             document,
-            "# Enter your comment below the line.\n\
+            "# Enter your comment below the dotted line\n\
              before\n\
              selected one\n\
              selected two\n\
@@ -986,7 +986,8 @@ mod tests {
             context_after: String::new(),
         };
         let (_document, prefix) = comment_editor_document(Some(&anchor), "draft");
-        let edited = "# Enter your comment below the line.\nchanged\n----------\ndraft".to_string();
+        let edited =
+            "# Enter your comment below the dotted line\nchanged\n----------\ndraft".to_string();
 
         assert_eq!(
             strip_comment_editor_template(edited.clone(), &prefix),
