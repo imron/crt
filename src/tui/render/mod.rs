@@ -12,7 +12,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use super::state::{InputMode, TuiState};
 use crate::app::model::{AppModel, ReviewStatus};
@@ -424,9 +424,10 @@ fn draw_diff_search_input(
 fn draw_comment_input(frame: &mut Frame, tui_state: &mut TuiState, styles: &StyleConfig) {
     let area = frame.area();
     let width = area.width.saturating_sub(4).clamp(20, 100).min(area.width);
-    let line_count = comment_line_count(&tui_state.comment_input);
+    let wrap_width = width.saturating_sub(2).max(1) as usize;
+    let line_count = comment_visual_line_count(&tui_state.comment_input, wrap_width);
     let max_height = area.height.saturating_div(2).max(3).min(area.height);
-    let min_height = 5.min(max_height);
+    let min_height = 7.min(max_height);
     let desired_height = saturating_u16(line_count.saturating_add(2));
     let height = desired_height.clamp(min_height, max_height);
     let x = area.x + area.width.saturating_sub(width) / 2;
@@ -440,7 +441,11 @@ fn draw_comment_input(frame: &mut Frame, tui_state: &mut TuiState, styles: &Styl
     } else {
         tui_state.comment_input.clone()
     };
-    let (line, col) = comment_cursor_position(&tui_state.comment_input, tui_state.comment_cursor);
+    let (line, col) = comment_cursor_position(
+        &tui_state.comment_input,
+        tui_state.comment_cursor,
+        wrap_width,
+    );
     keep_comment_cursor_visible(tui_state, line, inner_height, line_count);
     let composer = Paragraph::new(body)
         .block(
@@ -451,6 +456,7 @@ fn draw_comment_input(frame: &mut Frame, tui_state: &mut TuiState, styles: &Styl
                 .title_bottom(" Ctrl-S submit / Ctrl-E editor / Esc cancel "),
         )
         .scroll((saturating_u16(tui_state.comment_scroll), 0))
+        .wrap(Wrap { trim: false })
         .style(Style::default().fg(*hs.text_fg).bg(*hs.bg));
 
     frame.render_widget(Clear, popup);
@@ -488,15 +494,33 @@ fn keep_comment_cursor_visible(
     tui_state.comment_scroll = tui_state.comment_scroll.min(max_scroll);
 }
 
-fn comment_line_count(text: &str) -> usize {
-    text.bytes().filter(|byte| *byte == b'\n').count() + 1
+fn comment_visual_line_count(text: &str, wrap_width: usize) -> usize {
+    let wrap_width = wrap_width.max(1);
+    if text.is_empty() {
+        return 1;
+    }
+    text.split('\n')
+        .map(|line| visual_rows_for_col(line.chars().count(), wrap_width))
+        .sum()
 }
 
-fn comment_cursor_position(text: &str, cursor: usize) -> (usize, usize) {
+fn comment_cursor_position(text: &str, cursor: usize, wrap_width: usize) -> (usize, usize) {
+    let wrap_width = wrap_width.max(1);
     let before = &text[..cursor.min(text.len())];
-    let line = before.bytes().filter(|byte| *byte == b'\n').count();
-    let col = before.rsplit('\n').next().unwrap_or("").chars().count();
-    (line, col)
+    let mut visual_line = 0;
+    let mut parts = before.split('\n').peekable();
+    while let Some(part) = parts.next() {
+        let col = part.chars().count();
+        if parts.peek().is_none() {
+            return (visual_line + col / wrap_width, col % wrap_width);
+        }
+        visual_line += visual_rows_for_col(col, wrap_width);
+    }
+    (0, 0)
+}
+
+fn visual_rows_for_col(col: usize, wrap_width: usize) -> usize {
+    (col / wrap_width) + 1
 }
 
 // ---------------------------------------------------------------------------
@@ -688,6 +712,20 @@ fn truncate_line(s: &str, max: usize) -> String {
         format!("{}...", &trimmed[..max - 3])
     } else {
         trimmed[..max].to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn comment_cursor_position_accounts_for_wrapped_rows() {
+        let text = "abcdef\nghi";
+
+        assert_eq!(comment_visual_line_count(text, 4), 3);
+        assert_eq!(comment_cursor_position(text, 6, 4), (1, 2));
+        assert_eq!(comment_cursor_position(text, 10, 4), (2, 3));
     }
 }
 
