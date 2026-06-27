@@ -5,26 +5,29 @@
 
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::process::Command as ProcessCommand;
+use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseButton, MouseEvent,
-    MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use super::effects::apply_core_effects;
 use super::input::{CoreInputDispatch, KeyInputResult};
-use super::state::{LastPointerClick, MouseSelection, STATUS_MSG_TIMEOUT, TuiState};
+use super::state::{InputMode, LastPointerClick, MouseSelection, STATUS_MSG_TIMEOUT, TuiState};
 use super::{input, render};
 use crate::app::App;
+use crate::app::{VisualSelection, VisualSelectionMode};
 use crate::core::{CoreEffect, InputEvent, InteractionContext, PaneId, TextAnchor};
 use crate::review_types::PaneFocus;
 
@@ -34,14 +37,80 @@ const CTRL_C_TIMEOUT: Duration = Duration::from_secs(3);
 /// How often the TUI gives the app a chance to process background work while
 /// waiting for terminal input.
 const APP_TICK_INTERVAL: Duration = Duration::from_millis(100);
-const EVENT_POLL_HANDOFF_DELAY: Duration = Duration::from_millis(60);
+const COMMENT_EDITOR_HEADER: &str = "# Enter your comment below the line.";
+const COMMENT_EDITOR_SEPARATOR: &str = "----------";
 
 /// The terminal UI runtime. Owns terminal interaction and presentation state.
 pub struct Tui {
     app: App,
     tui_state: TuiState,
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
-    event_polling_paused: Arc<AtomicBool>,
+}
+
+struct EventPump {
+    tx: UnboundedSender<Event>,
+    rx: UnboundedReceiver<Event>,
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl EventPump {
+    fn start() -> Self {
+        let (tx, rx) = unbounded_channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = Some(spawn_event_poll_thread(tx.clone(), Arc::clone(&stop)));
+        Self {
+            tx,
+            rx,
+            stop,
+            handle,
+        }
+    }
+
+    async fn recv(&mut self) -> Option<Event> {
+        self.rx.recv().await
+    }
+
+    fn try_recv(&mut self) -> Result<Event, tokio::sync::mpsc::error::TryRecvError> {
+        self.rx.try_recv()
+    }
+
+    fn stop_polling(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+
+    fn restart(&mut self) {
+        self.stop_polling();
+        self.stop = Arc::new(AtomicBool::new(false));
+        self.handle = Some(spawn_event_poll_thread(
+            self.tx.clone(),
+            Arc::clone(&self.stop),
+        ));
+    }
+
+    fn drain(&mut self) {
+        while self.rx.try_recv().is_ok() {}
+    }
+}
+
+fn spawn_event_poll_thread(tx: UnboundedSender<Event>, stop: Arc<AtomicBool>) -> JoinHandle<()> {
+    thread::spawn(move || {
+        loop {
+            if stop.load(Ordering::Acquire) || tx.is_closed() {
+                break;
+            }
+            if event::poll(Duration::from_millis(50)).unwrap_or(false) {
+                if let Ok(ev) = event::read() {
+                    if tx.send(ev).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    })
 }
 
 impl Tui {
@@ -53,7 +122,6 @@ impl Tui {
             app,
             tui_state: TuiState::new(),
             terminal,
-            event_polling_paused: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -88,36 +156,7 @@ impl Tui {
     /// async channel, keeping the tokio runtime responsive for server
     /// calls and notifications.
     async fn event_loop(&mut self) -> Result<()> {
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
-        let event_polling_paused = Arc::clone(&self.event_polling_paused);
-
-        // Spawn a blocking task that polls crossterm for events and
-        // forwards them to the async channel.
-        let poll_handle = tokio::task::spawn_blocking(move || {
-            loop {
-                if event_polling_paused.load(Ordering::Acquire) {
-                    std::thread::sleep(Duration::from_millis(10));
-                    if event_tx.is_closed() {
-                        break;
-                    }
-                    continue;
-                }
-
-                // Poll with a short timeout so we can check if the channel
-                // is closed (receiver dropped).
-                if event::poll(Duration::from_millis(50)).unwrap_or(false) {
-                    if let Ok(ev) = event::read() {
-                        if event_tx.send(ev).is_err() {
-                            break; // receiver dropped, exit
-                        }
-                    }
-                }
-                // Check if receiver is still alive.
-                if event_tx.is_closed() {
-                    break;
-                }
-            }
-        });
+        let mut event_pump = EventPump::start();
 
         let mut last_rendered_revision = None;
         let mut tui_dirty = true;
@@ -130,14 +169,14 @@ impl Tui {
             }
 
             tokio::select! {
-                maybe_ev = event_rx.recv() => {
+                maybe_ev = event_pump.recv() => {
                     match maybe_ev {
                         Some(ev) => {
                             tui_dirty = true;
-                            self.handle_event(ev);
+                            self.handle_event(ev, &mut event_pump);
 
-                            while let Ok(ev) = event_rx.try_recv() {
-                                self.handle_event(ev);
+                            while let Ok(ev) = event_pump.try_recv() {
+                                self.handle_event(ev, &mut event_pump);
                             }
                         }
                         None => break,
@@ -159,7 +198,11 @@ impl Tui {
             if self.tui_state.should_suspend {
                 self.tui_state.should_suspend = false;
                 tui_dirty = true;
+                event_pump.stop_polling();
+                event_pump.drain();
                 self.suspend()?;
+                event_pump.restart();
+                event_pump.drain();
             }
 
             if self.tui_state.should_quit {
@@ -167,20 +210,20 @@ impl Tui {
             }
         }
 
-        // Clean up the polling task.
-        drop(event_rx);
-        let _ = poll_handle.await;
+        event_pump.stop_polling();
 
         Ok(())
     }
 
     /// Dispatch a single terminal event.
-    fn handle_event(&mut self, ev: Event) {
+    fn handle_event(&mut self, ev: Event, event_pump: &mut EventPump) {
         match ev {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
-                // Any keypress clears mouse selection.
-                self.tui_state.mouse_selection = None;
-                self.tui_state.mouse_down_anchor = None;
+                let seeded_mouse_comment = self.seed_mouse_selection_for_comment(&key);
+                if self.tui_state.input_mode != InputMode::Comment && !seeded_mouse_comment {
+                    self.tui_state.mouse_selection = None;
+                    self.tui_state.mouse_down_anchor = None;
+                }
                 match input::handle_key_event(&mut self.tui_state, key) {
                     KeyInputResult::Core(dispatch) => {
                         let handled = self.dispatch_core_input(dispatch);
@@ -189,7 +232,7 @@ impl Tui {
                         }
                     }
                     KeyInputResult::OpenEditor => {
-                        if let Err(e) = self.edit_comment_in_editor() {
+                        if let Err(e) = self.edit_comment_in_editor(event_pump) {
                             self.tui_state
                                 .set_status_message(format!("Editor error: {e}"));
                         }
@@ -217,6 +260,32 @@ impl Tui {
     fn dispatch_core_input(&mut self, dispatch: CoreInputDispatch) -> bool {
         let effects = self.core_effects_for_input(dispatch);
         apply_core_effects(&mut self.app, &mut self.tui_state, effects)
+    }
+
+    fn seed_mouse_selection_for_comment(&mut self, key: &KeyEvent) -> bool {
+        if self.tui_state.input_mode != InputMode::Normal
+            || key.code != KeyCode::Enter
+            || !key.modifiers.is_empty()
+        {
+            return false;
+        }
+
+        let Some(selection) = &self.tui_state.mouse_selection else {
+            return false;
+        };
+        if selection.pane != PaneFocus::Diff {
+            return false;
+        }
+
+        let (start, end) = selection.normalized();
+        self.app.state.pane_focus = PaneFocus::Diff;
+        self.app.state.visual_selection = Some(VisualSelection {
+            mode: VisualSelectionMode::Line,
+            start,
+            end,
+        });
+        self.app.state.mark_model_changed();
+        true
     }
 
     fn render_current_frame(&mut self) -> Result<u64> {
@@ -269,38 +338,44 @@ impl Tui {
     /// Suspend the process: restore the terminal, send SIGTSTP, then
     /// re-setup the terminal when the user resumes with `fg`.
     fn suspend(&mut self) -> Result<()> {
-        self.event_polling_paused.store(true, Ordering::Release);
-        std::thread::sleep(EVENT_POLL_HANDOFF_DELAY);
-        let suspend_result = (|| -> Result<()> {
-            restore_terminal(&mut self.terminal)?;
+        restore_terminal(&mut self.terminal)?;
 
-            #[cfg(unix)]
-            {
-                // SAFETY: raise() is safe to call with a valid signal number.
-                unsafe {
-                    libc::raise(libc::SIGTSTP);
-                }
+        #[cfg(unix)]
+        {
+            // SAFETY: raise() is safe to call with a valid signal number.
+            unsafe {
+                libc::raise(libc::SIGTSTP);
             }
+        }
 
-            // When the user runs `fg`, execution resumes here.
-            self.terminal = setup_terminal().context("Failed to re-setup terminal after resume")?;
-            Ok(())
-        })();
-        self.event_polling_paused.store(false, Ordering::Release);
-        suspend_result
+        // When the user runs `fg`, execution resumes here.
+        self.terminal = setup_terminal().context("Failed to re-setup terminal after resume")?;
+        Ok(())
     }
 
-    fn edit_comment_in_editor(&mut self) -> Result<()> {
+    fn edit_comment_in_editor(&mut self, event_pump: &mut EventPump) -> Result<()> {
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
         let path = comment_editor_path();
-        std::fs::write(&path, &self.tui_state.comment_input)
+        let (document, prefix) = comment_editor_document(
+            self.app.state.pending_comment_anchor.as_ref(),
+            &self.tui_state.comment_input,
+        );
+        std::fs::write(&path, document)
             .with_context(|| format!("Failed to write {}", path.display()))?;
 
-        self.event_polling_paused.store(true, Ordering::Release);
-        std::thread::sleep(EVENT_POLL_HANDOFF_DELAY);
+        event_pump.stop_polling();
+        event_pump.drain();
         let edit_result = (|| -> Result<()> {
+            drain_terminal_events()?;
             restore_terminal(&mut self.terminal)?;
-            let status = ProcessCommand::new(&editor).arg(&path).status();
+            io::stdout().flush().context("Failed to flush stdout")?;
+            let status = ProcessCommand::new(&editor)
+                .arg(&path)
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status();
+            drain_terminal_events()?;
             self.terminal = setup_terminal().context("Failed to re-setup terminal after editor")?;
             let status = status.with_context(|| format!("Failed to launch editor `{editor}`"))?;
 
@@ -311,11 +386,13 @@ impl Tui {
 
             let body = std::fs::read_to_string(&path)
                 .with_context(|| format!("Failed to read {}", path.display()))?;
+            let body = strip_comment_editor_template(body, &prefix);
             self.tui_state.comment_cursor = body.len();
             self.tui_state.comment_input = body;
             Ok(())
         })();
-        self.event_polling_paused.store(false, Ordering::Release);
+        event_pump.restart();
+        event_pump.drain();
         let _ = std::fs::remove_file(&path);
         edit_result
     }
@@ -549,6 +626,50 @@ fn comment_editor_path() -> PathBuf {
     std::env::temp_dir().join(format!("crt-comment-{}.md", std::process::id()))
 }
 
+fn comment_editor_document(
+    anchor: Option<&crate::app::CommentAnchorCapture>,
+    body: &str,
+) -> (String, String) {
+    let Some(anchor) = anchor else {
+        return (body.to_string(), String::new());
+    };
+
+    let mut prefix = String::new();
+    prefix.push_str(COMMENT_EDITOR_HEADER);
+    prefix.push('\n');
+    if !anchor.context_before.is_empty() {
+        prefix.push_str(&anchor.context_before);
+        prefix.push('\n');
+    }
+    prefix.push_str(&anchor.anchor_text);
+    prefix.push('\n');
+    if !anchor.context_after.is_empty() {
+        prefix.push_str(&anchor.context_after);
+        prefix.push('\n');
+    }
+    prefix.push_str(COMMENT_EDITOR_SEPARATOR);
+    prefix.push('\n');
+
+    let mut document = prefix.clone();
+    document.push_str(body);
+    (document, prefix)
+}
+
+fn strip_comment_editor_template(body: String, prefix: &str) -> String {
+    if prefix.is_empty() {
+        return body;
+    }
+    body.strip_prefix(prefix)
+        .map_or(body.clone(), ToString::to_string)
+}
+
+fn drain_terminal_events() -> Result<()> {
+    while event::poll(Duration::ZERO).context("Failed to poll terminal events")? {
+        let _ = event::read().context("Failed to read terminal event")?;
+    }
+    Ok(())
+}
+
 fn is_identifier_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
@@ -760,6 +881,55 @@ mod tests {
         assert_eq!(
             extract_selected_text(&tui_state, &sel),
             "first line\nsecond"
+        );
+    }
+
+    #[test]
+    fn editor_document_wraps_comment_with_anchor_context() {
+        let anchor = crate::app::CommentAnchorCapture {
+            file_path: "src/main.rs".to_string(),
+            line_start: 4,
+            line_end: 5,
+            char_start: None,
+            char_end: None,
+            anchor_text: "selected one\nselected two".to_string(),
+            context_before: "before".to_string(),
+            context_after: "after".to_string(),
+        };
+
+        let (document, prefix) = comment_editor_document(Some(&anchor), "draft");
+
+        assert_eq!(
+            document,
+            "# Enter your comment below the line.\n\
+             before\n\
+             selected one\n\
+             selected two\n\
+             after\n\
+             ----------\n\
+             draft"
+        );
+        assert_eq!(strip_comment_editor_template(document, &prefix), "draft");
+    }
+
+    #[test]
+    fn editor_template_strip_keeps_changed_context() {
+        let anchor = crate::app::CommentAnchorCapture {
+            file_path: "src/main.rs".to_string(),
+            line_start: 4,
+            line_end: 4,
+            char_start: None,
+            char_end: None,
+            anchor_text: "selected".to_string(),
+            context_before: String::new(),
+            context_after: String::new(),
+        };
+        let (_document, prefix) = comment_editor_document(Some(&anchor), "draft");
+        let edited = "# Enter your comment below the line.\nchanged\n----------\ndraft".to_string();
+
+        assert_eq!(
+            strip_comment_editor_template(edited.clone(), &prefix),
+            edited
         );
     }
 

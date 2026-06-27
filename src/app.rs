@@ -85,7 +85,6 @@ pub struct DefinitionResults {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisualSelectionMode {
     Line,
-    Character,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -550,6 +549,7 @@ impl App {
         match client.create_comment(params).await {
             Ok(result) => {
                 self.state.pending_comment_anchor = None;
+                self.state.visual_selection = None;
                 self.state.mark_model_changed();
                 Some(StatusUpdate::Set(format!(
                     "Created comment #{}",
@@ -1405,11 +1405,11 @@ mod tests {
         assert_eq!(capture.anchor_text, "let alpha = beta;\nlet gamma = delta;");
         assert_eq!(capture.context_before, "line8\nline9\nline10");
         assert_eq!(capture.context_after, "after one\nafter two\nafter three");
-        assert!(app.state.visual_selection.is_none());
+        assert!(app.state.visual_selection.is_some());
     }
 
     #[test]
-    fn character_visual_selection_captures_subline_anchor() {
+    fn lowercase_visual_selection_captures_full_line_anchor() {
         let mut app = App::new(
             Config::default(),
             test_context(),
@@ -1443,7 +1443,7 @@ mod tests {
         app.apply_core_effects(
             &view,
             vec![
-                CoreEffect::VisualSelection(VisualSelectionEffect::StartCharacter),
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartLine),
                 CoreEffect::VisualSelection(VisualSelectionEffect::Move(
                     DiffCursorEffect::CharRight,
                 )),
@@ -1461,9 +1461,9 @@ mod tests {
             .expect("selection should capture anchor data");
         assert_eq!(capture.line_start, 11);
         assert_eq!(capture.line_end, 11);
-        assert_eq!(capture.char_start, Some(4));
-        assert_eq!(capture.char_end, Some(7));
-        assert_eq!(capture.anchor_text, "alp");
+        assert_eq!(capture.char_start, None);
+        assert_eq!(capture.char_end, None);
+        assert_eq!(capture.anchor_text, "let alpha = beta;");
     }
 
     #[test]

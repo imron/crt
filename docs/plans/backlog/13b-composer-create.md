@@ -43,12 +43,20 @@ client/server.
 
 6. A dedicated key inside the composer (e.g. Ctrl-e) writes current text to
    a temp file, launches $EDITOR, and replaces the composer content with the
-   edited result on exit.
+   edited result on exit. The editor file shows the selected lines and
+   surrounding context above a separator; that generated prefix is stripped
+   on return if it is unchanged.
 
 7. Basic status / error feedback is shown for create success or failure.
 
 8. Unit and interaction tests cover submit, cancel, editor round-trip, and
    error paths.
+
+9. Mouse selections in the diff pane can be turned into comment anchors with
+   Enter, after the selection has already been copied to the clipboard.
+
+10. The selected lines remain visually highlighted while the composer is
+    active.
 
 ## Acceptance Criteria
 
@@ -58,6 +66,11 @@ client/server.
       the selection/input.
 - [x] Escape cancels the composer without creating a comment.
 - [x] Editor escalation key works and updated text is used on submit.
+- [x] Editor escalation includes selected lines and context, strips the
+      unchanged generated prefix, and keeps the full edit if that prefix was
+      changed.
+- [x] Diff-pane mouse selections support Enter to open the comment composer.
+- [x] Selection highlighting remains visible while composing a comment.
 - [x] Comments created this way are stored and retrievable via existing
       list/get APIs.
 - [x] No changes to display of comments (deferred).
@@ -87,6 +100,13 @@ client/server.
   the submitted body, then called the existing `create_comment` client API.
 - Added status feedback for empty bodies, cancellation, in-flight creation,
   creation success, and creation failure.
+- Added editor context templates that show the selected lines with
+  surrounding context above a separator, and strip the unchanged generated
+  prefix when the editor exits.
+- Stopped the terminal event-polling thread while `$EDITOR` is active so the
+  editor has exclusive control of stdin/stdout/stderr.
+- Added mouse-selection handoff so Enter on a diff-pane mouse selection opens
+  the comment composer without clearing the visible selection.
 - Added focused core, app, and TUI tests for the comment prompt lifecycle,
-  multi-line input, cancellation, editor escalation dispatch, and queued
-  create-comment work.
+  multi-line input, cancellation, editor escalation dispatch, editor template
+  stripping, and queued create-comment work.

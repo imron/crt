@@ -51,24 +51,28 @@ Keybinding decision (recorded here):
 
 ### Selection and Comment Creation
 
-1. **`V` (line selection)**: in the diff pane, press `V` to enter line
+1. **`v` (line selection)**: in the diff pane, press `v` to enter line
    selection mode. The current line is selected. `j`/`k` extend the
-   selection. Selected lines are visually highlighted.
+   selection. Selected lines are visually highlighted. Shifted `V` is
+   accepted as the same mode.
 
-2. **`v` (character selection)**: in the diff pane, press `v` to enter
-   character selection mode. `h`/`l`/`j`/`k` move the selection endpoint.
-   Highlighted at character level.
+2. **Mouse selection**: dragging in the diff pane selects text and copies it
+   to the clipboard. Pressing `Enter` with an active diff mouse selection
+   opens the comment input for the selected lines.
 
-3. **`Enter` to create comment**: after making a selection with `V` or
-   `v`, press `Enter` to open the comment input.
+3. **`Enter` to create comment**: after making a keyboard or mouse
+   selection, press `Enter` to open the comment input. The selected lines
+   remain visible while the input is active.
 
 4. **Comment input (short)**: a multi-line text input area appears at the
    bottom of the screen or as an overlay. `Ctrl-Enter` (or designated key)
    submits. `Escape` cancels.
 
 5. **Comment input (long)**: a keybinding within the comment input
-   (e.g. `Ctrl-e`) opens `$EDITOR` for longer comments. On editor exit,
-   the text is read back.
+   (e.g. `Ctrl-e`) opens `$EDITOR` for longer comments. The editor buffer
+   shows selected lines and context above a separator. On editor exit, the
+   unchanged generated prefix is stripped; if the prefix was changed, the
+   full file content is used as the comment body.
 
 6. **Cancel selection**: `Escape` in `V`/`v` mode before `Enter` cancels
    the selection and returns to normal mode.
@@ -155,11 +159,15 @@ Later / optional (inline comments):
 
 ## Acceptance Criteria
 
-- [ ] `V` enters line selection mode; `j`/`k` extend visually.
-- [ ] `v` enters character selection mode with character-level highlight.
+- [ ] `v` enters line selection mode; `j`/`k` extend visually.
+- [ ] `V` enters the same line selection mode.
+- [ ] Diff mouse selection copies to the clipboard and Enter opens the
+      comment input for the selected lines.
 - [ ] `Escape` cancels selection without creating a comment.
 - [ ] `Enter` after selection opens the comment input.
 - [ ] Comment input supports multi-line text and `$EDITOR` escalation.
+- [ ] `$EDITOR` buffers include selected lines and context, and strip the
+      unchanged generated prefix on return.
 - [ ] Comments are persisted via the server and survive restart.
 - [ ] `c` (if implemented) toggles inline comment visibility (deferred).
 - [ ] Unresolved comments appear as inline blocks when visible (deferred).
