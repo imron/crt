@@ -295,6 +295,9 @@ fn handle_diff_search_input(tui_state: &mut TuiState, key: CrosstermKeyEvent) ->
 /// Handle keystrokes while composing a review comment.
 fn handle_comment_input(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> KeyInputResult {
     match key.code {
+        KeyCode::Char('c') | KeyCode::Char('z') if key.modifiers == KeyModifiers::CONTROL => {
+            return dispatch_core_input(key);
+        }
         KeyCode::Esc => {
             if let Some(dispatch) = cancel_active_prompt(tui_state) {
                 return KeyInputResult::Core(dispatch);
@@ -829,6 +832,56 @@ mod tests {
             KeyInputResult::Core(CoreInputDispatch::PromptCancel(InputEvent::PromptCancel {
                 id: PromptId(9),
             }))
+        );
+    }
+
+    #[test]
+    fn comment_prompt_control_c_routes_to_core_input() {
+        let mut tui_state = TuiState::default();
+        tui_state.open_comment_prompt(PromptId(9), "draft".to_string());
+
+        let result = handle_key_event(
+            &mut tui_state,
+            CrosstermKeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        );
+
+        assert_eq!(
+            result,
+            KeyInputResult::Core(CoreInputDispatch::Interaction(InputEvent::Key(
+                CoreKeyEvent {
+                    kind: CoreKeyEventKind::Press,
+                    key: CoreKey::Char('c'),
+                    modifiers: InputModifiers {
+                        ctrl: true,
+                        ..Default::default()
+                    },
+                },
+            )))
+        );
+    }
+
+    #[test]
+    fn comment_prompt_control_z_routes_to_core_input() {
+        let mut tui_state = TuiState::default();
+        tui_state.open_comment_prompt(PromptId(9), "draft".to_string());
+
+        let result = handle_key_event(
+            &mut tui_state,
+            CrosstermKeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
+        );
+
+        assert_eq!(
+            result,
+            KeyInputResult::Core(CoreInputDispatch::Interaction(InputEvent::Key(
+                CoreKeyEvent {
+                    kind: CoreKeyEventKind::Press,
+                    key: CoreKey::Char('z'),
+                    modifiers: InputModifiers {
+                        ctrl: true,
+                        ..Default::default()
+                    },
+                },
+            )))
         );
     }
 
