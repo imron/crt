@@ -142,6 +142,15 @@ fn cancel_active_prompt(tui_state: &mut TuiState) -> Option<CoreInputDispatch> {
     }))
 }
 
+fn submit_comment_prompt(tui_state: &mut TuiState) -> KeyInputResult {
+    let body = tui_state.comment_input.clone();
+    if let Some(dispatch) = submit_active_prompt(tui_state, body) {
+        return KeyInputResult::Core(dispatch);
+    }
+    tui_state.clear_prompt();
+    KeyInputResult::Local
+}
+
 /// Handle a key press event by updating local TUI input state and emitting core input.
 pub fn handle_key_event(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> KeyInputResult {
     if tui_state.input_mode == InputMode::Command {
@@ -293,18 +302,16 @@ fn handle_comment_input(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> Key
             tui_state.clear_prompt();
         }
         KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            let body = tui_state.comment_input.clone();
-            if let Some(dispatch) = submit_active_prompt(tui_state, body) {
-                return KeyInputResult::Core(dispatch);
-            }
-            tui_state.clear_prompt();
+            return submit_comment_prompt(tui_state);
         }
         KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            let body = tui_state.comment_input.clone();
-            if let Some(dispatch) = submit_active_prompt(tui_state, body) {
-                return KeyInputResult::Core(dispatch);
-            }
-            tui_state.clear_prompt();
+            return submit_comment_prompt(tui_state);
+        }
+        KeyCode::Char(' ') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return submit_comment_prompt(tui_state);
+        }
+        KeyCode::Null => {
+            return submit_comment_prompt(tui_state);
         }
         KeyCode::Char('E') | KeyCode::Char('e')
             if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -765,6 +772,44 @@ mod tests {
             KeyInputResult::Core(CoreInputDispatch::PromptSubmit(InputEvent::PromptSubmit {
                 id: PromptId(9),
                 value: "a\nb".to_string(),
+            }))
+        );
+    }
+
+    #[test]
+    fn comment_prompt_ctrl_space_submits_comment() {
+        let mut tui_state = TuiState::default();
+        tui_state.open_comment_prompt(PromptId(9), "draft".to_string());
+
+        let result = handle_key_event(
+            &mut tui_state,
+            CrosstermKeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL),
+        );
+
+        assert_eq!(
+            result,
+            KeyInputResult::Core(CoreInputDispatch::PromptSubmit(InputEvent::PromptSubmit {
+                id: PromptId(9),
+                value: "draft".to_string(),
+            }))
+        );
+    }
+
+    #[test]
+    fn comment_prompt_null_key_submits_comment() {
+        let mut tui_state = TuiState::default();
+        tui_state.open_comment_prompt(PromptId(9), "draft".to_string());
+
+        let result = handle_key_event(
+            &mut tui_state,
+            CrosstermKeyEvent::new(KeyCode::Null, KeyModifiers::NONE),
+        );
+
+        assert_eq!(
+            result,
+            KeyInputResult::Core(CoreInputDispatch::PromptSubmit(InputEvent::PromptSubmit {
+                id: PromptId(9),
+                value: "draft".to_string(),
             }))
         );
     }
