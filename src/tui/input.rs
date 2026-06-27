@@ -453,10 +453,9 @@ fn previous_word_boundary(text: &str, cursor: usize) -> usize {
     let mut start = cursor;
     while start > 0 {
         let previous = previous_char_boundary(text, start);
-        let ch = text[previous..start]
-            .chars()
-            .next()
-            .expect("previous boundary should contain a char");
+        let Some(ch) = text[previous..start].chars().next() else {
+            break;
+        };
         if !ch.is_whitespace() {
             break;
         }
@@ -464,10 +463,9 @@ fn previous_word_boundary(text: &str, cursor: usize) -> usize {
     }
     while start > 0 {
         let previous = previous_char_boundary(text, start);
-        let ch = text[previous..start]
-            .chars()
-            .next()
-            .expect("previous boundary should contain a char");
+        let Some(ch) = text[previous..start].chars().next() else {
+            break;
+        };
         if ch.is_whitespace() {
             break;
         }
@@ -480,10 +478,9 @@ fn next_word_boundary(text: &str, cursor: usize) -> usize {
     let mut end = cursor;
     while end < text.len() {
         let next = next_char_boundary(text, end);
-        let ch = text[end..next]
-            .chars()
-            .next()
-            .expect("next boundary should contain a char");
+        let Some(ch) = text[end..next].chars().next() else {
+            break;
+        };
         if ch.is_whitespace() {
             break;
         }
@@ -491,10 +488,9 @@ fn next_word_boundary(text: &str, cursor: usize) -> usize {
     }
     while end < text.len() {
         let next = next_char_boundary(text, end);
-        let ch = text[end..next]
-            .chars()
-            .next()
-            .expect("next boundary should contain a char");
+        let Some(ch) = text[end..next].chars().next() else {
+            break;
+        };
         if !ch.is_whitespace() {
             break;
         }
