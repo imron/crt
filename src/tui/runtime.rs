@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    MouseButton, MouseEvent, MouseEventKind,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
@@ -26,9 +26,10 @@ use super::effects::apply_core_effects;
 use super::input::{CoreInputDispatch, KeyInputResult};
 use super::state::{InputMode, LastPointerClick, MouseSelection, STATUS_MSG_TIMEOUT, TuiState};
 use super::{input, render};
-use crate::app::App;
-use crate::app::{VisualSelection, VisualSelectionMode};
-use crate::core::{CoreEffect, InputEvent, InteractionContext, PaneId, TextAnchor};
+use crate::app::{App, VisualSelection};
+use crate::core::{
+    CoreEffect, InputEvent, InteractionContext, PaneId, TextAnchor, VisualSelectionEffect,
+};
 use crate::review_types::PaneFocus;
 
 /// How long the "Press Ctrl-C again" prompt stays active.
@@ -219,8 +220,7 @@ impl Tui {
     fn handle_event(&mut self, ev: Event, event_pump: &mut EventPump) {
         match ev {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
-                let seeded_mouse_comment = self.seed_mouse_selection_for_comment(&key);
-                if self.tui_state.input_mode != InputMode::Comment && !seeded_mouse_comment {
+                if self.tui_state.input_mode != InputMode::Comment {
                     self.tui_state.mouse_selection = None;
                     self.tui_state.mouse_down_anchor = None;
                 }
@@ -260,32 +260,6 @@ impl Tui {
     fn dispatch_core_input(&mut self, dispatch: CoreInputDispatch) -> bool {
         let effects = self.core_effects_for_input(dispatch);
         apply_core_effects(&mut self.app, &mut self.tui_state, effects)
-    }
-
-    fn seed_mouse_selection_for_comment(&mut self, key: &KeyEvent) -> bool {
-        if self.tui_state.input_mode != InputMode::Normal
-            || key.code != KeyCode::Enter
-            || !key.modifiers.is_empty()
-        {
-            return false;
-        }
-
-        let Some(selection) = &self.tui_state.mouse_selection else {
-            return false;
-        };
-        if selection.pane != PaneFocus::Diff {
-            return false;
-        }
-
-        let (start, end) = selection.normalized();
-        self.app.state.pane_focus = PaneFocus::Diff;
-        self.app.state.visual_selection = Some(VisualSelection {
-            mode: VisualSelectionMode::Line,
-            start,
-            end,
-        });
-        self.app.state.mark_model_changed();
-        true
     }
 
     fn render_current_frame(&mut self) -> Result<u64> {
@@ -446,6 +420,7 @@ impl Tui {
                     // subsequent Up event doesn't overwrite the clipboard.
                     self.tui_state.mouse_selection = None;
                     self.tui_state.mouse_down_anchor = None;
+                    self.cancel_visual_selection();
                     if let Some((pane, anchor)) = semantic_content_hit {
                         if pane == PaneFocus::FileList {
                             self.copy_file_path_at(anchor.line);
@@ -460,9 +435,11 @@ impl Tui {
                 apply_core_effects(&mut self.app, &mut self.tui_state, pending_core_effects);
 
                 if let Some((pane, anchor)) = semantic_content_hit {
-                    // Record mouse-down anchor; drag starts selection.
+                    // Record mouse-down anchor; drag starts selection. A
+                    // plain click still cancels any prior visual selection.
                     self.tui_state.mouse_selection = None;
                     self.tui_state.mouse_down_anchor = Some((pane, anchor));
+                    self.cancel_visual_selection();
                 }
             }
             _ => {
@@ -499,20 +476,39 @@ impl Tui {
                         // Extend the selection in semantic coordinates, clamped to
                         // the originating pane when the pointer leaves its content.
                         if let Some((pane, anchor)) = drag_content_hit {
-                            if let Some(sel) = &mut self.tui_state.mouse_selection {
-                                if sel.pane == pane {
-                                    sel.end = anchor;
-                                }
-                            } else if let Some((start_pane, start)) =
-                                self.tui_state.mouse_down_anchor
-                            {
+                            if let Some((start_pane, start)) = self.tui_state.mouse_down_anchor {
                                 if start_pane == pane {
-                                    self.tui_state.mouse_selection = Some(MouseSelection {
-                                        pane,
-                                        start,
-                                        end: anchor,
-                                        word_selected: false,
-                                    });
+                                    match pane {
+                                        PaneFocus::Diff => {
+                                            apply_core_effects(
+                                                &mut self.app,
+                                                &mut self.tui_state,
+                                                vec![
+                                                    CoreEffect::VisualSelection(
+                                                        VisualSelectionEffect::StartText {
+                                                            anchor: start,
+                                                        },
+                                                    ),
+                                                    CoreEffect::VisualSelection(
+                                                        VisualSelectionEffect::ExtendTo { anchor },
+                                                    ),
+                                                ],
+                                            );
+                                        }
+                                        PaneFocus::FileList => {
+                                            if let Some(sel) = &mut self.tui_state.mouse_selection {
+                                                sel.end = anchor;
+                                            } else {
+                                                self.tui_state.mouse_selection =
+                                                    Some(MouseSelection {
+                                                        pane,
+                                                        start,
+                                                        end: anchor,
+                                                        word_selected: false,
+                                                    });
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -522,7 +518,17 @@ impl Tui {
                             self.tui_state.dragging_border = false;
                             return;
                         }
-                        self.tui_state.mouse_down_anchor = None;
+                        let mouse_down_anchor = self.tui_state.mouse_down_anchor.take();
+                        if matches!(mouse_down_anchor, Some((PaneFocus::Diff, _))) {
+                            if let Some(selection) = self.app.state.visual_selection.as_ref() {
+                                let text =
+                                    extract_diff_visual_selection_text(&self.tui_state, selection);
+                                if !text.is_empty() {
+                                    copy_to_clipboard(&text);
+                                }
+                            }
+                            return;
+                        }
                         // Finish selection: extract text and copy to clipboard.
                         if let Some(sel) = self.tui_state.mouse_selection.take() {
                             if !sel.word_selected {
@@ -540,6 +546,16 @@ impl Tui {
                     _ => {}
                 }
             }
+        }
+    }
+
+    fn cancel_visual_selection(&mut self) {
+        if self.app.state.visual_selection.is_some() {
+            apply_core_effects(
+                &mut self.app,
+                &mut self.tui_state,
+                vec![CoreEffect::VisualSelection(VisualSelectionEffect::Cancel)],
+            );
         }
     }
 
@@ -579,12 +595,27 @@ impl Tui {
             line: anchor.line,
             column: end.saturating_sub(base_col),
         };
-        self.tui_state.mouse_selection = Some(MouseSelection {
-            pane,
-            start: start_anchor,
-            end: end_anchor,
-            word_selected: true,
-        });
+        if pane == PaneFocus::Diff {
+            apply_core_effects(
+                &mut self.app,
+                &mut self.tui_state,
+                vec![
+                    CoreEffect::VisualSelection(VisualSelectionEffect::StartText {
+                        anchor: start_anchor,
+                    }),
+                    CoreEffect::VisualSelection(VisualSelectionEffect::ExtendTo {
+                        anchor: end_anchor,
+                    }),
+                ],
+            );
+        } else {
+            self.tui_state.mouse_selection = Some(MouseSelection {
+                pane,
+                start: start_anchor,
+                end: end_anchor,
+                word_selected: true,
+            });
+        }
         self.tui_state
             .set_status_message(format!("Copied identifier: {word}"));
         true
@@ -750,6 +781,16 @@ fn extract_selected_text(tui_state: &TuiState, sel: &MouseSelection) -> String {
     result
 }
 
+fn extract_diff_visual_selection_text(tui_state: &TuiState, selection: &VisualSelection) -> String {
+    let sel = MouseSelection {
+        pane: PaneFocus::Diff,
+        start: selection.start,
+        end: selection.end,
+        word_selected: false,
+    };
+    extract_selected_text(tui_state, &sel)
+}
+
 // ---------------------------------------------------------------------------
 // Clipboard (OSC 52)
 // ---------------------------------------------------------------------------
@@ -880,6 +921,26 @@ mod tests {
 
         assert_eq!(
             extract_selected_text(&tui_state, &sel),
+            "first line\nsecond"
+        );
+    }
+
+    #[test]
+    fn extract_diff_visual_selection_uses_app_selection_anchors() {
+        let mut tui_state = TuiState::default();
+        tui_state.diff_gutter_cols = 4;
+        tui_state.diff_rendered_text = vec![
+            "     + first line".to_string(),
+            "       second line".to_string(),
+        ];
+        let selection = VisualSelection {
+            mode: crate::app::VisualSelectionMode::Text,
+            start: TextAnchor { line: 0, column: 0 },
+            end: TextAnchor { line: 1, column: 5 },
+        };
+
+        assert_eq!(
+            extract_diff_visual_selection_text(&tui_state, &selection),
             "first line\nsecond"
         );
     }

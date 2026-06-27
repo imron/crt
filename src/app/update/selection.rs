@@ -21,29 +21,26 @@ pub fn apply_visual_selection_effect(
 ) {
     match effect {
         VisualSelectionEffect::StartLine => {
-            state.pane_focus = PaneFocus::Diff;
             let anchor = TextAnchor {
                 line: state.diff_line_cursor,
                 column: 0,
             };
-            state.visual_selection = Some(VisualSelection {
-                mode: VisualSelectionMode::Line,
-                start: anchor,
-                end: anchor,
-            });
-            state.pending_comment_anchor = None;
+            start_selection(state, VisualSelectionMode::Line, anchor);
             update.set_status("Line selection started");
-            state.mark_model_changed();
+        }
+        VisualSelectionEffect::StartText { anchor } => {
+            start_selection(state, VisualSelectionMode::Text, anchor);
+        }
+        VisualSelectionEffect::ExtendTo { anchor } => {
+            extend_selection(state, anchor);
         }
         VisualSelectionEffect::Move(cursor_effect) => {
             cursor::apply_diff_cursor_effect(state, view, cursor_effect);
-            if let Some(selection) = state.visual_selection.as_mut() {
-                selection.end = TextAnchor {
-                    line: state.diff_line_cursor,
-                    column: state.diff_col_cursor,
-                };
-            }
-            state.mark_model_changed();
+            let anchor = TextAnchor {
+                line: state.diff_line_cursor,
+                column: state.diff_col_cursor,
+            };
+            extend_selection(state, anchor);
         }
         VisualSelectionEffect::Cancel => {
             state.visual_selection = None;
@@ -64,6 +61,35 @@ pub fn apply_visual_selection_effect(
             state.mark_model_changed();
         }
     }
+}
+
+fn start_selection(state: &mut AppState, mode: VisualSelectionMode, anchor: TextAnchor) {
+    state.pane_focus = PaneFocus::Diff;
+    state.diff_line_cursor = anchor.line;
+    state.diff_col_cursor = anchor.column;
+    state.visual_selection = Some(VisualSelection {
+        mode,
+        start: anchor,
+        end: anchor,
+    });
+    state.pending_comment_anchor = None;
+    state.mark_model_changed();
+}
+
+fn extend_selection(state: &mut AppState, anchor: TextAnchor) {
+    state.pane_focus = PaneFocus::Diff;
+    state.diff_line_cursor = anchor.line;
+    state.diff_col_cursor = anchor.column;
+    if let Some(selection) = state.visual_selection.as_mut() {
+        selection.end = anchor;
+    } else {
+        state.visual_selection = Some(VisualSelection {
+            mode: VisualSelectionMode::Text,
+            start: anchor,
+            end: anchor,
+        });
+    }
+    state.mark_model_changed();
 }
 
 fn capture_visual_selection(
