@@ -38,7 +38,6 @@ const CTRL_C_TIMEOUT: Duration = Duration::from_secs(3);
 /// How often the TUI gives the app a chance to process background work while
 /// waiting for terminal input.
 const APP_TICK_INTERVAL: Duration = Duration::from_millis(100);
-const COMMENT_EDITOR_HEADER: &str = "# Enter your comment below the dotted line";
 const COMMENT_EDITOR_SEPARATOR: &str = "------ Write your comment after this line ----";
 
 /// The terminal UI runtime. Owns terminal interaction and presentation state.
@@ -666,9 +665,6 @@ fn comment_editor_document(
     };
 
     let mut prefix = String::new();
-    prefix.push_str(COMMENT_EDITOR_HEADER);
-    prefix.push('\n');
-    prefix.push('\n');
     if !anchor.context_before.is_empty() {
         prefix.push_str(&anchor.context_before);
         prefix.push('\n');
@@ -964,9 +960,7 @@ mod tests {
 
         assert_eq!(
             document,
-            "# Enter your comment below the dotted line\n\
-             \n\
-             before\n\
+            "before\n\
              selected one\n\
              selected two\n\
              after\n\
@@ -990,8 +984,7 @@ mod tests {
             context_after: String::new(),
         };
         let (_document, prefix) = comment_editor_document(Some(&anchor), "draft");
-        let edited = "# Enter your comment below the dotted line\n\
-                      changed\n\
+        let edited = "changed\n\
                       ------ Write your comment after this line ----\n\
                       draft"
             .to_string();

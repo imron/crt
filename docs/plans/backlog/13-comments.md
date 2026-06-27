@@ -33,6 +33,7 @@ Later / optional sub-plans (inline comments + virtual rows):
 
 - 13g-visual-line-abstraction.md
 - 13h-inline-comment-blocks.md (and related)
+- 13i-unresolved-comments-pane.md
 
 The core comment functionality (selection/capture, composer, re-anchoring,
 gutter markers, and comments panel) can be built and used without any
