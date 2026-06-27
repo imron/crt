@@ -1,6 +1,6 @@
 # Stage 13c: Server Re-Anchoring for Unresolved Comments
 
-## Status: Not Started
+## Status: Complete
 
 ## Order
 
@@ -40,9 +40,9 @@ Comments use two tables plus a view:
   `file_blob_sha`, line/char ranges, `anchor_text`,
   `context_before`/`context_after`, and the `AnchorStatus` at that
   time.
-- `v_current_anchors`: a view using `GROUP BY comment_id` +
-  `MAX(created_at)` (with covering index on `(comment_id, created_at)`)
-  that exposes exactly one "latest" version per comment.
+- `v_current_anchors`: a view that selects the latest version per
+  comment by `created_at`, using `id` as a tie-breaker when versions
+  share the same timestamp.
 
 Creation records the first `anchor_versions` row using the exact
 `file_blob_sha` the selection was made against.
@@ -73,7 +73,7 @@ re-anchored — their last version remains the historical record.
   - `created_at`
 
 - Index
-  - Covering index on `anchor_versions(comment_id, created_at)`
+  - Covering index on `anchor_versions(comment_id, created_at, id)`
 
 ## Design Decisions
 
@@ -84,10 +84,9 @@ re-anchored — their last version remains the historical record.
 - `file_blob_sha` (instead of commit SHA) records the exact file
   content the anchor was derived from. This is more precise and
   simplifies the matching algorithm.
-- The `v_current_anchors` view (GROUP BY + MAX(created_at)) provides
-  a stable, read-only projection of the latest version per comment.
-  Using a view keeps the base tables simple and avoids a mutable
-  `is_current` flag.
+- The `v_current_anchors` view provides a stable, read-only projection
+  of the latest version per comment. Using a view keeps the base tables
+  simple and avoids a mutable `is_current` flag.
 - Only unresolved comments receive fresh context on re-anchor. This
   guarantees that future re-anchoring runs start from the most
   recent known-good text, avoiding drift from stale original
@@ -131,12 +130,12 @@ re-anchored — their last version remains the historical record.
 
 ## Acceptance Criteria
 
-- [ ] Unresolved comments receive correct non-Always-Anchored status
+- [x] Unresolved comments receive correct non-Always-Anchored status
       after changes to the file.
-- [ ] Resolved comments are never re-anchored and produce no warnings.
-- [ ] Orphaned unresolved comments are still returned (visible in panel later).
-- [ ] list_comments and get_comment both apply the logic.
-- [ ] Existing comment CRUD and notification behavior is unchanged.
+- [x] Resolved comments are never re-anchored and produce no warnings.
+- [x] Orphaned unresolved comments are still returned (visible in panel later).
+- [x] list_comments and get_comment both apply the logic.
+- [x] Existing comment CRUD and notification behavior is unchanged.
 
 ## Implementation Notes
 
@@ -145,8 +144,7 @@ re-anchored — their last version remains the historical record.
   as long as the four cases are covered.
 - Use the append-only `anchor_versions` table: always INSERT a new
   row for unresolved comments on re-anchor (never UPDATE existing
-  rows). The `v_current_anchors` view (GROUP BY + MAX(created_at)
-  with covering index) provides the latest.
+  rows). The `v_current_anchors` view provides the latest anchor.
 - Record `file_blob_sha` of the exact file content used for the match
   (creation uses the selection-time blob; re-anchors use current
   content).
@@ -167,4 +165,16 @@ re-anchored — their last version remains the historical record.
 
 ## Progress
 
-- (To be filled)
+- Reworked comment storage into stable `comments` records plus
+  append-only `anchor_versions`.
+- Added the `v_current_anchors` latest-anchor projection and migrated
+  old inline-anchor comment tables when detected.
+- Added versioned SQL migrations under `migrations/`, included by
+  `src/db.rs`, with legacy schema bootstrapping for existing DBs.
+- Creation now writes the initial anchor version with a worktree
+  content hash.
+- `list_comments` and `get_comment` now re-anchor unresolved comments
+  before returning them; resolved comments bypass the matcher.
+- Added matcher coverage for exact, shifted, approximate, and orphaned
+  outcomes.
+- Verified with `cargo check` and `cargo test`.

@@ -661,6 +661,80 @@ async fn test_comment_lifecycle() {
 }
 
 #[tokio::test]
+async fn test_comment_reanchors_unresolved_only() {
+    let server = TestServer::start().await;
+    std::fs::write(server.repo_dir.join("file.txt"), "hello\nworld\n").unwrap();
+    let mut conn = server.connect_and_init().await;
+
+    let create = conn
+        .request(
+            "create_comment",
+            serde_json::json!({
+                "file_path": "file.txt",
+                "line_start": 2,
+                "line_end": 2,
+                "char_start": null,
+                "char_end": null,
+                "anchor_text": "world",
+                "context_before": "hello",
+                "context_after": "",
+                "body": "check this",
+            }),
+        )
+        .await;
+    assert!(create["error"].is_null(), "create failed: {create}");
+    let id = create["result"]["comment"]["id"].as_i64().unwrap();
+
+    std::fs::write(server.repo_dir.join("file.txt"), "hello\nnew\nworld\n").unwrap();
+
+    let list = conn
+        .request(
+            "list_comments",
+            serde_json::json!({
+                "file_path": "file.txt",
+                "include_resolved": false,
+            }),
+        )
+        .await;
+    assert!(list["error"].is_null(), "list failed: {list}");
+    let shifted = &list["result"]["comments"].as_array().unwrap()[0];
+    assert_eq!(shifted["anchor_status"], "shifted");
+    assert_eq!(shifted["line_start"], 3);
+
+    std::fs::write(
+        server.repo_dir.join("file.txt"),
+        "hello\nnewer\nnew\nworld\n",
+    )
+    .unwrap();
+
+    let detail = conn
+        .request("get_comment", serde_json::json!({ "id": id }))
+        .await;
+    assert!(detail["error"].is_null(), "get failed: {detail}");
+    assert_eq!(detail["result"]["comment"]["anchor_status"], "shifted");
+    assert_eq!(detail["result"]["comment"]["line_start"], 4);
+
+    let resolved = conn
+        .request("resolve_comment", serde_json::json!({ "id": id }))
+        .await;
+    assert!(resolved["error"].is_null(), "resolve failed: {resolved}");
+
+    std::fs::write(
+        server.repo_dir.join("file.txt"),
+        "prefix\nhello\nnew\nworld\n",
+    )
+    .unwrap();
+
+    let detail = conn
+        .request("get_comment", serde_json::json!({ "id": id }))
+        .await;
+    assert!(detail["error"].is_null(), "get resolved failed: {detail}");
+    assert_eq!(detail["result"]["comment"]["resolved"], true);
+    assert_eq!(detail["result"]["comment"]["anchor_status"], "shifted");
+    assert_eq!(detail["result"]["comment"]["line_start"], 4);
+}
+
+#[tokio::test]
 async fn test_explicit_commit_base_does_not_migrate_reviews() {
     let server = TestServer::start().await;
     let head_ref = git_output(&server.repo_dir, &["branch", "--show-current"]);

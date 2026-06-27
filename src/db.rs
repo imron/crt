@@ -11,6 +11,8 @@ use anyhow::{Context, Result};
 use chrono::Local;
 use rusqlite::{Connection, params};
 
+use crate::review_types::AnchorStatus;
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -33,6 +35,21 @@ pub struct NewComment {
     pub merge_base: String,
     pub head_ref: String,
     pub file_path: String,
+    pub body: String,
+    pub anchor: NewCommentAnchor,
+}
+
+/// Parameters for creating a new anchor version.
+#[derive(Debug, Clone)]
+pub struct NewAnchorVersion {
+    pub comment_id: i64,
+    pub anchor: NewCommentAnchor,
+}
+
+/// Anchor data stored as a versioned record.
+#[derive(Debug, Clone)]
+pub struct NewCommentAnchor {
+    pub file_blob_sha: String,
     pub line_start: i64,
     pub line_end: i64,
     pub char_start: Option<i64>,
@@ -40,7 +57,7 @@ pub struct NewComment {
     pub anchor_text: String,
     pub context_before: String,
     pub context_after: String,
-    pub body: String,
+    pub status: AnchorStatus,
 }
 
 /// A stored comment record.
@@ -61,6 +78,8 @@ pub struct StoredComment {
     pub resolved: bool,
     pub created_at: String,
     pub updated_at: String,
+    pub file_blob_sha: String,
+    pub anchor_status: AnchorStatus,
 }
 
 // ---------------------------------------------------------------------------
@@ -71,6 +90,41 @@ pub struct StoredComment {
 pub struct Database {
     conn: Connection,
 }
+
+struct Migration {
+    version: i64,
+    name: &'static str,
+    up: &'static str,
+    #[allow(dead_code)]
+    down: &'static str,
+}
+
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial",
+        up: include_str!("../migrations/0001_initial.up.sql"),
+        down: include_str!("../migrations/0001_initial.down.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "rename_base_ref_to_merge_base",
+        up: include_str!("../migrations/0002_rename_base_ref_to_merge_base.up.sql"),
+        down: include_str!("../migrations/0002_rename_base_ref_to_merge_base.down.sql"),
+    },
+    Migration {
+        version: 3,
+        name: "add_reviewed_commit",
+        up: include_str!("../migrations/0003_add_reviewed_commit.up.sql"),
+        down: include_str!("../migrations/0003_add_reviewed_commit.down.sql"),
+    },
+    Migration {
+        version: 4,
+        name: "split_comment_anchors",
+        up: include_str!("../migrations/0004_split_comment_anchors.up.sql"),
+        down: include_str!("../migrations/0004_split_comment_anchors.down.sql"),
+    },
+];
 
 impl Database {
     /// Open (or create) the database at the given path.
@@ -84,71 +138,117 @@ impl Database {
             .context("Failed to enable WAL mode")?;
 
         let db = Self { conn };
-        db.init_schema()?;
-        db.migrate()?;
+        db.run_migrations()?;
         Ok(db)
     }
 
-    fn init_schema(&self) -> Result<()> {
+    fn run_migrations(&self) -> Result<()> {
+        self.ensure_schema_migrations_table()?;
+        self.bootstrap_legacy_migration_state()?;
+
+        for migration in MIGRATIONS {
+            if self.migration_applied(migration.version)? {
+                continue;
+            }
+            self.conn
+                .execute_batch(migration.up)
+                .with_context(|| format!("Failed to apply migration {}", migration.name))?;
+            self.record_migration(migration)?;
+        }
+        Ok(())
+    }
+
+    fn ensure_schema_migrations_table(&self) -> Result<()> {
+        if self.table_exists("schema_migrations")? {
+            return Ok(());
+        }
+
         self.conn
             .execute_batch(
                 "
-            CREATE TABLE IF NOT EXISTS file_reviews (
-                file_path       TEXT NOT NULL,
-                merge_base      TEXT NOT NULL,
-                head_ref        TEXT NOT NULL,
-                diff_hash       TEXT NOT NULL,
-                reviewed_at     TEXT NOT NULL,
-                reviewed_commit TEXT NOT NULL DEFAULT '',
-                PRIMARY KEY (merge_base, head_ref, file_path)
+            CREATE TABLE schema_migrations (
+                version     INTEGER PRIMARY KEY,
+                name        TEXT NOT NULL,
+                applied_at  TEXT NOT NULL
             );
-
-            CREATE TABLE IF NOT EXISTS comments (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                merge_base      TEXT NOT NULL,
-                head_ref        TEXT NOT NULL,
-                file_path       TEXT NOT NULL,
-                line_start      INTEGER NOT NULL,
-                line_end        INTEGER NOT NULL,
-                char_start      INTEGER,
-                char_end        INTEGER,
-                anchor_text     TEXT NOT NULL,
-                context_before  TEXT NOT NULL DEFAULT '',
-                context_after   TEXT NOT NULL DEFAULT '',
-                body            TEXT NOT NULL,
-                resolved        INTEGER NOT NULL DEFAULT 0,
-                created_at      TEXT NOT NULL,
-                updated_at      TEXT NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_comments_scope
-                ON comments (merge_base, head_ref, file_path);
             ",
             )
-            .context("Failed to initialize database schema")?;
+            .context("Failed to create schema_migrations table")?;
+        Ok(())
+    }
+
+    fn bootstrap_legacy_migration_state(&self) -> Result<()> {
+        if self.migration_count()? > 0 || !self.table_exists("file_reviews")? {
+            return Ok(());
+        }
+
+        self.mark_migration_applied(1, "initial")?;
+
+        if self.column_exists("file_reviews", "merge_base")? {
+            self.mark_migration_applied(2, "rename_base_ref_to_merge_base")?;
+        }
+        if self.column_exists("file_reviews", "reviewed_commit")? {
+            self.mark_migration_applied(3, "add_reviewed_commit")?;
+        }
+        if self.table_exists("anchor_versions")? && !self.column_exists("comments", "line_start")? {
+            self.mark_migration_applied(4, "split_comment_anchors")?;
+        }
 
         Ok(())
     }
 
-    /// Run forward-only migrations for schema changes added after the
-    /// initial `CREATE TABLE IF NOT EXISTS`.
-    fn migrate(&self) -> Result<()> {
-        // Migration 1: add `reviewed_commit` column to `file_reviews`.
-        // The column already exists in the CREATE TABLE for new databases,
-        // but existing databases need the ALTER TABLE.
-        let has_col = self
-            .conn
-            .prepare("SELECT reviewed_commit FROM file_reviews LIMIT 0")
-            .is_ok();
-        if !has_col {
-            self.conn
-                .execute_batch(
-                    "ALTER TABLE file_reviews ADD COLUMN reviewed_commit TEXT NOT NULL DEFAULT ''",
-                )
-                .context("Failed to add reviewed_commit column")?;
-        }
+    fn migration_count(&self) -> Result<i64> {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .context("Failed to count applied migrations")
+    }
 
+    fn migration_applied(&self, version: i64) -> Result<bool> {
+        self.conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
+                params![version],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|exists| exists != 0)
+            .context("Failed to check applied migration")
+    }
+
+    fn record_migration(&self, migration: &Migration) -> Result<()> {
+        self.mark_migration_applied(migration.version, migration.name)
+    }
+
+    fn mark_migration_applied(&self, version: i64, name: &str) -> Result<()> {
+        let now = now_iso8601();
+        self.conn
+            .execute(
+                "INSERT INTO schema_migrations (version, name, applied_at)
+                 VALUES (?1, ?2, ?3)",
+                params![version, name, now],
+            )
+            .with_context(|| format!("Failed to record migration {name}"))?;
         Ok(())
+    }
+
+    fn table_exists(&self, table: &str) -> Result<bool> {
+        self.conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = ?1
+                )",
+                params![table],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|exists| exists != 0)
+            .with_context(|| format!("Failed to check table {table}"))
+    }
+
+    fn column_exists(&self, table: &str, column: &str) -> Result<bool> {
+        let sql = format!("SELECT {column} FROM {table} LIMIT 0");
+        Ok(self.conn.prepare(&sql).is_ok())
     }
 
     // -----------------------------------------------------------------------
@@ -318,46 +418,73 @@ impl Database {
         self.conn
             .execute(
                 "INSERT INTO comments
-                    (merge_base, head_ref, file_path, line_start, line_end,
-                     char_start, char_end, anchor_text, context_before,
-                     context_after, body, resolved, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?12)",
-                params![
-                    new.merge_base,
-                    new.head_ref,
-                    new.file_path,
-                    new.line_start,
-                    new.line_end,
-                    new.char_start,
-                    new.char_end,
-                    new.anchor_text,
-                    new.context_before,
-                    new.context_after,
-                    new.body,
-                    now,
-                ],
+                    (merge_base, head_ref, file_path, body, resolved, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5)",
+                params![new.merge_base, new.head_ref, new.file_path, new.body, now,],
             )
             .context("Failed to create comment")?;
 
         let id = self.conn.last_insert_rowid();
+        self.insert_anchor_version_at(
+            &NewAnchorVersion {
+                comment_id: id,
+                anchor: new.anchor.clone(),
+            },
+            &now,
+        )?;
 
         Ok(StoredComment {
             id,
             merge_base: new.merge_base.clone(),
             head_ref: new.head_ref.clone(),
             file_path: new.file_path.clone(),
-            line_start: new.line_start,
-            line_end: new.line_end,
-            char_start: new.char_start,
-            char_end: new.char_end,
-            anchor_text: new.anchor_text.clone(),
-            context_before: new.context_before.clone(),
-            context_after: new.context_after.clone(),
+            line_start: new.anchor.line_start,
+            line_end: new.anchor.line_end,
+            char_start: new.anchor.char_start,
+            char_end: new.anchor.char_end,
+            anchor_text: new.anchor.anchor_text.clone(),
+            context_before: new.anchor.context_before.clone(),
+            context_after: new.anchor.context_after.clone(),
             body: new.body.clone(),
             resolved: false,
             created_at: now.clone(),
             updated_at: now,
+            file_blob_sha: new.anchor.file_blob_sha.clone(),
+            anchor_status: new.anchor.status,
         })
+    }
+
+    /// Append a new anchor version for an existing comment.
+    pub fn insert_anchor_version(&self, version: &NewAnchorVersion) -> Result<()> {
+        let now = now_iso8601();
+        self.insert_anchor_version_at(version, &now)
+    }
+
+    fn insert_anchor_version_at(&self, version: &NewAnchorVersion, created_at: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO anchor_versions
+                    (comment_id, file_blob_sha, line_start, line_end, char_start,
+                     char_end, anchor_text, context_before, context_after, status,
+                     created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    version.comment_id,
+                    version.anchor.file_blob_sha,
+                    version.anchor.line_start,
+                    version.anchor.line_end,
+                    version.anchor.char_start,
+                    version.anchor.char_end,
+                    version.anchor.anchor_text,
+                    version.anchor.context_before,
+                    version.anchor.context_after,
+                    anchor_status_to_db(version.anchor.status),
+                    created_at,
+                ],
+            )
+            .context("Failed to insert anchor version")?;
+
+        Ok(())
     }
 
     /// List comments for a `(merge_base, head_ref)` pair.
@@ -371,39 +498,33 @@ impl Database {
         let (sql, param_values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
             match (file_path, include_resolved) {
                 (None, true) => (
-                    "SELECT id, merge_base, head_ref, file_path, line_start, line_end,
-                            char_start, char_end, anchor_text, context_before,
-                            context_after, body, resolved, created_at, updated_at
-                     FROM comments
-                     WHERE merge_base = ?1 AND head_ref = ?2
-                     ORDER BY file_path, line_start"
-                        .to_string(),
+                    format!(
+                        "{COMMENT_SELECT}
+                         WHERE c.merge_base = ?1 AND c.head_ref = ?2
+                         ORDER BY c.file_path, a.line_start"
+                    ),
                     vec![
                         Box::new(merge_base.to_string()),
                         Box::new(head_ref.to_string()),
                     ],
                 ),
                 (None, false) => (
-                    "SELECT id, merge_base, head_ref, file_path, line_start, line_end,
-                            char_start, char_end, anchor_text, context_before,
-                            context_after, body, resolved, created_at, updated_at
-                     FROM comments
-                     WHERE merge_base = ?1 AND head_ref = ?2 AND resolved = 0
-                     ORDER BY file_path, line_start"
-                        .to_string(),
+                    format!(
+                        "{COMMENT_SELECT}
+                         WHERE c.merge_base = ?1 AND c.head_ref = ?2 AND c.resolved = 0
+                         ORDER BY c.file_path, a.line_start"
+                    ),
                     vec![
                         Box::new(merge_base.to_string()),
                         Box::new(head_ref.to_string()),
                     ],
                 ),
                 (Some(fp), true) => (
-                    "SELECT id, merge_base, head_ref, file_path, line_start, line_end,
-                            char_start, char_end, anchor_text, context_before,
-                            context_after, body, resolved, created_at, updated_at
-                     FROM comments
-                     WHERE merge_base = ?1 AND head_ref = ?2 AND file_path = ?3
-                     ORDER BY line_start"
-                        .to_string(),
+                    format!(
+                        "{COMMENT_SELECT}
+                         WHERE c.merge_base = ?1 AND c.head_ref = ?2 AND c.file_path = ?3
+                         ORDER BY a.line_start"
+                    ),
                     vec![
                         Box::new(merge_base.to_string()),
                         Box::new(head_ref.to_string()),
@@ -411,14 +532,12 @@ impl Database {
                     ],
                 ),
                 (Some(fp), false) => (
-                    "SELECT id, merge_base, head_ref, file_path, line_start, line_end,
-                            char_start, char_end, anchor_text, context_before,
-                            context_after, body, resolved, created_at, updated_at
-                     FROM comments
-                     WHERE merge_base = ?1 AND head_ref = ?2 AND file_path = ?3
-                       AND resolved = 0
-                     ORDER BY line_start"
-                        .to_string(),
+                    format!(
+                        "{COMMENT_SELECT}
+                         WHERE c.merge_base = ?1 AND c.head_ref = ?2 AND c.file_path = ?3
+                           AND c.resolved = 0
+                         ORDER BY a.line_start"
+                    ),
                     vec![
                         Box::new(merge_base.to_string()),
                         Box::new(head_ref.to_string()),
@@ -449,12 +568,7 @@ impl Database {
     pub fn get_comment(&self, id: i64) -> Result<Option<StoredComment>> {
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT id, merge_base, head_ref, file_path, line_start, line_end,
-                        char_start, char_end, anchor_text, context_before,
-                        context_after, body, resolved, created_at, updated_at
-                 FROM comments WHERE id = ?1",
-            )
+            .prepare(&format!("{COMMENT_SELECT} WHERE c.id = ?1"))
             .context("Failed to prepare comment query")?;
 
         let mut rows = stmt
@@ -508,6 +622,12 @@ impl Database {
 
     /// Delete a comment.
     pub fn delete_comment(&self, id: i64) -> Result<bool> {
+        self.conn
+            .execute(
+                "DELETE FROM anchor_versions WHERE comment_id = ?1",
+                params![id],
+            )
+            .context("Failed to delete comment anchor versions")?;
         let count = self
             .conn
             .execute("DELETE FROM comments WHERE id = ?1", params![id])
@@ -524,7 +644,44 @@ fn now_iso8601() -> String {
     Local::now().format("%Y-%m-%dT%H:%M:%S%:z").to_string()
 }
 
+const COMMENT_SELECT: &str = "
+    SELECT c.id, c.merge_base, c.head_ref, c.file_path,
+           a.line_start, a.line_end, a.char_start, a.char_end,
+           a.anchor_text, a.context_before, a.context_after,
+           c.body, c.resolved, c.created_at, c.updated_at,
+           a.file_blob_sha, a.status
+    FROM comments c
+    JOIN v_current_anchors a ON a.comment_id = c.id";
+
+fn anchor_status_to_db(status: AnchorStatus) -> &'static str {
+    match status {
+        AnchorStatus::Anchored => "anchored",
+        AnchorStatus::Shifted => "shifted",
+        AnchorStatus::Approximate => "approximate",
+        AnchorStatus::Orphaned => "orphaned",
+    }
+}
+
+fn anchor_status_from_db(value: &str) -> rusqlite::Result<AnchorStatus> {
+    match value {
+        "anchored" => Ok(AnchorStatus::Anchored),
+        "shifted" => Ok(AnchorStatus::Shifted),
+        "approximate" => Ok(AnchorStatus::Approximate),
+        "orphaned" => Ok(AnchorStatus::Orphaned),
+        unknown => Err(rusqlite::Error::FromSqlConversionFailure(
+            16,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unknown anchor status {unknown:?}"),
+            )),
+        )),
+    }
+}
+
 fn read_comment_row(row: &rusqlite::Row) -> rusqlite::Result<StoredComment> {
+    let anchor_status: String = row.get(16)?;
+
     Ok(StoredComment {
         id: row.get(0)?,
         merge_base: row.get(1)?,
@@ -541,6 +698,8 @@ fn read_comment_row(row: &rusqlite::Row) -> rusqlite::Result<StoredComment> {
         resolved: row.get::<_, i64>(12)? != 0,
         created_at: row.get(13)?,
         updated_at: row.get(14)?,
+        file_blob_sha: row.get(15)?,
+        anchor_status: anchor_status_from_db(&anchor_status)?,
     })
 }
 
@@ -565,14 +724,18 @@ mod tests {
             merge_base: "main".to_string(),
             head_ref: "feat".to_string(),
             file_path: file.to_string(),
-            line_start: line,
-            line_end: line,
-            char_start: None,
-            char_end: None,
-            anchor_text: anchor.to_string(),
-            context_before: String::new(),
-            context_after: String::new(),
             body: body.to_string(),
+            anchor: NewCommentAnchor {
+                file_blob_sha: "blob-1".to_string(),
+                line_start: line,
+                line_end: line,
+                char_start: None,
+                char_end: None,
+                anchor_text: anchor.to_string(),
+                context_before: String::new(),
+                context_after: String::new(),
+                status: AnchorStatus::Anchored,
+            },
         }
     }
 
@@ -581,6 +744,152 @@ mod tests {
         let (dir, _db) = test_db();
         let db_path = dir.path().join("test.db");
         assert!(db_path.exists());
+    }
+
+    #[test]
+    fn test_migrates_inline_comment_anchors() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE file_reviews (
+                    file_path       TEXT NOT NULL,
+                    merge_base      TEXT NOT NULL,
+                    head_ref        TEXT NOT NULL,
+                    diff_hash       TEXT NOT NULL,
+                    reviewed_at     TEXT NOT NULL,
+                    reviewed_commit TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (merge_base, head_ref, file_path)
+                );
+
+                CREATE TABLE comments (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    merge_base      TEXT NOT NULL,
+                    head_ref        TEXT NOT NULL,
+                    file_path       TEXT NOT NULL,
+                    line_start      INTEGER NOT NULL,
+                    line_end        INTEGER NOT NULL,
+                    char_start      INTEGER,
+                    char_end        INTEGER,
+                    anchor_text     TEXT NOT NULL,
+                    context_before  TEXT NOT NULL DEFAULT '',
+                    context_after   TEXT NOT NULL DEFAULT '',
+                    body            TEXT NOT NULL,
+                    resolved        INTEGER NOT NULL DEFAULT 0,
+                    created_at      TEXT NOT NULL,
+                    updated_at      TEXT NOT NULL
+                );
+
+                INSERT INTO comments
+                    (id, merge_base, head_ref, file_path, line_start,
+                     line_end, char_start, char_end, anchor_text,
+                     context_before, context_after, body, resolved,
+                     created_at, updated_at)
+                VALUES
+                    (42, 'main', 'feat', 'src/lib.rs', 7, 8, 1, 4,
+                     'old anchor', 'before', 'after', 'body text', 0,
+                     '2026-06-27T12:00:00+10:00',
+                     '2026-06-27T12:01:00+10:00');
+                ",
+            )
+            .unwrap();
+        }
+
+        let db = Database::open(&db_path).unwrap();
+        let fetched = db.get_comment(42).unwrap().unwrap();
+
+        assert_eq!(fetched.body, "body text");
+        assert_eq!(fetched.line_start, 7);
+        assert_eq!(fetched.line_end, 8);
+        assert_eq!(fetched.char_start, Some(1));
+        assert_eq!(fetched.char_end, Some(4));
+        assert_eq!(fetched.anchor_text, "old anchor");
+        assert_eq!(fetched.context_before, "before");
+        assert_eq!(fetched.context_after, "after");
+        assert_eq!(fetched.file_blob_sha, "");
+        assert_eq!(fetched.anchor_status, AnchorStatus::Anchored);
+    }
+
+    #[test]
+    fn test_migrates_base_ref_schema_to_current_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE file_reviews (
+                    file_path   TEXT NOT NULL,
+                    base_ref    TEXT NOT NULL,
+                    head_ref    TEXT NOT NULL,
+                    diff_hash   TEXT NOT NULL,
+                    reviewed_at TEXT NOT NULL,
+                    PRIMARY KEY (base_ref, head_ref, file_path)
+                );
+
+                CREATE TABLE comments (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    base_ref        TEXT NOT NULL,
+                    head_ref        TEXT NOT NULL,
+                    file_path       TEXT NOT NULL,
+                    line_start      INTEGER NOT NULL,
+                    line_end        INTEGER NOT NULL,
+                    char_start      INTEGER,
+                    char_end        INTEGER,
+                    anchor_text     TEXT NOT NULL,
+                    context_before  TEXT NOT NULL DEFAULT '',
+                    context_after   TEXT NOT NULL DEFAULT '',
+                    body            TEXT NOT NULL,
+                    resolved        INTEGER NOT NULL DEFAULT 0,
+                    created_at      TEXT NOT NULL,
+                    updated_at      TEXT NOT NULL
+                );
+
+                CREATE INDEX idx_comments_scope
+                    ON comments (base_ref, head_ref, file_path);
+
+                INSERT INTO file_reviews
+                    (file_path, base_ref, head_ref, diff_hash, reviewed_at)
+                VALUES
+                    ('src/lib.rs', 'main', 'feat', 'hash-1',
+                     '2026-06-27T12:00:00+10:00');
+
+                INSERT INTO comments
+                    (id, base_ref, head_ref, file_path, line_start,
+                     line_end, char_start, char_end, anchor_text,
+                     context_before, context_after, body, resolved,
+                     created_at, updated_at)
+                VALUES
+                    (7, 'main', 'feat', 'src/lib.rs', 3, 3, NULL, NULL,
+                     'anchor', '', '', 'legacy body', 0,
+                     '2026-06-27T12:00:00+10:00',
+                     '2026-06-27T12:01:00+10:00');
+                ",
+            )
+            .unwrap();
+        }
+
+        let db = Database::open(&db_path).unwrap();
+        let reviews = db.load_reviews("main", "feat").unwrap();
+        let review = reviews.get("src/lib.rs").unwrap();
+        assert_eq!(review.diff_hash, "hash-1");
+        assert_eq!(review.reviewed_commit, "");
+
+        let fetched = db.get_comment(7).unwrap().unwrap();
+        assert_eq!(fetched.merge_base, "main");
+        assert_eq!(fetched.anchor_text, "anchor");
+        assert_eq!(fetched.body, "legacy body");
+        assert_eq!(fetched.anchor_status, AnchorStatus::Anchored);
+
+        let count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 4);
     }
 
     #[test]
@@ -678,14 +987,18 @@ mod tests {
                 merge_base: "main".to_string(),
                 head_ref: "feat".to_string(),
                 file_path: "src/lib.rs".to_string(),
-                line_start: 10,
-                line_end: 12,
-                char_start: None,
-                char_end: None,
-                anchor_text: "fn foo() {}".to_string(),
-                context_before: "// before".to_string(),
-                context_after: "// after".to_string(),
                 body: "This should handle errors".to_string(),
+                anchor: NewCommentAnchor {
+                    file_blob_sha: "blob-1".to_string(),
+                    line_start: 10,
+                    line_end: 12,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "fn foo() {}".to_string(),
+                    context_before: "// before".to_string(),
+                    context_after: "// after".to_string(),
+                    status: AnchorStatus::Anchored,
+                },
             })
             .unwrap();
 
@@ -700,6 +1013,8 @@ mod tests {
         assert_eq!(fetched.anchor_text, "fn foo() {}");
         assert_eq!(fetched.context_before, "// before");
         assert_eq!(fetched.context_after, "// after");
+        assert_eq!(fetched.file_blob_sha, "blob-1");
+        assert_eq!(fetched.anchor_status, AnchorStatus::Anchored);
     }
 
     #[test]
@@ -707,8 +1022,8 @@ mod tests {
         let (_dir, db) = test_db();
 
         let mut c = simple_comment("a.rs", 5, "some_var", "Rename this");
-        c.char_start = Some(10);
-        c.char_end = Some(20);
+        c.anchor.char_start = Some(10);
+        c.anchor.char_end = Some(20);
         let comment = db.create_comment(&c).unwrap();
 
         let fetched = db.get_comment(comment.id).unwrap().unwrap();

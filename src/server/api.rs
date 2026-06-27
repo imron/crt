@@ -3,12 +3,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use tokio::sync::broadcast;
 
 use super::{ConnectionContext, ServerState};
-use crate::db::{Database, NewComment, StoredComment};
+use crate::db::{Database, NewAnchorVersion, NewComment, NewCommentAnchor, StoredComment};
 use crate::git;
 use crate::protocol::{
     ERR_INTERNAL, ERR_INVALID_PARAMS, JsonRpcResponse, Notification, NotificationKind,
@@ -807,18 +808,33 @@ pub async fn handle_create_comment(
 
     let merge_base = ctx.merge_base.to_string();
     let head_ref = ctx.head_scope_key();
+    let file_path = p.file_path;
+    let file_blob_sha = match current_file_hash(ctx, &file_path).await {
+        Ok(hash) => hash,
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INTERNAL,
+                format!("Failed to hash anchor file: {e:#}"),
+            );
+        }
+    };
     let new = NewComment {
         merge_base: merge_base.clone(),
         head_ref: head_ref.clone(),
-        file_path: p.file_path,
-        line_start: p.line_start,
-        line_end: p.line_end,
-        char_start: p.char_start,
-        char_end: p.char_end,
-        anchor_text: p.anchor_text,
-        context_before: p.context_before,
-        context_after: p.context_after,
+        file_path,
         body: p.body,
+        anchor: NewCommentAnchor {
+            file_blob_sha,
+            line_start: p.line_start,
+            line_end: p.line_end,
+            char_start: p.char_start,
+            char_end: p.char_end,
+            anchor_text: p.anchor_text,
+            context_before: p.context_before,
+            context_after: p.context_after,
+            status: review_types::AnchorStatus::Anchored,
+        },
     };
 
     let stored = {
@@ -883,6 +899,17 @@ pub async fn handle_list_comments(
         }
     };
 
+    let comments = match reanchor_comments(ctx, db, comments).await {
+        Ok(comments) => comments,
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INTERNAL,
+                format!("Failed to re-anchor comments: {e:#}"),
+            );
+        }
+    };
+
     let result = review_types::ListCommentsResult {
         comments: comments.into_iter().map(comment_from_stored).collect(),
     };
@@ -913,6 +940,17 @@ pub async fn handle_get_comment(
             ERR_INVALID_PARAMS,
             format!("Comment {} was not found in the current review scope", p.id),
         );
+    };
+
+    let stored = match reanchor_comment(ctx, db, stored).await {
+        Ok(comment) => comment,
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INTERNAL,
+                format!("Failed to re-anchor comment: {e:#}"),
+            );
+        }
     };
 
     comment_response(id, stored)
@@ -1078,6 +1116,261 @@ fn json_response<T: serde::Serialize>(id: &serde_json::Value, result: T) -> Json
     }
 }
 
+async fn current_file_hash(ctx: &ConnectionContext, file_path: &str) -> anyhow::Result<String> {
+    Ok(match current_file_content(ctx, file_path).await? {
+        Some((_, hash)) => hash,
+        None => String::new(),
+    })
+}
+
+async fn current_file_content(
+    ctx: &ConnectionContext,
+    file_path: &str,
+) -> anyhow::Result<Option<(String, String)>> {
+    let worktree = ctx.worktree.clone();
+    let file_path = file_path.to_string();
+    let content = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<String>> {
+        let repo = git::Repo::open(&worktree)?;
+        repo.file_content_workdir(&file_path)
+    })
+    .await??;
+
+    Ok(content.map(|content| {
+        let hash = hash_content(&content);
+        (content, hash)
+    }))
+}
+
+fn hash_content(content: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("workdir:{:x}", hasher.finalize())
+}
+
+async fn reanchor_comments(
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    comments: Vec<StoredComment>,
+) -> anyhow::Result<Vec<StoredComment>> {
+    let mut reanchored = Vec::with_capacity(comments.len());
+    for comment in comments {
+        reanchored.push(reanchor_comment(ctx, db, comment).await?);
+    }
+    Ok(reanchored)
+}
+
+async fn reanchor_comment(
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    comment: StoredComment,
+) -> anyhow::Result<StoredComment> {
+    if comment.resolved {
+        return Ok(comment);
+    }
+
+    let anchor = match current_file_content(ctx, &comment.file_path).await? {
+        Some((content, file_blob_sha)) => resolve_anchor(&comment, &content, file_blob_sha),
+        None => orphaned_anchor(&comment, String::new()),
+    };
+
+    {
+        let db_guard = db.lock().await;
+        db_guard.insert_anchor_version(&NewAnchorVersion {
+            comment_id: comment.id,
+            anchor: anchor.clone(),
+        })?;
+    }
+
+    Ok(apply_anchor(comment, &anchor))
+}
+
+fn resolve_anchor(
+    comment: &StoredComment,
+    content: &str,
+    file_blob_sha: String,
+) -> NewCommentAnchor {
+    let lines = content_lines(content);
+    let anchor_lines = anchor_lines(&comment.anchor_text);
+    let span = anchor_lines.len().max(1);
+    let stored_index = comment
+        .line_start
+        .checked_sub(1)
+        .and_then(|line| usize::try_from(line).ok());
+
+    if let Some(index) = stored_index {
+        if matches_sequence(&lines, index, &anchor_lines) {
+            return anchor_from_range(
+                comment,
+                &lines,
+                index,
+                span,
+                file_blob_sha,
+                review_types::AnchorStatus::Anchored,
+            );
+        }
+    }
+
+    if let Some(index) = find_sequence(&lines, &anchor_lines) {
+        return anchor_from_range(
+            comment,
+            &lines,
+            index,
+            span,
+            file_blob_sha,
+            review_types::AnchorStatus::Shifted,
+        );
+    }
+
+    if let Some(index) = find_context_match(comment, &lines, span) {
+        return anchor_from_range(
+            comment,
+            &lines,
+            index,
+            span,
+            file_blob_sha,
+            review_types::AnchorStatus::Approximate,
+        );
+    }
+
+    orphaned_anchor(comment, file_blob_sha)
+}
+
+fn content_lines(content: &str) -> Vec<&str> {
+    if content.is_empty() {
+        vec![""]
+    } else {
+        content.lines().collect()
+    }
+}
+
+fn anchor_lines(anchor_text: &str) -> Vec<&str> {
+    if anchor_text.is_empty() {
+        vec![""]
+    } else {
+        anchor_text.lines().collect()
+    }
+}
+
+fn matches_sequence(lines: &[&str], index: usize, needle: &[&str]) -> bool {
+    let Some(end) = index.checked_add(needle.len()) else {
+        return false;
+    };
+    end <= lines.len() && &lines[index..end] == needle
+}
+
+fn find_sequence(lines: &[&str], needle: &[&str]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > lines.len() {
+        return None;
+    }
+
+    let last_start = lines.len() - needle.len();
+    (0..=last_start).find(|index| matches_sequence(lines, *index, needle))
+}
+
+fn find_context_match(comment: &StoredComment, lines: &[&str], span: usize) -> Option<usize> {
+    let before = context_lines(&comment.context_before);
+    let after = context_lines(&comment.context_after);
+
+    if !before.is_empty() {
+        let mut start = 0;
+        while let Some(offset) = find_sequence(&lines[start..], &before) {
+            let context_start = start + offset;
+            let candidate = context_start + before.len();
+            if candidate < lines.len()
+                && (after.is_empty() || matches_sequence(lines, candidate + span, &after))
+            {
+                return Some(candidate);
+            }
+            start = context_start + 1;
+            if start >= lines.len() {
+                break;
+            }
+        }
+    }
+
+    if !after.is_empty() {
+        return find_sequence(lines, &after).map(|after_index| after_index.saturating_sub(span));
+    }
+
+    None
+}
+
+fn context_lines(context: &str) -> Vec<&str> {
+    if context.is_empty() {
+        Vec::new()
+    } else {
+        context.lines().collect()
+    }
+}
+
+fn anchor_from_range(
+    comment: &StoredComment,
+    lines: &[&str],
+    start: usize,
+    span: usize,
+    file_blob_sha: String,
+    status: review_types::AnchorStatus,
+) -> NewCommentAnchor {
+    let safe_start = start.min(lines.len());
+    let end = safe_start.saturating_add(span).min(lines.len());
+    let (context_before, context_after) = context_around(lines, safe_start, end);
+
+    NewCommentAnchor {
+        file_blob_sha,
+        line_start: usize_to_i64_saturating(safe_start + 1),
+        line_end: usize_to_i64_saturating(end.max(safe_start + 1)),
+        char_start: comment.char_start,
+        char_end: comment.char_end,
+        anchor_text: lines[safe_start..end].join("\n"),
+        context_before,
+        context_after,
+        status,
+    }
+}
+
+fn usize_to_i64_saturating(value: usize) -> i64 {
+    match i64::try_from(value) {
+        Ok(value) => value,
+        Err(_) => i64::MAX,
+    }
+}
+
+fn context_around(lines: &[&str], start: usize, end: usize) -> (String, String) {
+    let before_start = start.saturating_sub(3);
+    let after_end = end.saturating_add(3).min(lines.len());
+    (
+        lines[before_start..start].join("\n"),
+        lines[end.min(lines.len())..after_end].join("\n"),
+    )
+}
+
+fn orphaned_anchor(comment: &StoredComment, file_blob_sha: String) -> NewCommentAnchor {
+    NewCommentAnchor {
+        file_blob_sha,
+        line_start: comment.line_start,
+        line_end: comment.line_end,
+        char_start: comment.char_start,
+        char_end: comment.char_end,
+        anchor_text: comment.anchor_text.clone(),
+        context_before: comment.context_before.clone(),
+        context_after: comment.context_after.clone(),
+        status: review_types::AnchorStatus::Orphaned,
+    }
+}
+
+fn apply_anchor(mut comment: StoredComment, anchor: &NewCommentAnchor) -> StoredComment {
+    comment.file_blob_sha = anchor.file_blob_sha.clone();
+    comment.line_start = anchor.line_start;
+    comment.line_end = anchor.line_end;
+    comment.char_start = anchor.char_start;
+    comment.char_end = anchor.char_end;
+    comment.anchor_text = anchor.anchor_text.clone();
+    comment.context_before = anchor.context_before.clone();
+    comment.context_after = anchor.context_after.clone();
+    comment.anchor_status = anchor.status;
+    comment
+}
+
 fn comment_response(id: &serde_json::Value, stored: StoredComment) -> JsonRpcResponse {
     json_response(
         id,
@@ -1088,7 +1381,7 @@ fn comment_response(id: &serde_json::Value, stored: StoredComment) -> JsonRpcRes
 }
 
 fn comment_from_stored(stored: StoredComment) -> review_types::Comment {
-    review_types::Comment::from_stored(&stored, review_types::AnchorStatus::Anchored)
+    review_types::Comment::from_stored(&stored)
 }
 
 async fn load_comment_in_scope(
@@ -1321,5 +1614,80 @@ pub async fn handle_find_definition(
             ERR_INTERNAL,
             format!("Definition task panicked: {e}"),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stored_comment(line_start: i64, anchor_text: &str) -> StoredComment {
+        StoredComment {
+            id: 1,
+            merge_base: "base".to_string(),
+            head_ref: "head".to_string(),
+            file_path: "src/lib.rs".to_string(),
+            line_start,
+            line_end: line_start,
+            char_start: None,
+            char_end: None,
+            anchor_text: anchor_text.to_string(),
+            context_before: "before".to_string(),
+            context_after: "after".to_string(),
+            body: "comment".to_string(),
+            resolved: false,
+            created_at: "2026-06-27T12:00:00+10:00".to_string(),
+            updated_at: "2026-06-27T12:00:00+10:00".to_string(),
+            file_blob_sha: "old".to_string(),
+            anchor_status: review_types::AnchorStatus::Anchored,
+        }
+    }
+
+    #[test]
+    fn resolves_exact_anchor_at_stored_line() {
+        let comment = stored_comment(2, "target");
+        let anchor = resolve_anchor(&comment, "before\ntarget\nafter\n", "new".to_string());
+
+        assert_eq!(anchor.status, review_types::AnchorStatus::Anchored);
+        assert_eq!(anchor.line_start, 2);
+        assert_eq!(anchor.anchor_text, "target");
+    }
+
+    #[test]
+    fn resolves_shifted_anchor_by_exact_text() {
+        let comment = stored_comment(2, "target");
+        let anchor = resolve_anchor(
+            &comment,
+            "before\nother\ntarget\nafter\n",
+            "new".to_string(),
+        );
+
+        assert_eq!(anchor.status, review_types::AnchorStatus::Shifted);
+        assert_eq!(anchor.line_start, 3);
+        assert_eq!(anchor.anchor_text, "target");
+    }
+
+    #[test]
+    fn resolves_approximate_anchor_from_context() {
+        let comment = stored_comment(2, "target");
+        let anchor = resolve_anchor(
+            &comment,
+            "intro\nbefore\nreplacement\nafter\n",
+            "new".to_string(),
+        );
+
+        assert_eq!(anchor.status, review_types::AnchorStatus::Approximate);
+        assert_eq!(anchor.line_start, 3);
+        assert_eq!(anchor.anchor_text, "replacement");
+    }
+
+    #[test]
+    fn marks_anchor_orphaned_when_text_and_context_do_not_match() {
+        let comment = stored_comment(2, "target");
+        let anchor = resolve_anchor(&comment, "unrelated\ncontent\n", "new".to_string());
+
+        assert_eq!(anchor.status, review_types::AnchorStatus::Orphaned);
+        assert_eq!(anchor.line_start, 2);
+        assert_eq!(anchor.anchor_text, "target");
     }
 }
