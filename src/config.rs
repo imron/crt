@@ -426,7 +426,7 @@ impl Default for HelpStyle {
 }
 
 // ---------------------------------------------------------------------------
-// Mouse selection colors
+// Selection colors
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize)]
@@ -442,7 +442,7 @@ impl Default for SelectionStyle {
     fn default() -> Self {
         Self {
             fg: Color::new(C::White),
-            bg: Color::new(C::Indexed(238)),
+            bg: Color::new(C::Rgb(52, 77, 112)), // #344D70
         }
     }
 }
@@ -557,6 +557,8 @@ mod tests {
         assert_eq!(*cfg.style.diff.deletion_fg, C::Red);
         assert_eq!(*cfg.style.diff.deletion_bg, C::Rgb(52, 35, 44));
         assert_eq!(*cfg.style.panel.focused_fg, C::Cyan);
+        assert_eq!(*cfg.style.selection.fg, C::White);
+        assert_eq!(*cfg.style.selection.bg, C::Rgb(52, 77, 112));
     }
 
     #[test]

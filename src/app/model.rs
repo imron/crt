@@ -4,7 +4,7 @@
 //! It intentionally excludes terminal cells, pixels, ratatui layout, and other
 //! backend-specific geometry.
 
-use crate::app::AppState;
+use crate::app::{AppState, CommentAnchorCapture, VisualSelectionMode};
 use crate::config::DiffAlgorithm;
 use crate::core::TextAnchor;
 use crate::review_types::{
@@ -100,6 +100,8 @@ pub struct DiffPanel {
     pub search_query: Option<String>,
     pub search_highlights: Vec<TextRange>,
     pub current_search_highlight: Option<usize>,
+    pub visual_selection: Option<VisualSelection>,
+    pub pending_comment_anchor: Option<CommentAnchorCapture>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +134,13 @@ pub struct TextRange {
     pub line: usize,
     pub column_start: usize,
     pub column_end: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisualSelection {
+    pub mode: VisualSelectionMode,
+    pub start: TextAnchor,
+    pub end: TextAnchor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -356,6 +365,15 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
             .diff_search_matches
             .get(state.diff_search_current)
             .map(|_| state.diff_search_current),
+        visual_selection: state
+            .visual_selection
+            .as_ref()
+            .map(|selection| VisualSelection {
+                mode: selection.mode,
+                start: selection.start,
+                end: selection.end,
+            }),
+        pending_comment_anchor: state.pending_comment_anchor.clone(),
     }
 }
 

@@ -11,6 +11,7 @@ mod navigation;
 mod output;
 mod overlays;
 mod panes;
+mod selection;
 mod viewport;
 
 use super::AppState;
@@ -32,6 +33,8 @@ pub fn interaction_context(state: &AppState) -> InteractionContext {
         diff_search_active: state.diff_search_query.is_some(),
         diff_search_has_matches: state.diff_search_query.is_some()
             && !state.diff_search_matches.is_empty(),
+        diff_pane_visible: state.show_diff_pane,
+        visual_selection_active: state.visual_selection.is_some(),
         ..InteractionContext::default()
     }
 }
@@ -74,6 +77,9 @@ pub fn apply_core_effects(
             }
             CoreEffect::DiffCursor(effect) => {
                 cursor::apply_diff_cursor_effect(state, view, effect);
+            }
+            CoreEffect::VisualSelection(effect) => {
+                selection::apply_visual_selection_effect(state, view, &mut update, effect);
             }
             CoreEffect::SearchResults(effect) => {
                 overlays::apply_search_results_effect(state, view, &mut update, effect);

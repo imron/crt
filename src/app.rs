@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use self::model::AppModel;
 use crate::client::{Client, ClientEvent, Notification};
 use crate::config::Config;
+use crate::core::TextAnchor;
 use crate::core::command::Command;
 use crate::core::diff;
 use crate::core::interaction::{CoreEffect, CoreInteractionEngine, InteractionContext};
@@ -75,6 +76,31 @@ pub struct DefinitionResults {
     pub symbol: String,
     pub definitions: Vec<DefinitionLocation>,
     pub selected: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisualSelectionMode {
+    Line,
+    Character,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisualSelection {
+    pub mode: VisualSelectionMode,
+    pub start: TextAnchor,
+    pub end: TextAnchor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentAnchorCapture {
+    pub file_path: String,
+    pub line_start: i64,
+    pub line_end: i64,
+    pub char_start: Option<i64>,
+    pub char_end: Option<i64>,
+    pub anchor_text: String,
+    pub context_before: String,
+    pub context_after: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -674,6 +700,10 @@ pub struct AppState {
     pub diff_search_matches: Vec<(usize, usize, usize)>,
     /// Index of the currently focused match in `diff_search_matches`.
     pub diff_search_current: usize,
+    /// Active visual selection in the diff pane.
+    pub visual_selection: Option<VisualSelection>,
+    /// Most recently committed comment anchor capture.
+    pub pending_comment_anchor: Option<CommentAnchorCapture>,
     /// When true, force diffs to use merge_base even for reviewed files.
     /// Toggled by the `m` keybinding.
     pub show_merge_base: bool,
@@ -723,6 +753,8 @@ impl AppState {
             diff_search_query: None,
             diff_search_matches: Vec::new(),
             diff_search_current: 0,
+            visual_selection: None,
+            pending_comment_anchor: None,
             show_merge_base: false,
             search_results: None,
             definition_results: None,
@@ -907,6 +939,8 @@ impl AppState {
         self.diff_line_cursor = first_hunk_row;
         self.diff_col_cursor = 0;
         self.diff_scroll = first_hunk_row;
+        self.visual_selection = None;
+        self.pending_comment_anchor = None;
         self.invalidate_diff_search_matches();
         self.mark_model_changed();
     }
@@ -925,6 +959,8 @@ impl AppState {
         self.definition_results = None;
         self.diff_search_matches.clear();
         self.diff_search_current = 0;
+        self.visual_selection = None;
+        self.pending_comment_anchor = None;
         self.core_interaction.reset_prompt_state();
         self.mark_model_changed();
     }
@@ -937,9 +973,14 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{CoreEffect, DefinitionResultsEffect, PaneId, SearchResultsEffect};
+    use crate::core::{
+        CoreEffect, DefinitionResultsEffect, DiffCursorEffect, PaneId, SearchResultsEffect,
+        VisualSelectionEffect,
+    };
     use crate::protocol::NotificationKind;
-    use crate::review_types::{ChangeKind, DiffContent, FileChange, FileEntry, ReviewStatus};
+    use crate::review_types::{
+        ChangeKind, DiffContent, DiffHunk, DiffLine, FileChange, FileEntry, LineKind, ReviewStatus,
+    };
 
     struct EmptyViewport;
 
@@ -1039,6 +1080,66 @@ mod tests {
             status,
             diff: DiffContent {
                 hunks: Vec::new(),
+                is_binary: false,
+                diff_hash: format!("hash-{path}"),
+            },
+        }
+    }
+
+    fn test_file_with_hunk(path: &str) -> FileEntry {
+        FileEntry {
+            change: FileChange {
+                path: path.to_string(),
+                old_path: None,
+                kind: ChangeKind::Modified,
+            },
+            status: ReviewStatus::Unreviewed,
+            diff: DiffContent {
+                hunks: vec![DiffHunk {
+                    old_start: 10,
+                    old_lines: 6,
+                    new_start: 10,
+                    new_lines: 6,
+                    header: "@@ -10,6 +10,6 @@".to_string(),
+                    lines: vec![
+                        DiffLine {
+                            kind: LineKind::Context,
+                            content: "before one".to_string(),
+                            old_lineno: Some(10),
+                            new_lineno: Some(10),
+                        },
+                        DiffLine {
+                            kind: LineKind::Addition,
+                            content: "let alpha = beta;".to_string(),
+                            old_lineno: None,
+                            new_lineno: Some(11),
+                        },
+                        DiffLine {
+                            kind: LineKind::Addition,
+                            content: "let gamma = delta;".to_string(),
+                            old_lineno: None,
+                            new_lineno: Some(12),
+                        },
+                        DiffLine {
+                            kind: LineKind::Context,
+                            content: "after one".to_string(),
+                            old_lineno: Some(11),
+                            new_lineno: Some(13),
+                        },
+                        DiffLine {
+                            kind: LineKind::Context,
+                            content: "after two".to_string(),
+                            old_lineno: Some(12),
+                            new_lineno: Some(14),
+                        },
+                        DiffLine {
+                            kind: LineKind::Context,
+                            content: "after three".to_string(),
+                            old_lineno: Some(13),
+                            new_lineno: Some(15),
+                        },
+                    ],
+                }],
                 is_binary: false,
                 diff_hash: format!("hash-{path}"),
             },
@@ -1197,6 +1298,146 @@ mod tests {
         app.apply_core_effects(&EmptyViewport, vec![CoreEffect::ToggleInlineDiff]);
 
         assert_eq!(app.state.render_variant, RenderVariant::Inline);
+    }
+
+    #[test]
+    fn line_visual_selection_extends_and_captures_anchor_context() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_hunk("src/main.rs")],
+        );
+        // 10 leading lines so that the hunk's new_lineno values 11/12 land on the right text.
+        // 15-line HEAD so the hunk's new_lineno values 11/12 are correct.
+        app.state.head_content = Some(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n\
+             let alpha = beta;\nlet gamma = delta;\nafter one\nafter two\nafter three\n"
+                .to_string(),
+        );
+        // Must match the 15-line head_content above so diff_source_lines aligns.
+        let view = RenderedViewport::new(vec![
+            "line1",
+            "line2",
+            "line3",
+            "line4",
+            "line5",
+            "line6",
+            "line7",
+            "line8",
+            "line9",
+            "line10",
+            "let alpha = beta;",
+            "let gamma = delta;",
+            "after one",
+            "after two",
+            "after three",
+        ]);
+        app.state.pane_focus = PaneFocus::Diff;
+        app.state.diff_line_cursor = 10; // first line of the hunk in the HEAD view
+
+        app.apply_core_effects(
+            &view,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartLine),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Move(
+                    DiffCursorEffect::LineDown,
+                )),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+            ],
+        );
+
+        let capture = app
+            .state
+            .pending_comment_anchor
+            .as_ref()
+            .expect("selection should capture anchor data");
+        assert_eq!(capture.file_path, "src/main.rs");
+        assert_eq!(capture.line_start, 11);
+        assert_eq!(capture.line_end, 12);
+        assert_eq!(capture.char_start, None);
+        assert_eq!(capture.char_end, None);
+        assert_eq!(capture.anchor_text, "let alpha = beta;\nlet gamma = delta;");
+        assert_eq!(capture.context_before, "line8\nline9\nline10");
+        assert_eq!(capture.context_after, "after one\nafter two\nafter three");
+        assert!(app.state.visual_selection.is_none());
+    }
+
+    #[test]
+    fn character_visual_selection_captures_subline_anchor() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_hunk("src/main.rs")],
+        );
+        // 15-line HEAD so the hunk's new_lineno value 11 is correct.
+        app.state.head_content = Some(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n\
+             let alpha = beta;\nlet gamma = delta;\nafter one\n"
+                .to_string(),
+        );
+        let view = RenderedViewport::new(vec![
+            "line1",
+            "line2",
+            "line3",
+            "line4",
+            "line5",
+            "line6",
+            "line7",
+            "line8",
+            "line9",
+            "line10",
+            "let alpha = beta;",
+            "let gamma = delta;",
+            "after one",
+        ]);
+        app.state.pane_focus = PaneFocus::Diff;
+        app.state.diff_line_cursor = 10; // line of the addition in the HEAD view
+        app.state.diff_col_cursor = 4;
+
+        app.apply_core_effects(
+            &view,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartCharacter),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Move(
+                    DiffCursorEffect::CharRight,
+                )),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Move(
+                    DiffCursorEffect::CharRight,
+                )),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+            ],
+        );
+
+        let capture = app
+            .state
+            .pending_comment_anchor
+            .as_ref()
+            .expect("selection should capture anchor data");
+        assert_eq!(capture.line_start, 11);
+        assert_eq!(capture.line_end, 11);
+        assert_eq!(capture.char_start, Some(4));
+        assert_eq!(capture.char_end, Some(7));
+        assert_eq!(capture.anchor_text, "alp");
+    }
+
+    #[test]
+    fn visual_selection_cancel_clears_without_capture() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_hunk("src/main.rs")],
+        );
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartLine),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Cancel),
+            ],
+        );
+
+        assert!(app.state.visual_selection.is_none());
+        assert!(app.state.pending_comment_anchor.is_none());
     }
 
     #[test]

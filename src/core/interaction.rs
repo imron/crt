@@ -17,6 +17,7 @@ pub enum CoreEffect {
     Command(CommandParse),
     DiffSearch(DiffSearchEffect),
     DiffCursor(DiffCursorEffect),
+    VisualSelection(VisualSelectionEffect),
     SearchResults(SearchResultsEffect),
     DefinitionResults(DefinitionResultsEffect),
     Pane(PaneEffect),
@@ -78,6 +79,15 @@ pub enum DiffCursorEffect {
     BigWordBackward,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisualSelectionEffect {
+    StartLine,
+    StartCharacter,
+    Move(DiffCursorEffect),
+    Cancel,
+    Commit,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SearchResultsEffect {
     Close,
@@ -129,6 +139,10 @@ pub struct InteractionContext {
     pub diff_search_active: bool,
     /// Whether active diff-search navigation has matches.
     pub diff_search_has_matches: bool,
+    /// Whether the diff pane is visible and can accept diff interactions.
+    pub diff_pane_visible: bool,
+    /// Whether a visual selection is active in the diff pane.
+    pub visual_selection_active: bool,
     /// Whether the adapter still has an active quit confirmation prompt.
     pub quit_confirmation_active: bool,
     /// Word under the cursor, supplied by the adapter for commands like `gd`.
@@ -190,6 +204,9 @@ impl CoreInteractionEngine {
                         return vec![CoreEffect::DefinitionResults(effect)];
                     }
                     return Vec::new();
+                }
+                if let Some(effect) = visual_selection_key_effect(key, context) {
+                    return vec![CoreEffect::VisualSelection(effect)];
                 }
                 if let Some(effect) = pane_key_effect(key, context.focused_pane) {
                     return vec![CoreEffect::Pane(effect)];
@@ -588,6 +605,38 @@ fn diff_cursor_key_effect(key: &super::input::KeyEvent) -> Option<DiffCursorEffe
             Some(DiffCursorEffect::BigWordBackward)
         }
         _ => None,
+    }
+}
+
+fn visual_selection_key_effect(
+    key: &super::input::KeyEvent,
+    context: &InteractionContext,
+) -> Option<VisualSelectionEffect> {
+    if !context.diff_pane_visible {
+        return None;
+    }
+
+    if context.visual_selection_active {
+        match key.key {
+            Key::Escape if key_has_no_modifier(key.modifiers) => {
+                Some(VisualSelectionEffect::Cancel)
+            }
+            Key::Enter if key_has_no_modifier(key.modifiers) => Some(VisualSelectionEffect::Commit),
+            _ => diff_cursor_key_effect(key).map(VisualSelectionEffect::Move),
+        }
+    } else {
+        match key.key {
+            Key::Char('V') if key_has_no_command_modifier(key.modifiers) => {
+                Some(VisualSelectionEffect::StartLine)
+            }
+            Key::Char('v') if key.modifiers.shift && key_has_no_command_modifier(key.modifiers) => {
+                Some(VisualSelectionEffect::StartLine)
+            }
+            Key::Char('v') if key_has_no_modifier(key.modifiers) => {
+                Some(VisualSelectionEffect::StartCharacter)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -1197,6 +1246,88 @@ mod tests {
         assert_eq!(
             bigword_backward,
             vec![CoreEffect::DiffCursor(DiffCursorEffect::BigWordBackward)]
+        );
+    }
+
+    #[test]
+    fn visual_selection_start_keys_require_visible_diff_pane() {
+        let mut engine = CoreInteractionEngine::new();
+        let visible_context = InteractionContext {
+            diff_pane_visible: true,
+            ..InteractionContext::default()
+        };
+        let hidden_context = InteractionContext {
+            diff_pane_visible: false,
+            ..InteractionContext::default()
+        };
+        let shifted = InputModifiers {
+            shift: true,
+            ..Default::default()
+        };
+
+        let line = engine.handle_input(key_event(Key::Char('V'), shifted), &visible_context);
+        let line_lowercase_shift =
+            engine.handle_input(key_event(Key::Char('v'), shifted), &visible_context);
+        let character = engine.handle_input(
+            key_event(Key::Char('v'), InputModifiers::default()),
+            &visible_context,
+        );
+        let ignored = engine.handle_input(
+            key_event(Key::Char('v'), InputModifiers::default()),
+            &hidden_context,
+        );
+
+        assert_eq!(
+            line,
+            vec![CoreEffect::VisualSelection(
+                VisualSelectionEffect::StartLine
+            )]
+        );
+        assert_eq!(
+            line_lowercase_shift,
+            vec![CoreEffect::VisualSelection(
+                VisualSelectionEffect::StartLine
+            )]
+        );
+        assert_eq!(
+            character,
+            vec![CoreEffect::VisualSelection(
+                VisualSelectionEffect::StartCharacter
+            )]
+        );
+        assert!(ignored.is_empty());
+    }
+
+    #[test]
+    fn active_visual_selection_routes_movement_escape_and_enter() {
+        let mut engine = CoreInteractionEngine::new();
+        let context = InteractionContext {
+            diff_pane_visible: true,
+            visual_selection_active: true,
+            ..InteractionContext::default()
+        };
+
+        let down = engine.handle_input(
+            key_event(Key::Char('j'), InputModifiers::default()),
+            &context,
+        );
+        let escape =
+            engine.handle_input(key_event(Key::Escape, InputModifiers::default()), &context);
+        let enter = engine.handle_input(key_event(Key::Enter, InputModifiers::default()), &context);
+
+        assert_eq!(
+            down,
+            vec![CoreEffect::VisualSelection(VisualSelectionEffect::Move(
+                DiffCursorEffect::LineDown
+            ))]
+        );
+        assert_eq!(
+            escape,
+            vec![CoreEffect::VisualSelection(VisualSelectionEffect::Cancel)]
+        );
+        assert_eq!(
+            enter,
+            vec![CoreEffect::VisualSelection(VisualSelectionEffect::Commit)]
         );
     }
 
