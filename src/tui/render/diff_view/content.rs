@@ -181,7 +181,7 @@ pub fn build_content(
     )
 }
 
-fn current_comment_line(diff: &DiffPanel) -> Option<u32> {
+pub(super) fn current_comment_line(diff: &DiffPanel) -> Option<u32> {
     match diff.content_mode {
         ContentMode::FullFile => match diff.render_variant {
             RenderVariant::HeadVersion => Some(diff.cursor.line.saturating_add(1) as u32),
