@@ -2,6 +2,7 @@ use super::cursor;
 use super::output::AppOutput;
 use super::viewport::AppViewport;
 use crate::app::{AppState, CommentAnchorCapture, VisualSelection, VisualSelectionMode};
+use crate::core::text::char_to_byte_index;
 use crate::core::{TextAnchor, VisualSelectionEffect};
 use crate::review_types::{ContentMode, LineKind, PaneFocus, RenderVariant};
 
@@ -290,11 +291,9 @@ fn fallback_source_lines(view: &impl AppViewport) -> Vec<SourceLine> {
         .iter()
         .enumerate()
         .map(|(idx, line)| {
-            let content = if start < line.len() {
-                line[start..].to_string()
-            } else {
-                String::new()
-            };
+            let content = char_to_byte_index(line, start)
+                .map(|start| line[start..].to_string())
+                .unwrap_or_default();
             SourceLine {
                 line_number: (idx + 1) as i64,
                 content,

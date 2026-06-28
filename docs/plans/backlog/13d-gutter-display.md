@@ -88,4 +88,9 @@ closed and without inserting comment text into the diff itself.
 - CommentChanged notifications now refresh cached comments.
 - Added tests for marker generation, app-model comment projection, and
   comment notification reload classification.
+- Collapsed nested markers to a single gutter column. Multiline boundaries
+  win over nested single-line markers so resolved range openings remain
+  hollow when appropriate.
+- Fixed rendered-text extraction paths to convert character columns to byte
+  indexes before slicing, avoiding crashes on multibyte marker glyphs.
 - Verified with `cargo test`.

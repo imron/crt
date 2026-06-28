@@ -14,6 +14,7 @@ pub mod render;
 pub mod review;
 pub mod search;
 pub mod services;
+pub mod text;
 
 pub use input::{
     AppTarget, InputEvent, InputModifiers, Key, KeyEvent, KeyEventKind, MouseButton, MouseEvent,
