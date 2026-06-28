@@ -120,7 +120,8 @@ fn recompute_diff_search_matches(state: &mut AppState, view: &impl AppViewport) 
         }
     };
     for (row, line) in view.diff_rendered_text().iter().enumerate() {
-        let search_start = char_to_byte_index(line, view.diff_gutter_cols()).unwrap_or(line.len());
+        let search_start =
+            char_to_byte_index(line, view.diff_content_start_col()).unwrap_or(line.len());
         let content = &line[search_start..];
         for m in re.find_iter(content) {
             if m.start() == m.end() {

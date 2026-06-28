@@ -6,20 +6,19 @@ pub trait AppViewport {
     fn hunk_end_rows(&self) -> &[usize];
     fn hunk_first_change_rows(&self) -> &[usize];
     fn diff_gutter_cols(&self) -> usize;
-    fn diff_content_height(&self) -> usize;
-    fn diff_view_height(&self) -> usize;
-    fn diff_rendered_text(&self) -> &[String];
-
-    fn max_diff_scroll(&self) -> usize {
-        self.diff_content_height().saturating_sub(1)
-    }
-
     fn diff_content_start_col(&self) -> usize {
         if self.diff_gutter_cols() > 0 {
             self.diff_gutter_cols() + 3
         } else {
             0
         }
+    }
+    fn diff_content_height(&self) -> usize;
+    fn diff_view_height(&self) -> usize;
+    fn diff_rendered_text(&self) -> &[String];
+
+    fn max_diff_scroll(&self) -> usize {
+        self.diff_content_height().saturating_sub(1)
     }
 
     fn line_content_trimmed(&self, row: usize) -> &str {

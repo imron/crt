@@ -26,7 +26,7 @@ use crate::app::VisualSelectionMode;
 use crate::app::model::{AppModel, TextRange, VisualSelection};
 use crate::config::StyleConfig;
 use crate::core::text::char_to_byte_index;
-use crate::review_types::PaneFocus;
+use crate::review_types::{ContentMode, PaneFocus, RenderVariant};
 
 pub use self::cache::DiffCache;
 
@@ -123,11 +123,20 @@ pub fn draw(
     } else {
         0
     };
+    let marker_sep = usize::from(comment_marker_w > 0);
     tui_state.diff_gutter_cols = if gutter_w > 0 {
-        blame_cols + gutter_w * 2 + 1 + comment_marker_w
+        blame_cols + gutter_w * 2 + 1 + marker_sep + comment_marker_w
     } else {
         0
     };
+    tui_state.diff_content_start_col = diff_content_start_col(
+        diff.content_mode,
+        diff.render_variant,
+        diff.show_blame,
+        gutter_w,
+        comment_marker_w,
+        inner_w,
+    );
 
     // Store plain text for clipboard extraction.
     // Only update on cache miss — the value persists across frames.
@@ -159,7 +168,7 @@ pub fn draw(
     let search_highlights = render_search_highlights(
         diff.search_query.as_deref(),
         &tui_state.diff_rendered_text,
-        tui_state.diff_gutter_cols,
+        content_start_col,
     )
     .unwrap_or_else(|| diff.search_highlights.clone());
     let current_search_highlight = current_search_highlight(diff, &search_highlights);
@@ -255,6 +264,31 @@ pub fn draw(
     );
 
     frame.render_widget(paragraph, area);
+}
+
+fn diff_content_start_col(
+    content_mode: ContentMode,
+    render_variant: RenderVariant,
+    show_blame: bool,
+    gutter_w: usize,
+    comment_marker_w: usize,
+    inner_w: usize,
+) -> usize {
+    if gutter_w == 0 {
+        return 0;
+    }
+
+    let blame_cols = if show_blame { BLAME_COL_WIDTH + 1 } else { 0 };
+    if content_mode == ContentMode::Diff && render_variant == RenderVariant::SideBySide {
+        let side_fixed = blame_cols + gutter_w + comment_marker_w + 1;
+        let divider_w = 3;
+        let available = inner_w.saturating_sub(side_fixed * 2 + divider_w);
+        let side_content_w = available / 2;
+        side_fixed + side_content_w + divider_w + side_fixed
+    } else {
+        let marker_sep = usize::from(comment_marker_w > 0);
+        blame_cols + gutter_w * 2 + 1 + marker_sep + comment_marker_w + 3
+    }
 }
 
 fn visual_selection_ranges(
@@ -360,4 +394,32 @@ fn current_search_highlight(
         .iter()
         .position(|range| range.line >= diff.cursor.line)
         .or(Some(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inline_content_start_counts_comment_marker_spacing() {
+        assert_eq!(
+            diff_content_start_col(ContentMode::Diff, RenderVariant::Inline, false, 3, 1, 100,),
+            12
+        );
+    }
+
+    #[test]
+    fn side_by_side_content_start_targets_right_column() {
+        assert_eq!(
+            diff_content_start_col(
+                ContentMode::Diff,
+                RenderVariant::SideBySide,
+                false,
+                3,
+                1,
+                100,
+            ),
+            56
+        );
+    }
 }

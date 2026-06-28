@@ -192,25 +192,8 @@ fn content_for_word_extraction<'a>(
     view: &'a impl AppViewport,
 ) -> Option<&'a str> {
     let line = view.diff_rendered_text().get(state.diff_line_cursor)?;
-    let gutter = view.diff_gutter_cols();
-    let content = suffix_from_char(line, gutter).unwrap_or("");
-    let content = if content.chars().count() >= 3 {
-        let prefix: String = content.chars().take(3).collect();
-        if prefix == "+ "
-            || prefix == "- "
-            || prefix == "  "
-            || prefix.starts_with(" + ")
-            || prefix.starts_with(" - ")
-        {
-            suffix_from_char(content, 3).unwrap_or("").trim_start()
-        } else {
-            content.trim()
-        }
-    } else {
-        content.trim()
-    };
-
-    Some(content)
+    let content_start = view.diff_content_start_col();
+    suffix_from_char(line, content_start).map(str::trim)
 }
 
 fn word_at_char_offset(content: &str, column: usize) -> Option<String> {
