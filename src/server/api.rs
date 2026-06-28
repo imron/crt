@@ -1445,7 +1445,10 @@ async fn update_comment_resolved(
     {
         let db_guard = db.lock().await;
         let result = if resolved {
-            db_guard.resolve_comment(comment_id)
+            match &resolution_event {
+                Some(event) => db_guard.resolve_comment(event),
+                None => Ok(true),
+            }
         } else {
             db_guard.unresolve_comment(comment_id)
         };
@@ -1463,15 +1466,6 @@ async fn update_comment_resolved(
                     id.clone(),
                     ERR_INTERNAL,
                     format!("Failed to update comment: {e:#}"),
-                );
-            }
-        }
-        if let Some(event) = &resolution_event {
-            if let Err(e) = db_guard.record_comment_resolution(event) {
-                return JsonRpcResponse::error(
-                    id.clone(),
-                    ERR_INTERNAL,
-                    format!("Failed to record comment resolution: {e:#}"),
                 );
             }
         }
