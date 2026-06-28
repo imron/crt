@@ -55,12 +55,20 @@ original requirements.
 
 6. Tests (unit + interaction + any integration) cover the critical paths.
 
+7. Comment resolution semantics are fixed beyond the current event-exists
+   placeholder. The query should account for review range and branch/rebase
+   history so a resolution on one branch does not incorrectly resolve the
+   same comment in an unrelated branch, while rebased equivalent histories
+   still retain the resolution.
+
 ## Acceptance Criteria
 
 - [ ] Live update from another client immediately affects the current TUI view.
 - [ ] Full original stage 13 checklist passes.
 - [ ] Help and documentation reflect the new keys and workflows.
 - [ ] `13i-unresolved-comments-pane.md` is reviewed and ready for follow-up.
+- [ ] Resolution-event lookup is range-aware and covered by branch/rebase
+      tests.
 - [ ] No regressions in review, cursor, search, or other core flows.
 
 ## Implementation Notes
