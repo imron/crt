@@ -11,6 +11,10 @@ pub struct AppOutput {
     pub should_quit: bool,
     pending_command: Option<Command>,
     pending_comment_create: Option<(CommentAnchorCapture, String)>,
+    pending_comment_update: Option<(i64, String)>,
+    pending_comment_resolve: Option<i64>,
+    pending_comment_unresolve: Option<i64>,
+    pending_comment_delete: Option<i64>,
     pub save_layout: bool,
     pub show_comments: Option<bool>,
 }
@@ -70,6 +74,38 @@ impl AppOutput {
 
     pub fn take_pending_comment_create(&mut self) -> Option<(CommentAnchorCapture, String)> {
         self.pending_comment_create.take()
+    }
+
+    pub fn request_comment_update(&mut self, id: i64, body: String) {
+        self.pending_comment_update = Some((id, body));
+    }
+
+    pub fn take_pending_comment_update(&mut self) -> Option<(i64, String)> {
+        self.pending_comment_update.take()
+    }
+
+    pub fn request_comment_resolve(&mut self, id: i64) {
+        self.pending_comment_resolve = Some(id);
+    }
+
+    pub fn take_pending_comment_resolve(&mut self) -> Option<i64> {
+        self.pending_comment_resolve.take()
+    }
+
+    pub fn request_comment_unresolve(&mut self, id: i64) {
+        self.pending_comment_unresolve = Some(id);
+    }
+
+    pub fn take_pending_comment_unresolve(&mut self) -> Option<i64> {
+        self.pending_comment_unresolve.take()
+    }
+
+    pub fn request_comment_delete(&mut self, id: i64) {
+        self.pending_comment_delete = Some(id);
+    }
+
+    pub fn take_pending_comment_delete(&mut self) -> Option<i64> {
+        self.pending_comment_delete.take()
     }
 
     pub fn request_layout_save(&mut self) {

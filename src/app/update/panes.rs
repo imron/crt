@@ -33,13 +33,25 @@ pub fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
 }
 
 pub fn toggle_pane_focus(state: &mut AppState) {
-    if state.show_file_list && state.show_diff_pane {
-        state.pane_focus = match state.pane_focus {
-            PaneFocus::FileList => PaneFocus::Diff,
-            PaneFocus::Diff => PaneFocus::FileList,
-        };
-        state.mark_model_changed();
+    let mut panes = Vec::new();
+    if state.show_file_list {
+        panes.push(PaneFocus::FileList);
     }
+    if state.show_diff_pane {
+        panes.push(PaneFocus::Diff);
+    }
+    if state.show_comments_panel && state.show_diff_pane {
+        panes.push(PaneFocus::Comments);
+    }
+    if panes.len() <= 1 {
+        return;
+    }
+    let current = panes
+        .iter()
+        .position(|pane| *pane == state.pane_focus)
+        .unwrap_or(0);
+    state.pane_focus = panes[(current + 1) % panes.len()];
+    state.mark_model_changed();
 }
 
 /// Toggle visibility of a pane. At least one pane must remain visible.
@@ -68,6 +80,15 @@ pub fn toggle_pane_visibility(state: &mut AppState, pane: PaneId) {
                 state.show_diff_pane = true;
                 state.mark_model_changed();
             }
+        }
+        PaneId::Comments => {
+            state.show_comments_panel = !state.show_comments_panel;
+            if state.show_comments_panel {
+                state.pane_focus = PaneFocus::Comments;
+            } else if state.pane_focus == PaneFocus::Comments {
+                state.pane_focus = PaneFocus::Diff;
+            }
+            state.mark_model_changed();
         }
         _ => {}
     }

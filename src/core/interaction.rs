@@ -17,6 +17,7 @@ pub enum CoreEffect {
     Command(CommandParse),
     DiffSearch(DiffSearchEffect),
     Comment(CommentEffect),
+    CommentsPanel(CommentsPanelEffect),
     DiffCursor(DiffCursorEffect),
     VisualSelection(VisualSelectionEffect),
     SearchResults(SearchResultsEffect),
@@ -55,7 +56,22 @@ pub enum DiffSearchEffect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommentEffect {
     SubmitBody { body: String },
+    SubmitEditBody { id: i64, body: String },
     Cancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentsPanelEffect {
+    Toggle,
+    SelectNext,
+    SelectPrevious,
+    ToggleExpanded,
+    NavigateToSelected,
+    NavigateNextComment,
+    NavigatePreviousComment,
+    EditCurrent,
+    ToggleResolvedCurrent,
+    RequestDeleteCurrent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,10 +169,22 @@ pub struct InteractionContext {
     pub visual_selection_active: bool,
     /// Whether a comment anchor is waiting for body text.
     pub pending_comment_anchor_active: bool,
+    /// Whether the comments panel is visible.
+    pub comments_panel_visible: bool,
+    /// Whether the cursor or comments panel selection has a current comment.
+    pub current_comment_active: bool,
+    /// Current comment id/body for edit prompt setup.
+    pub current_comment: Option<CurrentCommentContext>,
     /// Whether the adapter still has an active quit confirmation prompt.
     pub quit_confirmation_active: bool,
     /// Word under the cursor, supplied by the adapter for commands like `gd`.
     pub fallback_word: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentCommentContext {
+    pub id: i64,
+    pub body: String,
 }
 
 /// Stage-20 scaffold interaction engine.
@@ -173,6 +201,7 @@ pub struct CoreInteractionEngine {
 struct ActivePrompt {
     id: PromptId,
     kind: PromptKind,
+    comment_edit_id: Option<i64>,
 }
 
 impl CoreInteractionEngine {
@@ -214,6 +243,9 @@ impl CoreInteractionEngine {
                         }),
                     ];
                 }
+                if key.key == Key::Char('C') && key_has_no_command_modifier(key.modifiers) {
+                    return vec![CoreEffect::CommentsPanel(CommentsPanelEffect::Toggle)];
+                }
                 if context.help_visible {
                     if help_dismiss_key(key) {
                         return vec![CoreEffect::DismissHelp];
@@ -234,6 +266,25 @@ impl CoreInteractionEngine {
                 }
                 if let Some(effect) = visual_selection_key_effect(key, context) {
                     return vec![CoreEffect::VisualSelection(effect)];
+                }
+                if let Some(effect) = comments_panel_key_effect(key, context) {
+                    return vec![CoreEffect::CommentsPanel(effect)];
+                }
+                if context.current_comment_active
+                    && matches!(key.key, Key::Char('c') | Key::Char('e'))
+                    && key_has_no_modifier(key.modifiers)
+                {
+                    if let Some(comment) = &context.current_comment {
+                        let id = self.next_comment_edit_prompt(comment.id);
+                        return vec![CoreEffect::RequestPrompt(PromptRequest {
+                            id,
+                            kind: PromptKind::Comment,
+                            title: "Comment".to_string(),
+                            placeholder: Some("Write a comment".to_string()),
+                            initial_value: comment.body.clone(),
+                        })];
+                    }
+                    return vec![CoreEffect::CommentsPanel(CommentsPanelEffect::EditCurrent)];
                 }
                 if context.diff_pane_visible
                     && matches!(
@@ -497,7 +548,15 @@ impl CoreInteractionEngine {
                     ],
                     PromptKind::Comment => vec![
                         CoreEffect::ClearPrompt { id },
-                        CoreEffect::Comment(CommentEffect::SubmitBody { body: value }),
+                        match active.comment_edit_id {
+                            Some(comment_id) => {
+                                CoreEffect::Comment(CommentEffect::SubmitEditBody {
+                                    id: comment_id,
+                                    body: value,
+                                })
+                            }
+                            None => CoreEffect::Comment(CommentEffect::SubmitBody { body: value }),
+                        },
                     ],
                     PromptKind::Custom(_) => vec![CoreEffect::ClearPrompt { id }],
                 }
@@ -508,7 +567,7 @@ impl CoreInteractionEngine {
                 };
 
                 let mut effects = vec![CoreEffect::ClearPrompt { id }];
-                if active.kind == PromptKind::Comment {
+                if active.kind == PromptKind::Comment && active.comment_edit_id.is_none() {
                     effects.push(CoreEffect::Comment(CommentEffect::Cancel));
                 }
                 effects
@@ -520,7 +579,22 @@ impl CoreInteractionEngine {
     fn next_prompt(&mut self, kind: PromptKind) -> PromptId {
         self.next_prompt_id = self.next_prompt_id.saturating_add(1);
         let id = PromptId(self.next_prompt_id);
-        self.active_prompt = Some(ActivePrompt { id, kind });
+        self.active_prompt = Some(ActivePrompt {
+            id,
+            kind,
+            comment_edit_id: None,
+        });
+        id
+    }
+
+    fn next_comment_edit_prompt(&mut self, comment_id: i64) -> PromptId {
+        self.next_prompt_id = self.next_prompt_id.saturating_add(1);
+        let id = PromptId(self.next_prompt_id);
+        self.active_prompt = Some(ActivePrompt {
+            id,
+            kind: PromptKind::Comment,
+            comment_edit_id: Some(comment_id),
+        });
         id
     }
 
@@ -616,6 +690,46 @@ fn pane_key_effect(
     match focused_pane {
         Some(PaneId::FileList) => Some(PaneEffect::ActivateFileListSelection),
         Some(PaneId::Diff) => Some(PaneEffect::ActivateDiffSelection),
+        Some(PaneId::Comments) => None,
+        _ => None,
+    }
+}
+
+fn comments_panel_key_effect(
+    key: &super::input::KeyEvent,
+    context: &InteractionContext,
+) -> Option<CommentsPanelEffect> {
+    match key.key {
+        Key::Char('}') if key_has_no_modifier(key.modifiers) => {
+            Some(CommentsPanelEffect::NavigateNextComment)
+        }
+        Key::Char('{') if key_has_no_modifier(key.modifiers) => {
+            Some(CommentsPanelEffect::NavigatePreviousComment)
+        }
+        Key::Char('r') if key_has_no_modifier(key.modifiers) && context.current_comment_active => {
+            Some(CommentsPanelEffect::ToggleResolvedCurrent)
+        }
+        Key::Char('d') if key_has_no_modifier(key.modifiers) && context.current_comment_active => {
+            Some(CommentsPanelEffect::RequestDeleteCurrent)
+        }
+        Key::Char('j') | Key::Down
+            if key_has_no_modifier(key.modifiers)
+                && context.focused_pane == Some(PaneId::Comments) =>
+        {
+            Some(CommentsPanelEffect::SelectNext)
+        }
+        Key::Char('k') | Key::Up
+            if key_has_no_modifier(key.modifiers)
+                && context.focused_pane == Some(PaneId::Comments) =>
+        {
+            Some(CommentsPanelEffect::SelectPrevious)
+        }
+        Key::Enter
+            if key_has_no_modifier(key.modifiers)
+                && context.focused_pane == Some(PaneId::Comments) =>
+        {
+            Some(CommentsPanelEffect::ToggleExpanded)
+        }
         _ => None,
     }
 }
@@ -2155,6 +2269,101 @@ mod tests {
                 CoreEffect::ClearPrompt { id },
                 CoreEffect::Comment(CommentEffect::SubmitBody {
                     body: "needs work".to_string(),
+                })
+            ]
+        );
+    }
+
+    #[test]
+    fn shift_c_toggles_comments_panel() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(
+                Key::Char('C'),
+                InputModifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(
+            effects,
+            vec![CoreEffect::CommentsPanel(CommentsPanelEffect::Toggle)]
+        );
+    }
+
+    #[test]
+    fn brace_keys_navigate_comments() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let next = engine.handle_input(
+            key_event(Key::Char('}'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+        let previous = engine.handle_input(
+            key_event(Key::Char('{'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(
+            next,
+            vec![CoreEffect::CommentsPanel(
+                CommentsPanelEffect::NavigateNextComment
+            )]
+        );
+        assert_eq!(
+            previous,
+            vec![CoreEffect::CommentsPanel(
+                CommentsPanelEffect::NavigatePreviousComment
+            )]
+        );
+    }
+
+    #[test]
+    fn current_comment_edit_prompt_submits_update_effect() {
+        let mut engine = CoreInteractionEngine::new();
+        let effects = engine.handle_input(
+            key_event(Key::Char('e'), InputModifiers::default()),
+            &InteractionContext {
+                current_comment_active: true,
+                current_comment: Some(CurrentCommentContext {
+                    id: 9,
+                    body: "existing".to_string(),
+                }),
+                ..InteractionContext::default()
+            },
+        );
+
+        assert_eq!(
+            effects,
+            vec![CoreEffect::RequestPrompt(PromptRequest {
+                id: PromptId(1),
+                kind: PromptKind::Comment,
+                title: "Comment".to_string(),
+                placeholder: Some("Write a comment".to_string()),
+                initial_value: "existing".to_string(),
+            })]
+        );
+        let id = requested_prompt_id(&effects);
+
+        let effects = engine.handle_input(
+            InputEvent::PromptSubmit {
+                id,
+                value: "changed".to_string(),
+            },
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(
+            effects,
+            vec![
+                CoreEffect::ClearPrompt { id },
+                CoreEffect::Comment(CommentEffect::SubmitEditBody {
+                    id: 9,
+                    body: "changed".to_string(),
                 })
             ]
         );

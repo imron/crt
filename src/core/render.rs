@@ -5,6 +5,7 @@
 pub enum PaneId {
     FileList,
     Diff,
+    Comments,
     Status,
     Overlay,
     Custom(u16),

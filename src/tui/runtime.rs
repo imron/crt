@@ -507,6 +507,7 @@ impl Tui {
                                                     });
                                             }
                                         }
+                                        PaneFocus::Comments => {}
                                     }
                                 }
                             }
@@ -566,6 +567,7 @@ impl Tui {
                 &self.tui_state.diff_rendered_text,
                 self.tui_state.diff_content_start_col(),
             ),
+            PaneFocus::Comments => return false,
         };
         let line = match text.get(anchor.line) {
             Some(line) => line,
@@ -647,6 +649,7 @@ fn mouse_content_hit(event: &InputEvent) -> Option<(PaneFocus, TextAnchor)> {
     let pane = match hit.pane_id {
         PaneId::FileList => PaneFocus::FileList,
         PaneId::Diff => PaneFocus::Diff,
+        PaneId::Comments => PaneFocus::Comments,
         _ => return None,
     };
     Some((pane, hit.text_anchor?))
@@ -732,6 +735,7 @@ fn extract_selected_text(tui_state: &TuiState, sel: &MouseSelection) -> String {
             tui_state.diff_content_start_col(),
         ),
         PaneFocus::FileList => (&tui_state.file_list_rendered_text, 0),
+        PaneFocus::Comments => return String::new(),
     };
 
     if text.is_empty() {

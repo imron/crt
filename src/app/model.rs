@@ -19,6 +19,7 @@ pub struct AppModel {
     pub layout: AppLayout,
     pub file_list: FileList,
     pub diff: DiffPanel,
+    pub comments_panel: CommentsPanel,
     pub focus: PaneFocus,
     pub search_results: Option<SearchResultsOverlay>,
     pub definition_results: Option<DefinitionResultsOverlay>,
@@ -104,6 +105,28 @@ pub struct DiffPanel {
     pub visual_selection: Option<VisualSelection>,
     pub pending_comment_anchor: Option<CommentAnchorCapture>,
     pub comments: Vec<CommentAttachment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentsPanel {
+    pub visible: bool,
+    pub comments: Vec<CommentItem>,
+    pub selected_comment_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentItem {
+    pub id: i64,
+    pub file_path: String,
+    pub line_start: i64,
+    pub line_end: i64,
+    pub body: String,
+    pub preview: String,
+    pub resolved: bool,
+    pub expanded: bool,
+    pub selected: bool,
+    pub current: bool,
+    pub anchor_status: AnchorStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,6 +220,7 @@ impl AppModel {
             },
             file_list: file_list_model(state),
             diff: diff_panel_model(state),
+            comments_panel: comments_panel_model(state),
             focus: state.pane_focus,
             search_results: search_results_model(state),
             definition_results: definition_results_model(state),
@@ -406,6 +430,108 @@ fn comment_attachments_for_file(
             anchor_status: comment.anchor_status,
         })
         .collect()
+}
+
+fn comments_panel_model(state: &AppState) -> CommentsPanel {
+    let selected_path = state
+        .selected_file_entry()
+        .map(|entry| entry.change.path.as_str());
+    let current_line = current_head_line(state).map(i64::from);
+    let mut comments: Vec<CommentItem> = state
+        .comments
+        .iter()
+        .filter(|comment| selected_path.is_none_or(|path| comment.file_path == path))
+        .map(|comment| {
+            let current = selected_path.is_some_and(|path| comment.file_path == path)
+                && current_line
+                    .is_some_and(|line| comment.line_start <= line && comment.line_end >= line);
+            let expanded =
+                !comment.resolved || current || state.expanded_comment_ids.contains(&comment.id);
+            CommentItem {
+                id: comment.id,
+                file_path: comment.file_path.clone(),
+                line_start: comment.line_start,
+                line_end: comment.line_end,
+                body: comment.body.clone(),
+                preview: comment_preview(&comment.body),
+                resolved: comment.resolved,
+                expanded,
+                selected: Some(comment.id) == state.selected_comment_id,
+                current,
+                anchor_status: comment.anchor_status,
+            }
+        })
+        .collect();
+    comments.sort_by_key(|comment| (comment.line_start, comment.line_end, comment.id));
+    CommentsPanel {
+        visible: state.show_comments_panel,
+        comments,
+        selected_comment_id: state.selected_comment_id,
+    }
+}
+
+fn comment_preview(body: &str) -> String {
+    body.lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim)
+        .unwrap_or("")
+        .chars()
+        .take(80)
+        .collect()
+}
+
+fn current_head_line(state: &AppState) -> Option<u32> {
+    match state.content_mode {
+        ContentMode::FullFile => match state.render_variant {
+            RenderVariant::HeadVersion => Some(state.diff_line_cursor.saturating_add(1) as u32),
+            RenderVariant::BaseVersion => None,
+            _ => None,
+        },
+        ContentMode::Diff => diff_new_line_at_row(state, state.diff_line_cursor),
+    }
+}
+
+fn diff_new_line_at_row(state: &AppState, row: usize) -> Option<u32> {
+    let entry = state.selected_file_entry()?;
+    let head_lines = state
+        .head_content
+        .as_deref()
+        .map(|content| content.lines().count())
+        .unwrap_or(0);
+    if entry.diff.hunks.is_empty() {
+        return (row < head_lines).then_some(row.saturating_add(1) as u32);
+    }
+
+    let mut display_row = 0usize;
+    let mut new_cursor = 1u32;
+    for hunk in &entry.diff.hunks {
+        while new_cursor < hunk.new_start && (new_cursor as usize) <= head_lines {
+            if display_row == row {
+                return Some(new_cursor);
+            }
+            display_row = display_row.saturating_add(1);
+            new_cursor = new_cursor.saturating_add(1);
+        }
+
+        for line in &hunk.lines {
+            if display_row == row {
+                return line.new_lineno;
+            }
+            display_row = display_row.saturating_add(1);
+            if line.new_lineno.is_some() {
+                new_cursor = new_cursor.saturating_add(1);
+            }
+        }
+    }
+
+    while (new_cursor as usize) <= head_lines {
+        if display_row == row {
+            return Some(new_cursor);
+        }
+        display_row = display_row.saturating_add(1);
+        new_cursor = new_cursor.saturating_add(1);
+    }
+    None
 }
 
 impl From<&review_types::ReviewStatus> for ReviewStatus {

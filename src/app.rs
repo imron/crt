@@ -3,7 +3,7 @@
 pub mod model;
 mod update;
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
 
 use self::model::AppModel;
@@ -33,6 +33,19 @@ enum AppWork {
     CreateComment {
         anchor: CommentAnchorCapture,
         body: String,
+    },
+    UpdateComment {
+        id: i64,
+        body: String,
+    },
+    ResolveComment {
+        id: i64,
+    },
+    UnresolveComment {
+        id: i64,
+    },
+    DeleteComment {
+        id: i64,
     },
 }
 
@@ -357,6 +370,10 @@ impl App {
                 AppWork::CreateComment { anchor, body } => {
                     self.create_comment_from_anchor(anchor, body).await
                 }
+                AppWork::UpdateComment { id, body } => self.update_comment(id, body).await,
+                AppWork::ResolveComment { id } => self.resolve_comment(id).await,
+                AppWork::UnresolveComment { id } => self.unresolve_comment(id).await,
+                AppWork::DeleteComment { id } => self.delete_comment(id).await,
             };
             if work_status.is_some() {
                 status = work_status;
@@ -420,6 +437,20 @@ impl App {
         if let Some((anchor, body)) = output.take_pending_comment_create() {
             self.pending_work
                 .push_back(AppWork::CreateComment { anchor, body });
+        }
+        if let Some((id, body)) = output.take_pending_comment_update() {
+            self.pending_work
+                .push_back(AppWork::UpdateComment { id, body });
+        }
+        if let Some(id) = output.take_pending_comment_resolve() {
+            self.pending_work.push_back(AppWork::ResolveComment { id });
+        }
+        if let Some(id) = output.take_pending_comment_unresolve() {
+            self.pending_work
+                .push_back(AppWork::UnresolveComment { id });
+        }
+        if let Some(id) = output.take_pending_comment_delete() {
+            self.pending_work.push_back(AppWork::DeleteComment { id });
         }
         if output.save_layout {
             self.save_layout_config();
@@ -487,6 +518,26 @@ impl App {
         match self.list_comments().await {
             Ok(result) => {
                 self.state.comments = result.comments;
+                self.state.selected_comment_id = self
+                    .state
+                    .selected_comment_id
+                    .filter(|id| self.state.comments.iter().any(|comment| comment.id == *id));
+                if self.state.show_comments_panel && self.state.selected_comment_id.is_none() {
+                    let selected_path = self
+                        .state
+                        .selected_file_entry()
+                        .map(|entry| entry.change.path.clone());
+                    self.state.selected_comment_id = selected_path.and_then(|path| {
+                        self.state
+                            .comments
+                            .iter()
+                            .filter(|comment| comment.file_path == path)
+                            .min_by_key(|comment| {
+                                (comment.line_start, comment.line_end, comment.id)
+                            })
+                            .map(|comment| comment.id)
+                    });
+                }
                 self.state.mark_model_changed();
                 None
             }
@@ -588,6 +639,98 @@ impl App {
                 )))
             }
             Err(e) => Some(StatusUpdate::Set(format!("Failed to create comment: {e}"))),
+        }
+    }
+
+    async fn update_comment(&mut self, id: i64, body: String) -> Option<StatusUpdate> {
+        let body = body.trim_end().to_string();
+        if body.is_empty() {
+            return Some(StatusUpdate::Set("Empty comment ignored".to_string()));
+        }
+        let client = match self.client() {
+            Ok(client) => client,
+            Err(e) => return Some(StatusUpdate::Set(format!("Failed to update comment: {e}"))),
+        };
+
+        match client.update_comment(id, &body).await {
+            Ok(result) => {
+                upsert_comment(&mut self.state.comments, result.comment.clone());
+                self.state.mark_model_changed();
+                Some(StatusUpdate::Set(format!(
+                    "Updated comment #{}",
+                    result.comment.id
+                )))
+            }
+            Err(e) => Some(StatusUpdate::Set(format!("Failed to update comment: {e}"))),
+        }
+    }
+
+    async fn resolve_comment(&mut self, id: i64) -> Option<StatusUpdate> {
+        let client = match self.client() {
+            Ok(client) => client,
+            Err(e) => return Some(StatusUpdate::Set(format!("Failed to resolve comment: {e}"))),
+        };
+
+        match client.resolve_comment(id).await {
+            Ok(result) => {
+                upsert_comment(&mut self.state.comments, result.comment.clone());
+                self.state.mark_model_changed();
+                Some(StatusUpdate::Set(format!(
+                    "Resolved comment #{}",
+                    result.comment.id
+                )))
+            }
+            Err(e) => Some(StatusUpdate::Set(format!("Failed to resolve comment: {e}"))),
+        }
+    }
+
+    async fn unresolve_comment(&mut self, id: i64) -> Option<StatusUpdate> {
+        let client = match self.client() {
+            Ok(client) => client,
+            Err(e) => {
+                return Some(StatusUpdate::Set(format!(
+                    "Failed to unresolve comment: {e}"
+                )));
+            }
+        };
+
+        match client.unresolve_comment(id).await {
+            Ok(result) => {
+                upsert_comment(&mut self.state.comments, result.comment.clone());
+                self.state.mark_model_changed();
+                Some(StatusUpdate::Set(format!(
+                    "Unresolved comment #{}",
+                    result.comment.id
+                )))
+            }
+            Err(e) => Some(StatusUpdate::Set(format!(
+                "Failed to unresolve comment: {e}"
+            ))),
+        }
+    }
+
+    async fn delete_comment(&mut self, id: i64) -> Option<StatusUpdate> {
+        let client = match self.client() {
+            Ok(client) => client,
+            Err(e) => return Some(StatusUpdate::Set(format!("Failed to delete comment: {e}"))),
+        };
+
+        match client.delete_comment(id).await {
+            Ok(result) => {
+                if result.deleted {
+                    self.state.comments.retain(|comment| comment.id != id);
+                    self.state.expanded_comment_ids.remove(&id);
+                    if self.state.selected_comment_id == Some(id) {
+                        self.state.selected_comment_id = None;
+                    }
+                    self.state.pending_delete_comment_id = None;
+                    self.state.mark_model_changed();
+                    Some(StatusUpdate::Set(format!("Deleted comment #{id}")))
+                } else {
+                    Some(StatusUpdate::Set(format!("Comment #{id} was not deleted")))
+                }
+            }
+            Err(e) => Some(StatusUpdate::Set(format!("Failed to delete comment: {e}"))),
         }
     }
 
@@ -743,6 +886,14 @@ pub struct AppState {
     pub files: Vec<FileEntry>,
     /// Review comments in the current review scope.
     pub comments: Vec<crate::review_types::Comment>,
+    /// Whether the comments panel is visible under the diff pane.
+    pub show_comments_panel: bool,
+    /// Comment selected in the comments panel.
+    pub selected_comment_id: Option<i64>,
+    /// Resolved/collapsed comments explicitly expanded by the user.
+    pub expanded_comment_ids: BTreeSet<i64>,
+    /// Comment awaiting delete confirmation.
+    pub pending_delete_comment_id: Option<i64>,
     /// Index of the currently selected file in `files`.
     pub selected_file: usize,
     /// Which pane has keyboard focus.
@@ -828,6 +979,10 @@ impl AppState {
             context,
             files,
             comments: Vec::new(),
+            show_comments_panel: false,
+            selected_comment_id: None,
+            expanded_comment_ids: BTreeSet::new(),
+            pending_delete_comment_id: None,
             // Index 0 is the first unreviewed file (due to sort order).
             selected_file: 0,
             pane_focus: PaneFocus::FileList,
@@ -1041,6 +1196,17 @@ impl AppState {
         self.diff_scroll = first_hunk_row;
         self.visual_selection = None;
         self.pending_comment_anchor = None;
+        let selected_path = self
+            .selected_file_entry()
+            .map(|entry| entry.change.path.clone());
+        self.selected_comment_id = selected_path.and_then(|path| {
+            self.comments
+                .iter()
+                .filter(|comment| comment.file_path == path)
+                .min_by_key(|comment| (comment.line_start, comment.line_end, comment.id))
+                .map(|comment| comment.id)
+        });
+        self.pending_delete_comment_id = None;
         self.invalidate_diff_search_matches();
         self.mark_model_changed();
     }
@@ -1074,8 +1240,8 @@ impl AppState {
 mod tests {
     use super::*;
     use crate::core::{
-        CommentEffect, CoreEffect, DefinitionResultsEffect, DiffCursorEffect, PaneId,
-        SearchResultsEffect, VisualSelectionEffect,
+        CommentEffect, CommentsPanelEffect, CoreEffect, DefinitionResultsEffect, DiffCursorEffect,
+        PaneId, SearchResultsEffect, VisualSelectionEffect,
     };
     use crate::protocol::NotificationKind;
     use crate::review_types::{
@@ -1715,6 +1881,99 @@ mod tests {
                 anchor,
                 body: "  please fix".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn comment_edit_submit_queues_update_work() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+
+        let output = app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::Comment(CommentEffect::SubmitEditBody {
+                id: 42,
+                body: "updated  \n  ".to_string(),
+            })],
+        );
+
+        assert_eq!(
+            output.status,
+            Some(StatusUpdate::Set("Updating comment #42...".to_string()))
+        );
+        assert_eq!(
+            app.pending_work.pop_front(),
+            Some(AppWork::UpdateComment {
+                id: 42,
+                body: "updated".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn comments_panel_toggle_shows_panel_and_selects_file_comment() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        app.state.comments = vec![stored_comment(7, "src/main.rs")];
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::CommentsPanel(CommentsPanelEffect::Toggle)],
+        );
+
+        assert!(app.state.show_comments_panel);
+        assert_eq!(app.state.selected_comment_id, Some(7));
+    }
+
+    #[test]
+    fn current_comment_uses_innermost_comment_on_cursor_line() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_hunk("src/main.rs")],
+        );
+        app.state.head_content = Some("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n".to_string());
+        let mut outer = stored_comment(1, "src/main.rs");
+        outer.line_start = 10;
+        outer.line_end = 14;
+        let mut inner = stored_comment(2, "src/main.rs");
+        inner.line_start = 11;
+        inner.line_end = 11;
+        app.state.comments = vec![outer, inner];
+        app.state.diff_line_cursor = 10;
+
+        let context = app.interaction_context();
+
+        assert_eq!(context.current_comment.map(|comment| comment.id), Some(2));
+    }
+
+    #[test]
+    fn resolving_current_comment_queues_lifecycle_work() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        app.state.comments = vec![stored_comment(7, "src/main.rs")];
+        app.state.head_content = Some("one\ntwo\n".to_string());
+        app.state.diff_line_cursor = 1;
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::CommentsPanel(
+                CommentsPanelEffect::ToggleResolvedCurrent,
+            )],
+        );
+
+        assert_eq!(
+            app.pending_work.pop_front(),
+            Some(AppWork::ResolveComment { id: 7 })
         );
     }
 
