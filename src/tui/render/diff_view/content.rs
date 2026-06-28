@@ -2,7 +2,6 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::super::super::state::TuiState;
-use super::comment_markers::CommentMarkerSet;
 use super::full_file::{build_full_file_base, build_full_file_head};
 use super::inline::build_inline_diff;
 use super::side_by_side::build_side_by_side_diff;
@@ -114,8 +113,6 @@ pub fn build_content(
 
     let default_bg = *styles.bg;
     let current_comment_fg = *styles.diff.current_comment_marker_fg;
-    let comment_markers = CommentMarkerSet::new(&diff.comments, current_comment_line(diff));
-    let no_comment_markers = CommentMarkerSet::new(&[], None);
 
     let built = match (diff.content_mode, diff.render_variant) {
         (ContentMode::Diff, RenderVariant::SideBySide) => build_side_by_side_diff(
@@ -125,7 +122,7 @@ pub fn build_content(
             diff.head_content.as_deref(),
             head_blame,
             base_blame,
-            &comment_markers,
+            &diff.comment_markers,
             current_comment_fg,
             inner_w,
         ),
@@ -136,7 +133,7 @@ pub fn build_content(
             diff.head_content.as_deref(),
             head_blame,
             base_blame,
-            &comment_markers,
+            &diff.comment_markers,
             current_comment_fg,
             inner_w,
         ),
@@ -146,7 +143,7 @@ pub fn build_content(
             &diff.hunks,
             diff.head_content.as_deref(),
             head_blame,
-            &comment_markers,
+            &diff.comment_markers,
             current_comment_fg,
             inner_w,
         ),
@@ -156,7 +153,7 @@ pub fn build_content(
             &diff.hunks,
             diff.base_content.as_deref(),
             base_blame,
-            &no_comment_markers,
+            &diff.comment_markers,
             current_comment_fg,
             inner_w,
         ),
@@ -181,70 +178,31 @@ pub fn build_content(
     )
 }
 
-pub(super) fn current_comment_line(diff: &DiffPanel) -> Option<u32> {
-    match diff.content_mode {
-        ContentMode::FullFile => match diff.render_variant {
-            RenderVariant::HeadVersion => Some(diff.cursor.line.saturating_add(1) as u32),
-            RenderVariant::BaseVersion => None,
-            _ => None,
-        },
-        ContentMode::Diff => diff_new_line_at_row(diff, diff.cursor.line),
-    }
-}
-
-fn diff_new_line_at_row(diff: &DiffPanel, row: usize) -> Option<u32> {
-    let head_lines = diff
-        .head_content
-        .as_deref()
-        .map(|content| content.lines().count())
-        .unwrap_or(0);
-    if diff.hunks.is_empty() {
-        return (row < head_lines).then_some(row.saturating_add(1) as u32);
-    }
-
-    let mut display_row = 0usize;
-    let mut new_cursor = 1u32;
-
-    for hunk in &diff.hunks {
-        while new_cursor < hunk.new_start && (new_cursor as usize) <= head_lines {
-            if display_row == row {
-                return Some(new_cursor);
-            }
-            display_row = display_row.saturating_add(1);
-            new_cursor = new_cursor.saturating_add(1);
-        }
-
-        for line in &hunk.lines {
-            if display_row == row {
-                return line.new_lineno;
-            }
-            display_row = display_row.saturating_add(1);
-            if line.new_lineno.is_some() {
-                new_cursor = new_cursor.saturating_add(1);
-            }
-        }
-    }
-
-    while (new_cursor as usize) <= head_lines {
-        if display_row == row {
-            return Some(new_cursor);
-        }
-        display_row = display_row.saturating_add(1);
-        new_cursor = new_cursor.saturating_add(1);
-    }
-
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::model::CommentAttachment;
+    use crate::app::model::{CommentAttachment, CommentMarkerSet};
     use crate::config::DiffAlgorithm;
     use crate::core::TextAnchor;
     use crate::review_types::AnchorStatus;
 
     fn diff_panel(content_mode: ContentMode, render_variant: RenderVariant) -> DiffPanel {
+        let comments = vec![CommentAttachment {
+            id: 1,
+            line_start: 2,
+            line_end: 2,
+            resolved: false,
+            anchor_status: AnchorStatus::Anchored,
+        }];
+        let current_line = match (content_mode, render_variant) {
+            (ContentMode::FullFile, RenderVariant::HeadVersion) => Some(2),
+            (ContentMode::Diff, _) => Some(2),
+            _ => None,
+        };
+        let comment_markers = match (content_mode, render_variant) {
+            (ContentMode::FullFile, RenderVariant::BaseVersion) => CommentMarkerSet::new(&[], None),
+            _ => CommentMarkerSet::new(&comments, current_line),
+        };
         DiffPanel {
             selected_file_index: Some(0),
             file_id: Some("file.rs".to_string()),
@@ -272,13 +230,8 @@ mod tests {
             current_search_highlight: None,
             visual_selection: None,
             pending_comment_anchor: None,
-            comments: vec![CommentAttachment {
-                id: 1,
-                line_start: 2,
-                line_end: 2,
-                resolved: false,
-                anchor_status: AnchorStatus::Anchored,
-            }],
+            comment_markers,
+            comments,
         }
     }
 

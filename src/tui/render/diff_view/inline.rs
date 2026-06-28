@@ -1,7 +1,7 @@
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 
-use super::comment_markers::CommentMarkerSet;
+use super::comment_markers::{CommentMarkerSet, marker_column_width, marker_for_line};
 use super::content::BuiltContent;
 use super::line::{digit_width, make_line, make_line_with_emphasis};
 use crate::app::model::{BlameLine, DiffHunk};
@@ -52,7 +52,7 @@ pub fn build_inline_diff(
                 make_line(
                     Some(lineno),
                     Some(lineno),
-                    &comment_markers.marker_for_line(Some(lineno)),
+                    &marker_for_line(comment_markers, Some(lineno)),
                     " ",
                     text,
                     context_style,
@@ -72,7 +72,7 @@ pub fn build_inline_diff(
             hunk_ends: vec![],
             hunk_first_changes: vec![],
             gutter_w,
-            comment_marker_w: comment_markers.width(),
+            comment_marker_w: marker_column_width(comment_markers),
         };
     }
 
@@ -117,7 +117,7 @@ pub fn build_inline_diff(
             result.push(make_line(
                 Some(old_cursor),
                 Some(new_cursor),
-                &comment_markers.marker_for_line(Some(new_cursor)),
+                &marker_for_line(comment_markers, Some(new_cursor)),
                 " ",
                 content,
                 context_style,
@@ -159,7 +159,7 @@ pub fn build_inline_diff(
                 result.push(make_line(
                     diff_line.old_lineno,
                     diff_line.new_lineno,
-                    &comment_markers.marker_for_line(diff_line.new_lineno),
+                    &marker_for_line(comment_markers, diff_line.new_lineno),
                     " ",
                     content,
                     context_style,
@@ -211,7 +211,7 @@ pub fn build_inline_diff(
                         result.push(make_line_with_emphasis(
                             dl.old_lineno,
                             dl.new_lineno,
-                            &comment_markers.marker_for_line(dl.new_lineno),
+                            &marker_for_line(comment_markers, dl.new_lineno),
                             "-",
                             old_spans,
                             Style::default().fg(*ds.deletion_fg).bg(*ds.deletion_bg),
@@ -230,7 +230,7 @@ pub fn build_inline_diff(
                         result.push(make_line(
                             dl.old_lineno,
                             dl.new_lineno,
-                            &comment_markers.marker_for_line(dl.new_lineno),
+                            &marker_for_line(comment_markers, dl.new_lineno),
                             "-",
                             content,
                             Style::default().fg(*ds.deletion_fg).bg(*ds.deletion_bg),
@@ -247,7 +247,7 @@ pub fn build_inline_diff(
                     result.push(make_line(
                         dl.old_lineno,
                         dl.new_lineno,
-                        &comment_markers.marker_for_line(dl.new_lineno),
+                        &marker_for_line(comment_markers, dl.new_lineno),
                         "-",
                         content,
                         Style::default().fg(*ds.deletion_fg).bg(*ds.deletion_bg),
@@ -271,7 +271,7 @@ pub fn build_inline_diff(
                         result.push(make_line_with_emphasis(
                             al.old_lineno,
                             al.new_lineno,
-                            &comment_markers.marker_for_line(al.new_lineno),
+                            &marker_for_line(comment_markers, al.new_lineno),
                             "+",
                             new_spans,
                             Style::default().fg(*ds.addition_fg).bg(*ds.addition_bg),
@@ -290,7 +290,7 @@ pub fn build_inline_diff(
                         result.push(make_line(
                             al.old_lineno,
                             al.new_lineno,
-                            &comment_markers.marker_for_line(al.new_lineno),
+                            &marker_for_line(comment_markers, al.new_lineno),
                             "+",
                             content,
                             Style::default().fg(*ds.addition_fg).bg(*ds.addition_bg),
@@ -307,7 +307,7 @@ pub fn build_inline_diff(
                     result.push(make_line(
                         al.old_lineno,
                         al.new_lineno,
-                        &comment_markers.marker_for_line(al.new_lineno),
+                        &marker_for_line(comment_markers, al.new_lineno),
                         "+",
                         content,
                         Style::default().fg(*ds.addition_fg).bg(*ds.addition_bg),
@@ -336,7 +336,7 @@ pub fn build_inline_diff(
         result.push(make_line(
             Some(old_cursor),
             Some(new_cursor),
-            &comment_markers.marker_for_line(Some(new_cursor)),
+            &marker_for_line(comment_markers, Some(new_cursor)),
             " ",
             content,
             context_style,
@@ -358,6 +358,6 @@ pub fn build_inline_diff(
         hunk_ends,
         hunk_first_changes,
         gutter_w,
-        comment_marker_w: comment_markers.width(),
+        comment_marker_w: marker_column_width(comment_markers),
     }
 }

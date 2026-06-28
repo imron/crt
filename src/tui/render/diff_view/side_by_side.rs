@@ -1,7 +1,9 @@
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
-use super::comment_markers::{CommentMarker, CommentMarkerSet};
+use super::comment_markers::{
+    CommentMarker, CommentMarkerSet, marker_column_width, marker_for_line,
+};
 use super::content::BuiltContent;
 use super::line::{BLAME_COL_WIDTH, digit_width, format_blame};
 use crate::app::model::{BlameLine, DiffHunk};
@@ -52,7 +54,7 @@ pub fn build_side_by_side_diff(
             .unwrap_or(0),
     ) as u32;
     let gutter_w = digit_width(max_old.max(max_new));
-    let comment_marker_w = comment_markers.width();
+    let comment_marker_w = marker_column_width(comment_markers);
 
     let has_blame = !head_blame.is_empty() || !base_blame.is_empty();
     let blame_w = if has_blame { BLAME_COL_WIDTH + 1 } else { 0 };
@@ -206,7 +208,7 @@ pub fn build_side_by_side_diff(
             let right = make_half(
                 Some(new_cursor),
                 content,
-                &comment_markers.marker_for_line(Some(new_cursor)),
+                &marker_for_line(comment_markers, Some(new_cursor)),
                 context_style,
                 None,
                 hblame(Some(new_cursor)),
@@ -243,7 +245,7 @@ pub fn build_side_by_side_diff(
                 let right = make_half(
                     dl.new_lineno,
                     content,
-                    &comment_markers.marker_for_line(dl.new_lineno),
+                    &marker_for_line(comment_markers, dl.new_lineno),
                     context_style,
                     None,
                     hblame(dl.new_lineno),
@@ -324,7 +326,7 @@ pub fn build_side_by_side_diff(
                             make_half(
                                 adds[idx].new_lineno,
                                 ac,
-                                &comment_markers.marker_for_line(adds[idx].new_lineno),
+                                &marker_for_line(comment_markers, adds[idx].new_lineno),
                                 addition_style,
                                 Some((new_spans, addition_emphasis)),
                                 hblame(adds[idx].new_lineno),
@@ -333,7 +335,7 @@ pub fn build_side_by_side_diff(
                             make_half(
                                 adds[idx].new_lineno,
                                 ac,
-                                &comment_markers.marker_for_line(adds[idx].new_lineno),
+                                &marker_for_line(comment_markers, adds[idx].new_lineno),
                                 addition_style,
                                 None,
                                 hblame(adds[idx].new_lineno),
@@ -343,7 +345,7 @@ pub fn build_side_by_side_diff(
                         make_half(
                             adds[idx].new_lineno,
                             ac,
-                            &comment_markers.marker_for_line(adds[idx].new_lineno),
+                            &marker_for_line(comment_markers, adds[idx].new_lineno),
                             addition_style,
                             None,
                             hblame(adds[idx].new_lineno),
@@ -382,7 +384,7 @@ pub fn build_side_by_side_diff(
         let right = make_half(
             Some(new_cursor),
             content,
-            &comment_markers.marker_for_line(Some(new_cursor)),
+            &marker_for_line(comment_markers, Some(new_cursor)),
             context_style,
             None,
             hblame(Some(new_cursor)),

@@ -522,22 +522,6 @@ impl App {
                     .state
                     .selected_comment_id
                     .filter(|id| self.state.comments.iter().any(|comment| comment.id == *id));
-                if self.state.show_comments_panel && self.state.selected_comment_id.is_none() {
-                    let selected_path = self
-                        .state
-                        .selected_file_entry()
-                        .map(|entry| entry.change.path.clone());
-                    self.state.selected_comment_id = selected_path.and_then(|path| {
-                        self.state
-                            .comments
-                            .iter()
-                            .filter(|comment| comment.file_path == path)
-                            .min_by_key(|comment| {
-                                (comment.line_start, comment.line_end, comment.id)
-                            })
-                            .map(|comment| comment.id)
-                    });
-                }
                 self.state.mark_model_changed();
                 None
             }
@@ -1196,16 +1180,7 @@ impl AppState {
         self.diff_scroll = first_hunk_row;
         self.visual_selection = None;
         self.pending_comment_anchor = None;
-        let selected_path = self
-            .selected_file_entry()
-            .map(|entry| entry.change.path.clone());
-        self.selected_comment_id = selected_path.and_then(|path| {
-            self.comments
-                .iter()
-                .filter(|comment| comment.file_path == path)
-                .min_by_key(|comment| (comment.line_start, comment.line_end, comment.id))
-                .map(|comment| comment.id)
-        });
+        self.selected_comment_id = None;
         self.pending_delete_comment_id = None;
         self.invalidate_diff_search_matches();
         self.mark_model_changed();
@@ -1403,6 +1378,90 @@ mod tests {
                             content: "after three".to_string(),
                             old_lineno: Some(13),
                             new_lineno: Some(15),
+                        },
+                    ],
+                }],
+                is_binary: false,
+                diff_hash: format!("hash-{path}"),
+            },
+        }
+    }
+
+    fn test_file_with_replacement_hunk(path: &str) -> FileEntry {
+        FileEntry {
+            change: FileChange {
+                path: path.to_string(),
+                old_path: None,
+                kind: ChangeKind::Modified,
+            },
+            status: ReviewStatus::Unreviewed,
+            diff: DiffContent {
+                hunks: vec![DiffHunk {
+                    old_start: 15,
+                    old_lines: 3,
+                    new_start: 15,
+                    new_lines: 3,
+                    header: "@@ -15,3 +15,3 @@".to_string(),
+                    lines: vec![
+                        DiffLine {
+                            kind: LineKind::Context,
+                            content: "before".to_string(),
+                            old_lineno: Some(15),
+                            new_lineno: Some(15),
+                        },
+                        DiffLine {
+                            kind: LineKind::Deletion,
+                            content: "old".to_string(),
+                            old_lineno: Some(16),
+                            new_lineno: None,
+                        },
+                        DiffLine {
+                            kind: LineKind::Addition,
+                            content: "new".to_string(),
+                            old_lineno: None,
+                            new_lineno: Some(16),
+                        },
+                        DiffLine {
+                            kind: LineKind::Context,
+                            content: "after".to_string(),
+                            old_lineno: Some(17),
+                            new_lineno: Some(17),
+                        },
+                    ],
+                }],
+                is_binary: false,
+                diff_hash: format!("hash-{path}"),
+            },
+        }
+    }
+
+    fn test_file_with_leading_deletion_hunk(path: &str) -> FileEntry {
+        FileEntry {
+            change: FileChange {
+                path: path.to_string(),
+                old_path: None,
+                kind: ChangeKind::Modified,
+            },
+            status: ReviewStatus::Unreviewed,
+            diff: DiffContent {
+                hunks: vec![DiffHunk {
+                    old_start: 16,
+                    old_lines: 2,
+                    new_start: 16,
+                    new_lines: 1,
+                    header: "@@ -16,2 +16,1 @@".to_string(),
+                    lines: vec![
+                        DiffLine {
+                            kind: LineKind::Deletion,
+                            content: "removed".to_string(),
+                            old_lineno: Some(16),
+                            new_lineno: None,
+                        },
+                        DiffLine {
+                            kind: LineKind::Context,
+                            content: "kept".to_string(),
+                            old_lineno: Some(17),
+                            new_lineno: Some(16),
                         },
                     ],
                 }],
@@ -1914,7 +1973,7 @@ mod tests {
     }
 
     #[test]
-    fn comments_panel_toggle_shows_panel_and_selects_file_comment() {
+    fn comments_panel_toggle_does_not_select_first_file_comment() {
         let mut app = App::new(
             Config::default(),
             test_context(),
@@ -1928,7 +1987,197 @@ mod tests {
         );
 
         assert!(app.state.show_comments_panel);
+        assert_eq!(app.state.selected_comment_id, None);
+    }
+
+    #[test]
+    fn comments_panel_model_shows_only_cursor_comment() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        let mut first = stored_comment(7, "src/main.rs");
+        first.line_start = 2;
+        first.line_end = 2;
+        let mut second = stored_comment(8, "src/main.rs");
+        second.line_start = 3;
+        second.line_end = 3;
+        app.state.comments = vec![first, second];
+        app.state.head_content = Some("one\ntwo\nthree\n".to_string());
+        app.state.show_comments_panel = true;
+        app.state.diff_line_cursor = 1;
+
+        let model = app.model();
+
+        assert_eq!(model.comments_panel.comments.len(), 1);
+        assert_eq!(model.comments_panel.comments[0].id, 7);
+        assert_eq!(model.comments_panel.selected_index, Some(1));
+        assert_eq!(model.comments_panel.total, 2);
+
+        app.state.diff_line_cursor = 0;
+        let model = app.model();
+
+        assert!(model.comments_panel.comments.is_empty());
+        assert_eq!(model.comments_panel.selected_index, None);
+        assert_eq!(model.comments_panel.total, 2);
+    }
+
+    #[test]
+    fn comment_navigation_is_relative_to_cursor_line() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        let mut first = stored_comment(7, "src/main.rs");
+        first.line_start = 2;
+        first.line_end = 2;
+        let mut second = stored_comment(8, "src/main.rs");
+        second.line_start = 4;
+        second.line_end = 4;
+        app.state.comments = vec![first, second];
+        app.state.head_content = Some("one\ntwo\nthree\nfour\nfive\n".to_string());
+        app.state.diff_line_cursor = 2;
+        assert!(!app.state.show_comments_panel);
+        let view = RenderedViewport::new(vec!["one", "two", "three", "four", "five"]);
+
+        app.apply_core_effects(
+            &view,
+            vec![CoreEffect::CommentsPanel(
+                CommentsPanelEffect::NavigateNextComment,
+            )],
+        );
+
+        assert_eq!(app.state.selected_comment_id, Some(8));
+        assert_eq!(app.state.diff_line_cursor, 3);
+        assert!(app.state.show_comments_panel);
+
+        app.state.show_comments_panel = false;
+        app.state.diff_line_cursor = 2;
+        app.apply_core_effects(
+            &view,
+            vec![CoreEffect::CommentsPanel(
+                CommentsPanelEffect::NavigatePreviousComment,
+            )],
+        );
+
         assert_eq!(app.state.selected_comment_id, Some(7));
+        assert_eq!(app.state.diff_line_cursor, 1);
+        assert!(app.state.show_comments_panel);
+    }
+
+    #[test]
+    fn comment_navigation_works_from_inline_deletion_row() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_leading_deletion_hunk("src/main.rs")],
+        );
+        let mut comment = stored_comment(7, "src/main.rs");
+        comment.line_start = 16;
+        comment.line_end = 16;
+        app.state.comments = vec![comment];
+        app.state.head_content = Some(
+            (1..=20)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.state.diff_line_cursor = 0;
+        let lines: Vec<String> = (1..=20).map(|n| n.to_string()).collect();
+        let view = RenderedViewport { lines };
+
+        app.apply_core_effects(
+            &view,
+            vec![CoreEffect::CommentsPanel(
+                CommentsPanelEffect::NavigateNextComment,
+            )],
+        );
+
+        assert_eq!(app.state.selected_comment_id, Some(7));
+        assert_eq!(app.state.diff_line_cursor, 16);
+    }
+
+    #[test]
+    fn side_by_side_comment_navigation_uses_paired_rows() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_replacement_hunk("src/main.rs")],
+        );
+        let mut comment = stored_comment(7, "src/main.rs");
+        comment.line_start = 16;
+        comment.line_end = 16;
+        app.state.comments = vec![comment];
+        app.state.head_content = Some(
+            (1..=20)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.state.render_variant = RenderVariant::SideBySide;
+        app.state.diff_line_cursor = 0;
+        let lines: Vec<String> = (1..=20).map(|n| n.to_string()).collect();
+        let view = RenderedViewport { lines };
+
+        app.apply_core_effects(
+            &view,
+            vec![CoreEffect::CommentsPanel(
+                CommentsPanelEffect::NavigateNextComment,
+            )],
+        );
+
+        assert_eq!(app.state.selected_comment_id, Some(7));
+        assert_eq!(app.state.diff_line_cursor, 15);
+    }
+
+    #[test]
+    fn previous_comment_uses_nearest_start_before_cursor() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        let mut early = stored_comment(7, "src/main.rs");
+        early.line_start = 16;
+        early.line_end = 20;
+        let mut outer = stored_comment(8, "src/main.rs");
+        outer.line_start = 31;
+        outer.line_end = 50;
+        let mut nested = stored_comment(9, "src/main.rs");
+        nested.line_start = 36;
+        nested.line_end = 36;
+        app.state.comments = vec![early, outer, nested];
+        app.state.head_content = Some(
+            (1..=60)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.state.diff_line_cursor = 37;
+        let lines: Vec<String> = (1..=60).map(|n| n.to_string()).collect();
+        let view = RenderedViewport { lines };
+
+        app.apply_core_effects(
+            &view,
+            vec![CoreEffect::CommentsPanel(
+                CommentsPanelEffect::NavigatePreviousComment,
+            )],
+        );
+
+        assert_eq!(app.state.selected_comment_id, Some(9));
+        assert_eq!(app.state.diff_line_cursor, 35);
+
+        app.apply_core_effects(
+            &view,
+            vec![CoreEffect::CommentsPanel(
+                CommentsPanelEffect::NavigatePreviousComment,
+            )],
+        );
+
+        assert_eq!(app.state.selected_comment_id, Some(8));
+        assert_eq!(app.state.diff_line_cursor, 30);
     }
 
     #[test]

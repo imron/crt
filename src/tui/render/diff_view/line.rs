@@ -201,7 +201,7 @@ pub fn digit_width(n: u32) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::super::comment_markers::CommentMarkerSet;
+    use super::super::comment_markers::{CommentMarkerSet, marker_for_line};
     use super::*;
     use crate::app::model::CommentAttachment;
     use crate::review_types::AnchorStatus;
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn make_line_uses_current_colour_for_current_comment_marker() {
         let markers = CommentMarkerSet::new(&[comment()], Some(1));
-        let marker = markers.marker_for_line(Some(1));
+        let marker = marker_for_line(&markers, Some(1));
 
         let line = make_line(
             Some(1),
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn make_line_keeps_inactive_comment_marker_in_gutter_colour() {
         let markers = CommentMarkerSet::new(&[comment()], None);
-        let marker = markers.marker_for_line(Some(1));
+        let marker = marker_for_line(&markers, Some(1));
 
         let line = make_line(
             Some(1),
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn make_line_separates_line_number_and_comment_marker() {
         let markers = CommentMarkerSet::new(&[comment()], None);
-        let marker = markers.marker_for_line(Some(1));
+        let marker = marker_for_line(&markers, Some(1));
 
         let line = make_line(
             Some(1),
