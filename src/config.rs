@@ -260,6 +260,8 @@ pub struct DiffStyle {
     pub context_fg: Color,
     /// Line-number gutter foreground.
     pub gutter_fg: Color,
+    /// Comment marker foreground for the comment containing the cursor line.
+    pub current_comment_marker_fg: Color,
     /// Blame annotation foreground.
     pub blame_fg: Color,
     /// Placeholder text (binary file, empty file, etc.).
@@ -285,7 +287,8 @@ impl Default for DiffStyle {
             deletion_emphasis_bg: Color::new(C::Rgb(75, 50, 60)), // #4B323C — brighter
             context_fg: Color::new(C::Gray),
             gutter_fg: Color::new(C::DarkGray),
-            blame_fg: Color::new(C::Rgb(140, 140, 160)), // #8C8CA0 — blue-grey
+            current_comment_marker_fg: Color::new(C::Rgb(96, 165, 250)), // #60A5FA blue
+            blame_fg: Color::new(C::Rgb(140, 140, 160)),                 // #8C8CA0 — blue-grey
             placeholder_fg: Color::new(C::DarkGray),
             reviewed_fg: Color::new(C::Green),
             cursor_line_bg: Color::new(C::Rgb(50, 50, 65)), // #323241 — subtle highlight
