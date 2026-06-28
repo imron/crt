@@ -280,7 +280,8 @@ fn diff_content_start_col(
 
     let blame_cols = if show_blame { BLAME_COL_WIDTH + 1 } else { 0 };
     if content_mode == ContentMode::Diff && render_variant == RenderVariant::SideBySide {
-        let side_fixed = blame_cols + gutter_w + comment_marker_w + 1;
+        let marker_sep = usize::from(comment_marker_w > 0);
+        let side_fixed = blame_cols + gutter_w + comment_marker_w + marker_sep + 1;
         let divider_w = 3;
         let available = inner_w.saturating_sub(side_fixed * 2 + divider_w);
         let side_content_w = available / 2;
@@ -419,7 +420,7 @@ mod tests {
                 1,
                 100,
             ),
-            56
+            57
         );
     }
 }
