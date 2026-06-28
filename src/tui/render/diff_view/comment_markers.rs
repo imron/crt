@@ -252,6 +252,12 @@ mod tests {
         }
     }
 
+    fn assert_marker(markers: &CommentMarkerSet, line: u32, text: &str, current: bool) {
+        let marker = markers.marker_for_line(Some(line));
+        assert_eq!(marker.text(), text, "line {line}");
+        assert_eq!(marker.is_current(), current, "line {line}");
+    }
+
     #[test]
     fn markers_show_single_line_resolution_state() {
         let markers =
@@ -376,5 +382,85 @@ mod tests {
         assert!(!nested_end.is_current());
         assert_eq!(outer_end.text(), "●");
         assert!(outer_end.is_current());
+    }
+
+    #[test]
+    fn current_resolved_outer_comment_leaves_unresolved_nested_boundaries_inactive() {
+        let markers = CommentMarkerSet::new(
+            &[
+                comment(1, 10, 20, true),
+                comment(2, 13, 18, false),
+                comment(3, 15, 15, false),
+            ],
+            Some(11),
+        );
+
+        assert_marker(&markers, 10, "○", true);
+        assert_marker(&markers, 12, "┃", true);
+        assert_marker(&markers, 13, "●", false);
+        assert_marker(&markers, 14, "┃", true);
+        assert_marker(&markers, 15, "●", false);
+        assert_marker(&markers, 18, "●", false);
+        assert_marker(&markers, 19, "┃", true);
+        assert_marker(&markers, 20, "○", true);
+    }
+
+    #[test]
+    fn current_unresolved_middle_comment_preserves_outer_and_inner_boundaries() {
+        let markers = CommentMarkerSet::new(
+            &[
+                comment(1, 10, 30, true),
+                comment(2, 14, 24, false),
+                comment(3, 18, 22, true),
+                comment(4, 20, 20, true),
+            ],
+            Some(16),
+        );
+
+        assert_marker(&markers, 10, "○", false);
+        assert_marker(&markers, 14, "●", true);
+        assert_marker(&markers, 16, "┃", true);
+        assert_marker(&markers, 18, "○", false);
+        assert_marker(&markers, 20, "○", false);
+        assert_marker(&markers, 22, "○", false);
+        assert_marker(&markers, 24, "●", true);
+        assert_marker(&markers, 30, "○", false);
+    }
+
+    #[test]
+    fn current_comment_boundary_overrides_shared_nested_boundary() {
+        let markers = CommentMarkerSet::new(
+            &[
+                comment(1, 10, 20, false),
+                comment(2, 10, 15, true),
+                comment(3, 15, 20, true),
+            ],
+            Some(11),
+        );
+
+        assert_marker(&markers, 10, "○", true);
+        assert_marker(&markers, 12, "┃", true);
+        assert_marker(&markers, 15, "○", true);
+        assert_marker(&markers, 20, "○", false);
+    }
+
+    #[test]
+    fn identical_ranges_use_latest_comment_as_current_tiebreaker() {
+        let markers = CommentMarkerSet::new(
+            &[comment(1, 10, 12, false), comment(2, 10, 12, true)],
+            Some(11),
+        );
+
+        assert_marker(&markers, 10, "○", true);
+        assert_marker(&markers, 11, "┃", true);
+        assert_marker(&markers, 12, "○", true);
+    }
+
+    #[test]
+    fn inactive_identical_ranges_use_latest_comment_tiebreaker() {
+        let markers =
+            CommentMarkerSet::new(&[comment(1, 10, 10, false), comment(2, 10, 10, true)], None);
+
+        assert_marker(&markers, 10, "○", false);
     }
 }
