@@ -1,6 +1,7 @@
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
+use super::comment_markers::CommentMarkerSet;
 use super::content::BuiltContent;
 use super::line::{BLAME_COL_WIDTH, digit_width, format_blame};
 use crate::app::model::{BlameLine, DiffHunk};
@@ -18,6 +19,7 @@ pub fn build_side_by_side_diff(
     head_content: Option<&str>,
     head_blame: &[BlameLine],
     base_blame: &[BlameLine],
+    comment_markers: &CommentMarkerSet,
     inner_w: usize,
 ) -> BuiltContent {
     let head_lines: Vec<&str> = head_content
@@ -31,6 +33,7 @@ pub fn build_side_by_side_diff(
             hunk_ends: vec![],
             hunk_first_changes: vec![],
             gutter_w: 0,
+            comment_marker_w: 0,
         };
     }
 
@@ -48,12 +51,13 @@ pub fn build_side_by_side_diff(
             .unwrap_or(0),
     ) as u32;
     let gutter_w = digit_width(max_old.max(max_new));
+    let comment_marker_w = comment_markers.width();
 
     let has_blame = !head_blame.is_empty() || !base_blame.is_empty();
     let blame_w = if has_blame { BLAME_COL_WIDTH + 1 } else { 0 };
 
     // Each column: [blame + " "] + gutter + " " + content.  Middle divider is " │ ".
-    let col_fixed = blame_w + gutter_w + 1; // blame + gutter + space
+    let col_fixed = blame_w + gutter_w + comment_marker_w + 1;
     let divider_w = 3; // " │ "
     let available = inner_w.saturating_sub(col_fixed * 2 + divider_w);
     let col_w = available / 2;
@@ -89,6 +93,7 @@ pub fn build_side_by_side_diff(
     // Helper: build one side of a row (blame + gutter + content), padded to col_w.
     let make_half = |lineno: Option<u32>,
                      content: &str,
+                     comment_marker: &str,
                      style: Style,
                      emphasis: Option<(&[super::super::word_diff::DiffSpan<'_>], Style)>,
                      blame: Option<&BlameLine>|
@@ -110,6 +115,9 @@ pub fn build_side_by_side_diff(
             None => format!("{} ", " ".repeat(gutter_w)),
         };
         spans.push(Span::styled(num, gutter_style));
+        if !comment_marker.is_empty() {
+            spans.push(Span::styled(comment_marker.to_string(), gutter_style));
+        }
 
         if let Some((word_spans, em_style)) = emphasis {
             let mut chars = 0;
@@ -150,6 +158,9 @@ pub fn build_side_by_side_diff(
         }
         let num = format!("{} ", " ".repeat(gutter_w));
         spans.push(Span::styled(num, gutter_style));
+        if comment_marker_w > 0 {
+            spans.push(Span::styled(" ".repeat(comment_marker_w), gutter_style));
+        }
         spans.push(Span::styled(
             " ".repeat(col_w),
             Style::default().bg(default_bg),
@@ -172,6 +183,7 @@ pub fn build_side_by_side_diff(
             let left = make_half(
                 Some(old_cursor),
                 content,
+                &" ".repeat(comment_marker_w),
                 context_style,
                 None,
                 bblame(Some(old_cursor)),
@@ -179,6 +191,7 @@ pub fn build_side_by_side_diff(
             let right = make_half(
                 Some(new_cursor),
                 content,
+                &comment_markers.marker_for_line(Some(new_cursor)),
                 context_style,
                 None,
                 hblame(Some(new_cursor)),
@@ -207,6 +220,7 @@ pub fn build_side_by_side_diff(
                 let left = make_half(
                     dl.old_lineno,
                     content,
+                    &" ".repeat(comment_marker_w),
                     context_style,
                     None,
                     bblame(dl.old_lineno),
@@ -214,6 +228,7 @@ pub fn build_side_by_side_diff(
                 let right = make_half(
                     dl.new_lineno,
                     content,
+                    &comment_markers.marker_for_line(dl.new_lineno),
                     context_style,
                     None,
                     hblame(dl.new_lineno),
@@ -258,6 +273,7 @@ pub fn build_side_by_side_diff(
                             make_half(
                                 dels[idx].old_lineno,
                                 dc,
+                                &" ".repeat(comment_marker_w),
                                 deletion_style,
                                 Some((old_spans, deletion_emphasis)),
                                 bblame(dels[idx].old_lineno),
@@ -266,6 +282,7 @@ pub fn build_side_by_side_diff(
                             make_half(
                                 dels[idx].old_lineno,
                                 dc,
+                                &" ".repeat(comment_marker_w),
                                 deletion_style,
                                 None,
                                 bblame(dels[idx].old_lineno),
@@ -275,6 +292,7 @@ pub fn build_side_by_side_diff(
                         make_half(
                             dels[idx].old_lineno,
                             dc,
+                            &" ".repeat(comment_marker_w),
                             deletion_style,
                             None,
                             bblame(dels[idx].old_lineno),
@@ -291,6 +309,7 @@ pub fn build_side_by_side_diff(
                             make_half(
                                 adds[idx].new_lineno,
                                 ac,
+                                &comment_markers.marker_for_line(adds[idx].new_lineno),
                                 addition_style,
                                 Some((new_spans, addition_emphasis)),
                                 hblame(adds[idx].new_lineno),
@@ -299,6 +318,7 @@ pub fn build_side_by_side_diff(
                             make_half(
                                 adds[idx].new_lineno,
                                 ac,
+                                &comment_markers.marker_for_line(adds[idx].new_lineno),
                                 addition_style,
                                 None,
                                 hblame(adds[idx].new_lineno),
@@ -308,6 +328,7 @@ pub fn build_side_by_side_diff(
                         make_half(
                             adds[idx].new_lineno,
                             ac,
+                            &comment_markers.marker_for_line(adds[idx].new_lineno),
                             addition_style,
                             None,
                             hblame(adds[idx].new_lineno),
@@ -338,6 +359,7 @@ pub fn build_side_by_side_diff(
         let left = make_half(
             Some(old_cursor),
             content,
+            &" ".repeat(comment_marker_w),
             context_style,
             None,
             bblame(Some(old_cursor)),
@@ -345,6 +367,7 @@ pub fn build_side_by_side_diff(
         let right = make_half(
             Some(new_cursor),
             content,
+            &comment_markers.marker_for_line(Some(new_cursor)),
             context_style,
             None,
             hblame(Some(new_cursor)),
@@ -360,5 +383,6 @@ pub fn build_side_by_side_diff(
         hunk_ends,
         hunk_first_changes,
         gutter_w,
+        comment_marker_w,
     }
 }

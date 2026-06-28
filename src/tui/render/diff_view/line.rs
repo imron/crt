@@ -33,6 +33,7 @@ pub fn format_blame(blame: Option<&BlameLine>) -> String {
 pub fn make_line(
     old_lineno: Option<u32>,
     new_lineno: Option<u32>,
+    comment_marker: &str,
     prefix: &str,
     content: &str,
     content_style: Style,
@@ -69,10 +70,13 @@ pub fn make_line(
     parts.push(Span::styled(old_num, gutter_style));
     parts.push(Span::styled(" ", gutter_style));
     parts.push(Span::styled(new_num, gutter_style));
+    if !comment_marker.is_empty() {
+        parts.push(Span::styled(comment_marker.to_string(), gutter_style));
+    }
     parts.push(Span::styled(format!(" {prefix} "), content_style));
 
     // Width consumed by blame + gutters + separator + prefix.
-    let fixed_cols = blame_cols + gutter_w + 1 + gutter_w + 3;
+    let fixed_cols = blame_cols + gutter_w + 1 + gutter_w + comment_marker.chars().count() + 3;
     let content_cols = inner_w.saturating_sub(fixed_cols);
     let visible_len = content.chars().count();
     let pad = content_cols.saturating_sub(visible_len);
@@ -90,6 +94,7 @@ pub fn make_line(
 pub fn make_line_with_emphasis(
     old_lineno: Option<u32>,
     new_lineno: Option<u32>,
+    comment_marker: &str,
     prefix: &str,
     spans: &[super::super::word_diff::DiffSpan<'_>],
     base_style: Style,
@@ -127,9 +132,12 @@ pub fn make_line_with_emphasis(
     parts.push(Span::styled(old_num, gutter_style));
     parts.push(Span::styled(" ", gutter_style));
     parts.push(Span::styled(new_num, gutter_style));
+    if !comment_marker.is_empty() {
+        parts.push(Span::styled(comment_marker.to_string(), gutter_style));
+    }
     parts.push(Span::styled(format!(" {prefix} "), base_style));
 
-    let fixed_cols = blame_cols + gutter_w + 1 + gutter_w + 3;
+    let fixed_cols = blame_cols + gutter_w + 1 + gutter_w + comment_marker.chars().count() + 3;
     let content_cols = inner_w.saturating_sub(fixed_cols);
 
     let mut char_count = 0;

@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
+use super::comment_markers::CommentMarkerSet;
 use super::content::BuiltContent;
 use super::line::{digit_width, make_line};
 use crate::app::model::{BlameLine, DiffHunk};
@@ -19,6 +20,7 @@ pub fn build_full_file_head(
     hunks: &[DiffHunk],
     head_content: Option<&str>,
     blame: &[BlameLine],
+    comment_markers: &CommentMarkerSet,
     inner_w: usize,
 ) -> BuiltContent {
     let content = match head_content {
@@ -33,6 +35,7 @@ pub fn build_full_file_head(
                 hunk_ends: vec![],
                 hunk_first_changes: vec![],
                 gutter_w: 0,
+                comment_marker_w: 0,
             };
         }
     };
@@ -48,6 +51,7 @@ pub fn build_full_file_head(
             hunk_ends: vec![],
             hunk_first_changes: vec![],
             gutter_w: 0,
+            comment_marker_w: 0,
         };
     }
 
@@ -109,6 +113,7 @@ pub fn build_full_file_head(
         result.push(make_line(
             None,
             Some(lineno),
+            &comment_markers.marker_for_line(Some(lineno)),
             prefix,
             text,
             style,
@@ -136,6 +141,7 @@ pub fn build_full_file_head(
         hunk_ends,
         hunk_first_changes,
         gutter_w,
+        comment_marker_w: comment_markers.width(),
     }
 }
 
@@ -149,6 +155,7 @@ pub fn build_full_file_base(
     hunks: &[DiffHunk],
     base_content: Option<&str>,
     blame: &[BlameLine],
+    comment_markers: &CommentMarkerSet,
     inner_w: usize,
 ) -> BuiltContent {
     let content = match base_content {
@@ -163,6 +170,7 @@ pub fn build_full_file_base(
                 hunk_ends: vec![],
                 hunk_first_changes: vec![],
                 gutter_w: 0,
+                comment_marker_w: 0,
             };
         }
     };
@@ -178,6 +186,7 @@ pub fn build_full_file_base(
             hunk_ends: vec![],
             hunk_first_changes: vec![],
             gutter_w: 0,
+            comment_marker_w: 0,
         };
     }
 
@@ -237,6 +246,7 @@ pub fn build_full_file_base(
         result.push(make_line(
             Some(lineno),
             None,
+            &comment_markers.marker_for_line(Some(lineno)),
             prefix,
             text,
             style,
@@ -262,5 +272,6 @@ pub fn build_full_file_base(
         hunk_ends,
         hunk_first_changes,
         gutter_w,
+        comment_marker_w: comment_markers.width(),
     }
 }

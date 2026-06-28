@@ -1,6 +1,6 @@
 # Stage 13d: Gutter Markers for Comments
 
-## Status: Not Started
+## Status: In Progress
 
 ## Order
 
@@ -77,4 +77,15 @@ closed and without inserting comment text into the diff itself.
 
 ## Progress
 
-- (To be filled)
+- Added app-owned comment loading for the current review scope, including
+  resolved comments.
+- App model now projects current-file comment attachments for renderers.
+- Diff cache invalidates when comment attachment state changes.
+- Added gutter marker generation for single-line, multiline, resolved, and
+  nested comment ranges.
+- Rendered markers in inline diff, full-file HEAD/base, and side-by-side
+  diff modes without introducing inline comment blocks or virtual rows.
+- CommentChanged notifications now refresh cached comments.
+- Added tests for marker generation, app-model comment projection, and
+  comment notification reload classification.
+- Verified with `cargo test`.

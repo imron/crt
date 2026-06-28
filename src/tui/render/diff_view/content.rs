@@ -2,6 +2,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::super::super::state::TuiState;
+use super::comment_markers::CommentMarkerSet;
 use super::full_file::{build_full_file_base, build_full_file_head};
 use super::inline::build_inline_diff;
 use super::side_by_side::build_side_by_side_diff;
@@ -22,6 +23,8 @@ pub struct BuiltContent {
     pub hunk_first_changes: Vec<usize>,
     /// Width of one line-number gutter column (in characters).
     pub gutter_w: usize,
+    /// Width of the comment marker gutter column.
+    pub comment_marker_w: usize,
 }
 
 pub fn build_content(
@@ -35,6 +38,7 @@ pub fn build_content(
     Vec<usize>,
     Vec<usize>,
     usize,
+    usize,
 ) {
     let ds = &styles.diff;
 
@@ -46,6 +50,7 @@ pub fn build_content(
                 vec![],
                 vec![],
                 vec![],
+                0,
                 0,
             );
         }
@@ -75,7 +80,7 @@ pub fn build_content(
                 Style::default().fg(*ds.placeholder_fg),
             )),
         ];
-        return (title, lines, vec![], vec![], vec![], 0);
+        return (title, lines, vec![], vec![], vec![], 0, 0);
     }
 
     // Binary file.
@@ -90,6 +95,7 @@ pub fn build_content(
             vec![],
             vec![],
             vec![],
+            0,
             0,
         );
     }
@@ -107,6 +113,7 @@ pub fn build_content(
     };
 
     let default_bg = *styles.bg;
+    let comment_markers = CommentMarkerSet::new(&diff.comments);
 
     let built = match (diff.content_mode, diff.render_variant) {
         (ContentMode::Diff, RenderVariant::SideBySide) => build_side_by_side_diff(
@@ -116,6 +123,7 @@ pub fn build_content(
             diff.head_content.as_deref(),
             head_blame,
             base_blame,
+            &comment_markers,
             inner_w,
         ),
         (ContentMode::Diff, _) => build_inline_diff(
@@ -125,6 +133,7 @@ pub fn build_content(
             diff.head_content.as_deref(),
             head_blame,
             base_blame,
+            &comment_markers,
             inner_w,
         ),
         (ContentMode::FullFile, RenderVariant::HeadVersion) => build_full_file_head(
@@ -133,6 +142,7 @@ pub fn build_content(
             &diff.hunks,
             diff.head_content.as_deref(),
             head_blame,
+            &comment_markers,
             inner_w,
         ),
         (ContentMode::FullFile, RenderVariant::BaseVersion) => build_full_file_base(
@@ -141,6 +151,7 @@ pub fn build_content(
             &diff.hunks,
             diff.base_content.as_deref(),
             base_blame,
+            &comment_markers,
             inner_w,
         ),
         _ => BuiltContent {
@@ -149,6 +160,7 @@ pub fn build_content(
             hunk_ends: vec![],
             hunk_first_changes: vec![],
             gutter_w: 0,
+            comment_marker_w: 0,
         },
     };
 
@@ -159,6 +171,7 @@ pub fn build_content(
         built.hunk_ends,
         built.hunk_first_changes,
         built.gutter_w,
+        built.comment_marker_w,
     )
 }
 

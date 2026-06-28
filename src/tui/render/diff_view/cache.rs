@@ -3,6 +3,7 @@ use std::hash::{Hash, Hasher};
 
 use ratatui::text::Line;
 
+use crate::app::model::CommentAttachment;
 use crate::review_types::{ContentMode, RenderVariant};
 
 // ---------------------------------------------------------------------------
@@ -26,6 +27,7 @@ pub struct DiffCacheKey {
     base_content_id: Option<(u64, usize)>,
     head_blame_len: usize,
     base_blame_len: usize,
+    comments: Vec<CommentAttachment>,
     /// Stable hash of the diff content (from DiffContent::diff_hash).
     diff_hash: String,
 }
@@ -38,6 +40,7 @@ pub struct DiffCache {
     pub hunk_ends: Vec<usize>,
     pub hunk_first_changes: Vec<usize>,
     pub gutter_w: usize,
+    pub comment_marker_w: usize,
     pub rendered_text: Vec<String>,
 }
 
@@ -63,6 +66,7 @@ pub fn build_key(diff: &crate::app::model::DiffPanel, inner_w: usize) -> DiffCac
         base_content_id: string_signature(&diff.base_content),
         head_blame_len: diff.head_blame.len(),
         base_blame_len: diff.base_blame.len(),
+        comments: diff.comments.clone(),
         diff_hash: diff.diff_hash.clone().unwrap_or_default(),
     }
 }
