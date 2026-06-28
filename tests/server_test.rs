@@ -592,6 +592,22 @@ async fn test_comment_lifecycle() {
         .await;
     assert!(resolved["error"].is_null(), "resolve failed: {resolved}");
     assert_eq!(resolved["result"]["comment"]["resolved"], true);
+    let db = rusqlite::Connection::open(server.repo_dir.join(".crt/reviews.db")).unwrap();
+    let expected_commit = git_output(&server.repo_dir, &["rev-parse", "HEAD"]);
+    let expected_head_ref = git_output(&server.repo_dir, &["branch", "--show-current"]);
+    let event: (i64, String, String, String) = db
+        .query_row(
+            "SELECT COUNT(*), resolved_commit, resolved_head_ref, resolved_merge_base
+             FROM comment_resolution_events
+             WHERE comment_id = ?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(event.0, 1);
+    assert_eq!(event.1, expected_commit);
+    assert_eq!(event.2, expected_head_ref);
+    assert!(!event.3.is_empty());
 
     let unresolved_only = conn
         .request(
@@ -730,7 +746,7 @@ async fn test_comment_reanchors_unresolved_only() {
         .await;
     assert!(detail["error"].is_null(), "get resolved failed: {detail}");
     assert_eq!(detail["result"]["comment"]["resolved"], true);
-    assert_eq!(detail["result"]["comment"]["anchor_status"], "shifted");
+    assert_eq!(detail["result"]["comment"]["anchor_status"], "anchored");
     assert_eq!(detail["result"]["comment"]["line_start"], 4);
 }
 

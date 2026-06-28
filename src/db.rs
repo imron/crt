@@ -46,6 +46,24 @@ pub struct NewAnchorVersion {
     pub anchor: NewCommentAnchor,
 }
 
+/// Parameters for recording that a comment was resolved in a review range.
+#[derive(Debug, Clone)]
+pub struct NewCommentResolutionEvent {
+    pub comment_id: i64,
+    pub resolved_commit: String,
+    pub resolved_head_ref: String,
+    pub resolved_merge_base: String,
+    pub file_path: String,
+    pub line_start: i64,
+    pub line_end: i64,
+    pub char_start: Option<i64>,
+    pub char_end: Option<i64>,
+    pub anchor_text: String,
+    pub context_before: String,
+    pub context_after: String,
+    pub anchor_status: AnchorStatus,
+}
+
 /// Anchor data stored as a versioned record.
 #[derive(Debug, Clone)]
 pub struct NewCommentAnchor {
@@ -123,6 +141,12 @@ const MIGRATIONS: &[Migration] = &[
         name: "split_comment_anchors",
         up: include_str!("../migrations/0004_split_comment_anchors.up.sql"),
         down: include_str!("../migrations/0004_split_comment_anchors.down.sql"),
+    },
+    Migration {
+        version: 5,
+        name: "comment_resolution_events",
+        up: include_str!("../migrations/0005_comment_resolution_events.up.sql"),
+        down: include_str!("../migrations/0005_comment_resolution_events.down.sql"),
     },
 ];
 
@@ -607,6 +631,38 @@ impl Database {
         Ok(count > 0)
     }
 
+    /// Record a resolution event for a comment.
+    pub fn record_comment_resolution(&self, event: &NewCommentResolutionEvent) -> Result<()> {
+        let now = now_iso8601();
+        self.conn
+            .execute(
+                "INSERT INTO comment_resolution_events
+                    (comment_id, resolved_at, resolved_commit,
+                     resolved_head_ref, resolved_merge_base, file_path,
+                     line_start, line_end, char_start, char_end,
+                     anchor_text, context_before, context_after, anchor_status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                params![
+                    event.comment_id,
+                    now,
+                    event.resolved_commit,
+                    event.resolved_head_ref,
+                    event.resolved_merge_base,
+                    event.file_path,
+                    event.line_start,
+                    event.line_end,
+                    event.char_start,
+                    event.char_end,
+                    event.anchor_text,
+                    event.context_before,
+                    event.context_after,
+                    anchor_status_to_db(event.anchor_status),
+                ],
+            )
+            .context("Failed to record comment resolution event")?;
+        Ok(())
+    }
+
     /// Unresolve a comment.
     pub fn unresolve_comment(&self, id: i64) -> Result<bool> {
         let now = now_iso8601();
@@ -622,6 +678,12 @@ impl Database {
 
     /// Delete a comment.
     pub fn delete_comment(&self, id: i64) -> Result<bool> {
+        self.conn
+            .execute(
+                "DELETE FROM comment_resolution_events WHERE comment_id = ?1",
+                params![id],
+            )
+            .context("Failed to delete comment resolution events")?;
         self.conn
             .execute(
                 "DELETE FROM anchor_versions WHERE comment_id = ?1",
@@ -889,7 +951,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(count, 4);
+        assert_eq!(count, 5);
     }
 
     #[test]
