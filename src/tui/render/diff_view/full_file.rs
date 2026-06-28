@@ -21,6 +21,7 @@ pub fn build_full_file_head(
     head_content: Option<&str>,
     blame: &[BlameLine],
     comment_markers: &CommentMarkerSet,
+    current_comment_fg: Color,
     inner_w: usize,
 ) -> BuiltContent {
     let content = match head_content {
@@ -118,6 +119,7 @@ pub fn build_full_file_head(
             text,
             style,
             gutter_fg,
+            current_comment_fg,
             blame_fg,
             default_bg,
             gutter_w,
@@ -156,6 +158,7 @@ pub fn build_full_file_base(
     base_content: Option<&str>,
     blame: &[BlameLine],
     comment_markers: &CommentMarkerSet,
+    current_comment_fg: Color,
     inner_w: usize,
 ) -> BuiltContent {
     let content = match base_content {
@@ -251,6 +254,7 @@ pub fn build_full_file_base(
             text,
             style,
             gutter_fg,
+            current_comment_fg,
             blame_fg,
             default_bg,
             gutter_w,

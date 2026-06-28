@@ -1,7 +1,7 @@
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
-use super::comment_markers::CommentMarkerSet;
+use super::comment_markers::{CommentMarker, CommentMarkerSet};
 use super::content::BuiltContent;
 use super::line::{BLAME_COL_WIDTH, digit_width, format_blame};
 use crate::app::model::{BlameLine, DiffHunk};
@@ -20,6 +20,7 @@ pub fn build_side_by_side_diff(
     head_blame: &[BlameLine],
     base_blame: &[BlameLine],
     comment_markers: &CommentMarkerSet,
+    current_comment_fg: Color,
     inner_w: usize,
 ) -> BuiltContent {
     let head_lines: Vec<&str> = head_content
@@ -93,7 +94,7 @@ pub fn build_side_by_side_diff(
     // Helper: build one side of a row (blame + gutter + content), padded to col_w.
     let make_half = |lineno: Option<u32>,
                      content: &str,
-                     comment_marker: &str,
+                     comment_marker: &CommentMarker,
                      style: Style,
                      emphasis: Option<(&[super::super::word_diff::DiffSpan<'_>], Style)>,
                      blame: Option<&BlameLine>|
@@ -115,8 +116,16 @@ pub fn build_side_by_side_diff(
             None => format!("{} ", " ".repeat(gutter_w)),
         };
         spans.push(Span::styled(num, gutter_style));
-        if !comment_marker.is_empty() {
-            spans.push(Span::styled(comment_marker.to_string(), gutter_style));
+        if !comment_marker.text().is_empty() {
+            let marker_style = if comment_marker.is_current() {
+                gutter_style.fg(current_comment_fg)
+            } else {
+                gutter_style
+            };
+            spans.push(Span::styled(
+                comment_marker.text().to_string(),
+                marker_style,
+            ));
         }
 
         if let Some((word_spans, em_style)) = emphasis {
@@ -183,7 +192,7 @@ pub fn build_side_by_side_diff(
             let left = make_half(
                 Some(old_cursor),
                 content,
-                &" ".repeat(comment_marker_w),
+                &CommentMarker::blank(comment_marker_w),
                 context_style,
                 None,
                 bblame(Some(old_cursor)),
@@ -220,7 +229,7 @@ pub fn build_side_by_side_diff(
                 let left = make_half(
                     dl.old_lineno,
                     content,
-                    &" ".repeat(comment_marker_w),
+                    &CommentMarker::blank(comment_marker_w),
                     context_style,
                     None,
                     bblame(dl.old_lineno),
@@ -273,7 +282,7 @@ pub fn build_side_by_side_diff(
                             make_half(
                                 dels[idx].old_lineno,
                                 dc,
-                                &" ".repeat(comment_marker_w),
+                                &CommentMarker::blank(comment_marker_w),
                                 deletion_style,
                                 Some((old_spans, deletion_emphasis)),
                                 bblame(dels[idx].old_lineno),
@@ -282,7 +291,7 @@ pub fn build_side_by_side_diff(
                             make_half(
                                 dels[idx].old_lineno,
                                 dc,
-                                &" ".repeat(comment_marker_w),
+                                &CommentMarker::blank(comment_marker_w),
                                 deletion_style,
                                 None,
                                 bblame(dels[idx].old_lineno),
@@ -292,7 +301,7 @@ pub fn build_side_by_side_diff(
                         make_half(
                             dels[idx].old_lineno,
                             dc,
-                            &" ".repeat(comment_marker_w),
+                            &CommentMarker::blank(comment_marker_w),
                             deletion_style,
                             None,
                             bblame(dels[idx].old_lineno),
@@ -359,7 +368,7 @@ pub fn build_side_by_side_diff(
         let left = make_half(
             Some(old_cursor),
             content,
-            &" ".repeat(comment_marker_w),
+            &CommentMarker::blank(comment_marker_w),
             context_style,
             None,
             bblame(Some(old_cursor)),
