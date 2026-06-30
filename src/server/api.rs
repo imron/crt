@@ -1179,7 +1179,10 @@ async fn reanchor_comment(
             if file_blob_sha == comment.file_blob_sha {
                 return Ok(comment);
             }
-            resolve_anchor(&comment, &content, file_blob_sha)
+
+            let adjusted_hint =
+                compute_adjusted_hint(ctx, &comment.file_path, &comment).await;
+            resolve_anchor(&comment, &content, file_blob_sha, adjusted_hint)
         }
         None => orphaned_anchor(&comment, String::new()),
     };
@@ -1195,10 +1198,106 @@ async fn reanchor_comment(
     Ok(apply_anchor(comment, &anchor))
 }
 
+/// Compute the expected new position (0-indexed) for a comment by
+/// diffing the file at the head commit against the current workdir.
+/// Returns `None` if the diff cannot be computed (e.g. new file).
+async fn compute_adjusted_hint(
+    ctx: &ConnectionContext,
+    file_path: &str,
+    comment: &StoredComment,
+) -> Option<usize> {
+    let stored_line = comment
+        .line_start
+        .checked_sub(1)
+        .and_then(|l| usize::try_from(l).ok())?;
+
+    let worktree = ctx.worktree.clone();
+    let head_commit = ctx.head.resolved_commit().to_string();
+    let fp = file_path.to_string();
+
+    let diff = tokio::task::spawn_blocking(move || -> Option<_> {
+        let repo = git::Repo::open(&worktree).ok()?;
+        repo.diff_file_workdir(&head_commit, &fp).ok()
+    })
+    .await
+    .ok()??;
+
+    // The stored line_start is a 1-based "new side" line number from the
+    // last anchor version.  Walk the diff hunks to translate it from the
+    // old new-side position to the current new-side position.  Since we
+    // are diffing head_commit vs current_workdir, old_start/old_lines
+    // correspond to the head-commit content and new_start/new_lines to
+    // the current workdir.
+    //
+    // However, the comment was anchored against a *previous* workdir
+    // state, not the head commit.  Its line number is relative to that
+    // old workdir.  Both the old and the current workdir are "new side"
+    // relative to the head commit, so we need to translate:
+    //
+    //   old_workdir_line  →  head_commit_line  →  new_workdir_line
+    //
+    // We don't have the old workdir content, but we can approximate by
+    // treating the head commit as a stable reference.  If the file at
+    // HEAD hasn't changed relative to the old workdir at the comment's
+    // position, the translation is exact.
+
+    Some(translate_line_through_hunks(&diff.hunks, stored_line))
+}
+
+/// Translate a 0-indexed line number from the old side of a diff to the
+/// new side, accounting for insertions and deletions in earlier hunks.
+fn translate_line_through_hunks(
+    hunks: &[review_types::DiffHunk],
+    old_line: usize,
+) -> usize {
+    // 1-based line number for comparison with hunk headers.
+    let old_1 = (old_line + 1) as u32;
+    let mut offset: i64 = 0;
+
+    for hunk in hunks {
+        let hunk_old_end = hunk.old_start + hunk.old_lines;
+        if old_1 < hunk.old_start {
+            // Line is before this hunk; accumulated offset applies.
+            break;
+        }
+        if old_1 < hunk_old_end {
+            // Line falls inside this hunk.  Count additions and
+            // deletions before the target line within the hunk.
+            let mut old_cursor = hunk.old_start;
+            let mut net: i64 = 0;
+            for line in &hunk.lines {
+                if old_cursor > old_1 {
+                    break;
+                }
+                match line.kind {
+                    review_types::LineKind::Context => {
+                        old_cursor += 1;
+                    }
+                    review_types::LineKind::Deletion => {
+                        old_cursor += 1;
+                        net -= 1;
+                    }
+                    review_types::LineKind::Addition => {
+                        net += 1;
+                    }
+                }
+            }
+            offset += net;
+            break;
+        }
+        // Line is after this hunk; accumulate net change.
+        offset += hunk.new_lines as i64 - hunk.old_lines as i64;
+    }
+
+    let adjusted = old_line as i64 + offset;
+    if adjusted < 0 { 0 } else { adjusted as usize }
+}
+
 fn resolve_anchor(
     comment: &StoredComment,
     content: &str,
     file_blob_sha: String,
+    adjusted_hint: Option<usize>,
 ) -> NewCommentAnchor {
     let lines = content_lines(content);
     let anchor_lines = anchor_lines(&comment.anchor_text);
@@ -1208,12 +1307,15 @@ fn resolve_anchor(
         .checked_sub(1)
         .and_then(|line| usize::try_from(line).ok());
 
-    if let Some(index) = stored_index {
-        if matches_sequence(&lines, index, &anchor_lines) {
+    // Try exact match at the adjusted position first (if we computed
+    // one from the diff), then fall back to the stored position.
+    let try_indices: [Option<usize>; 2] = [adjusted_hint, stored_index];
+    for candidate in try_indices.into_iter().flatten() {
+        if matches_sequence(&lines, candidate, &anchor_lines) {
             return anchor_from_range(
                 comment,
                 &lines,
-                index,
+                candidate,
                 span,
                 file_blob_sha,
                 review_types::AnchorStatus::Anchored,
@@ -1221,7 +1323,7 @@ fn resolve_anchor(
         }
     }
 
-    let hint = stored_index.unwrap_or(0);
+    let hint = adjusted_hint.or(stored_index).unwrap_or(0);
 
     if let Some(index) = find_sequence_nearest(&lines, &anchor_lines, hint) {
         return anchor_from_range(
@@ -1277,22 +1379,32 @@ fn find_sequence_nearest(lines: &[&str], needle: &[&str], hint: usize) -> Option
     }
 
     let last_start = lines.len() - needle.len();
-    let mut best: Option<usize> = None;
-    let mut best_dist = usize::MAX;
-    for index in 0..=last_start {
-        if matches_sequence(lines, index, needle) {
-            let dist = if index >= hint {
-                index - hint
-            } else {
-                hint - index
-            };
-            if dist < best_dist {
-                best = Some(index);
-                best_dist = dist;
+    let hint = hint.min(last_start);
+
+    // Search outward from hint: hint, hint±1, hint±2, …
+    // The first match is guaranteed to be the nearest.
+    for dist in 0..=last_start {
+        let above = hint.checked_sub(dist);
+        let below = hint.checked_add(dist).filter(|&i| i <= last_start);
+
+        if let Some(i) = below {
+            if matches_sequence(lines, i, needle) {
+                return Some(i);
             }
         }
+        if dist > 0 {
+            if let Some(i) = above {
+                if matches_sequence(lines, i, needle) {
+                    return Some(i);
+                }
+            }
+        }
+
+        if above.is_none() && below.is_none() {
+            break;
+        }
     }
-    best
+    None
 }
 
 fn find_sequence(lines: &[&str], needle: &[&str]) -> Option<usize> {
@@ -1722,7 +1834,8 @@ mod tests {
     #[test]
     fn resolves_exact_anchor_at_stored_line() {
         let comment = stored_comment(2, "target");
-        let anchor = resolve_anchor(&comment, "before\ntarget\nafter\n", "new".to_string());
+        let anchor =
+            resolve_anchor(&comment, "before\ntarget\nafter\n", "new".to_string(), None);
 
         assert_eq!(anchor.status, review_types::AnchorStatus::Anchored);
         assert_eq!(anchor.line_start, 2);
@@ -1736,6 +1849,7 @@ mod tests {
             &comment,
             "before\nother\ntarget\nafter\n",
             "new".to_string(),
+            None,
         );
 
         assert_eq!(anchor.status, review_types::AnchorStatus::Shifted);
@@ -1750,6 +1864,7 @@ mod tests {
             &comment,
             "intro\nbefore\nreplacement\nafter\n",
             "new".to_string(),
+            None,
         );
 
         assert_eq!(anchor.status, review_types::AnchorStatus::Approximate);
@@ -1760,7 +1875,8 @@ mod tests {
     #[test]
     fn marks_anchor_orphaned_when_text_and_context_do_not_match() {
         let comment = stored_comment(2, "target");
-        let anchor = resolve_anchor(&comment, "unrelated\ncontent\n", "new".to_string());
+        let anchor =
+            resolve_anchor(&comment, "unrelated\ncontent\n", "new".to_string(), None);
 
         assert_eq!(anchor.status, review_types::AnchorStatus::Orphaned);
         assert_eq!(anchor.line_start, 2);
@@ -1776,6 +1892,7 @@ mod tests {
             &comment,
             "target\naaa\nbbb\ntarget\nccc\nddd\ntarget\n",
             "new".to_string(),
+            None,
         );
 
         assert_eq!(anchor.status, review_types::AnchorStatus::Shifted);
@@ -1791,9 +1908,102 @@ mod tests {
             &comment,
             "target\naaa\nbbb\nccc\nddd\ntarget\n",
             "new".to_string(),
+            None,
         );
 
         assert_eq!(anchor.status, review_types::AnchorStatus::Shifted);
         assert_eq!(anchor.line_start, 6);
+    }
+
+    #[test]
+    fn adjusted_hint_finds_exact_match_at_shifted_position() {
+        // "target" at line 2, but diff inserted a line before it so the
+        // adjusted hint points to line 3 (0-indexed: 2).
+        let comment = stored_comment(2, "target");
+        let anchor = resolve_anchor(
+            &comment,
+            "before\nnew_line\ntarget\nafter\n",
+            "new".to_string(),
+            Some(2), // adjusted hint: 0-indexed line 2
+        );
+
+        // Should be Anchored, not Shifted, because the adjusted hint
+        // points directly at the correct line.
+        assert_eq!(anchor.status, review_types::AnchorStatus::Anchored);
+        assert_eq!(anchor.line_start, 3);
+    }
+
+    #[test]
+    fn translate_line_accounts_for_insertions() {
+        // Hunk inserts 2 lines at the start: old 1-1 → new 1-3.
+        let hunks = vec![review_types::DiffHunk {
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 3,
+            header: String::new(),
+            lines: vec![
+                review_types::DiffLine {
+                    kind: review_types::LineKind::Deletion,
+                    content: "old\n".to_string(),
+                    old_lineno: Some(1),
+                    new_lineno: None,
+                },
+                review_types::DiffLine {
+                    kind: review_types::LineKind::Addition,
+                    content: "new1\n".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(1),
+                },
+                review_types::DiffLine {
+                    kind: review_types::LineKind::Addition,
+                    content: "new2\n".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(2),
+                },
+                review_types::DiffLine {
+                    kind: review_types::LineKind::Addition,
+                    content: "new3\n".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(3),
+                },
+            ],
+        }];
+        // Old line 5 (0-indexed 4) should shift by +2 (3 added - 1 deleted).
+        assert_eq!(translate_line_through_hunks(&hunks, 4), 6);
+    }
+
+    #[test]
+    fn translate_line_accounts_for_deletions() {
+        // Hunk deletes 3 lines: old 2-4 → new 2-1.
+        let hunks = vec![review_types::DiffHunk {
+            old_start: 2,
+            old_lines: 3,
+            new_start: 2,
+            new_lines: 0,
+            header: String::new(),
+            lines: vec![
+                review_types::DiffLine {
+                    kind: review_types::LineKind::Deletion,
+                    content: "a\n".to_string(),
+                    old_lineno: Some(2),
+                    new_lineno: None,
+                },
+                review_types::DiffLine {
+                    kind: review_types::LineKind::Deletion,
+                    content: "b\n".to_string(),
+                    old_lineno: Some(3),
+                    new_lineno: None,
+                },
+                review_types::DiffLine {
+                    kind: review_types::LineKind::Deletion,
+                    content: "c\n".to_string(),
+                    old_lineno: Some(4),
+                    new_lineno: None,
+                },
+            ],
+        }];
+        // Old line 6 (0-indexed 5) should shift by -3.
+        assert_eq!(translate_line_through_hunks(&hunks, 5), 2);
     }
 }
