@@ -1221,7 +1221,9 @@ fn resolve_anchor(
         }
     }
 
-    if let Some(index) = find_sequence(&lines, &anchor_lines) {
+    let hint = stored_index.unwrap_or(0);
+
+    if let Some(index) = find_sequence_nearest(&lines, &anchor_lines, hint) {
         return anchor_from_range(
             comment,
             &lines,
@@ -1269,11 +1271,34 @@ fn matches_sequence(lines: &[&str], index: usize, needle: &[&str]) -> bool {
     end <= lines.len() && &lines[index..end] == needle
 }
 
-fn find_sequence(lines: &[&str], needle: &[&str]) -> Option<usize> {
+fn find_sequence_nearest(lines: &[&str], needle: &[&str], hint: usize) -> Option<usize> {
     if needle.is_empty() || needle.len() > lines.len() {
         return None;
     }
 
+    let last_start = lines.len() - needle.len();
+    let mut best: Option<usize> = None;
+    let mut best_dist = usize::MAX;
+    for index in 0..=last_start {
+        if matches_sequence(lines, index, needle) {
+            let dist = if index >= hint {
+                index - hint
+            } else {
+                hint - index
+            };
+            if dist < best_dist {
+                best = Some(index);
+                best_dist = dist;
+            }
+        }
+    }
+    best
+}
+
+fn find_sequence(lines: &[&str], needle: &[&str]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > lines.len() {
+        return None;
+    }
     let last_start = lines.len() - needle.len();
     (0..=last_start).find(|index| matches_sequence(lines, *index, needle))
 }
@@ -1740,5 +1765,35 @@ mod tests {
         assert_eq!(anchor.status, review_types::AnchorStatus::Orphaned);
         assert_eq!(anchor.line_start, 2);
         assert_eq!(anchor.anchor_text, "target");
+    }
+
+    #[test]
+    fn shifted_anchor_prefers_nearest_match() {
+        // "target" appears at lines 1, 4, and 7.  Stored position is
+        // line 5, so the nearest occurrence is line 4.
+        let comment = stored_comment(5, "target");
+        let anchor = resolve_anchor(
+            &comment,
+            "target\naaa\nbbb\ntarget\nccc\nddd\ntarget\n",
+            "new".to_string(),
+        );
+
+        assert_eq!(anchor.status, review_types::AnchorStatus::Shifted);
+        assert_eq!(anchor.line_start, 4);
+    }
+
+    #[test]
+    fn shifted_anchor_nearest_at_end_of_file() {
+        // "target" appears at lines 1 and 6.  Stored position is line 5,
+        // so the nearest occurrence is line 6.
+        let comment = stored_comment(5, "target");
+        let anchor = resolve_anchor(
+            &comment,
+            "target\naaa\nbbb\nccc\nddd\ntarget\n",
+            "new".to_string(),
+        );
+
+        assert_eq!(anchor.status, review_types::AnchorStatus::Shifted);
+        assert_eq!(anchor.line_start, 6);
     }
 }
