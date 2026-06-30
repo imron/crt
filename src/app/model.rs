@@ -64,6 +64,8 @@ pub struct FileListRow {
     pub change_kind: ChangeKind,
     pub review_status: ReviewStatus,
     pub selected: bool,
+    /// Number of unresolved comments on this file.
+    pub unresolved_comment_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -512,19 +514,34 @@ fn file_list_model(state: &AppState) -> FileList {
         .selected_file_entry()
         .map(|entry| entry.change.path.clone());
 
+    // Build a lookup of unresolved comment counts per file path.
+    let mut unresolved_counts: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
+    for comment in &state.comments {
+        if !comment.resolved {
+            *unresolved_counts
+                .entry(comment.file_path.as_str())
+                .or_default() += 1;
+        }
+    }
+
     let unreviewed_rows = state
         .files
         .iter()
         .take(unreviewed_count)
         .enumerate()
-        .map(|(index, entry)| file_row_model(index, state.selected_file, entry))
+        .map(|(index, entry)| {
+            file_row_model(index, state.selected_file, entry, &unresolved_counts)
+        })
         .collect();
     let reviewed_rows = state
         .files
         .iter()
         .enumerate()
         .skip(unreviewed_count)
-        .map(|(index, entry)| file_row_model(index, state.selected_file, entry))
+        .map(|(index, entry)| {
+            file_row_model(index, state.selected_file, entry, &unresolved_counts)
+        })
         .collect();
 
     FileList {
@@ -551,7 +568,12 @@ fn file_row_model(
     index: usize,
     selected_file: usize,
     entry: &crate::review_types::FileEntry,
+    unresolved_counts: &std::collections::HashMap<&str, usize>,
 ) -> FileListRow {
+    let count = unresolved_counts
+        .get(entry.change.path.as_str())
+        .copied()
+        .unwrap_or(0);
     FileListRow {
         file_index: index,
         file_id: entry.change.path.clone(),
@@ -560,6 +582,7 @@ fn file_row_model(
         change_kind: entry.change.kind,
         review_status: ReviewStatus::from(&entry.status),
         selected: index == selected_file,
+        unresolved_comment_count: count,
     }
 }
 

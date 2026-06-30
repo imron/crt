@@ -92,6 +92,13 @@ fn file_line(
     pane_focused: bool,
     max_width: usize,
 ) -> (Line<'static>, String) {
+    // Comment indicator: shown to the left of the review marker.
+    let comment_indicator = if row.unresolved_comment_count > 0 {
+        "\u{25CF}" // ●
+    } else {
+        " "
+    };
+
     let marker = match &row.review_status {
         ReviewStatus::Unreviewed => "\u{2717}",      // ✗
         ReviewStatus::Reviewed { .. } => "\u{2713}", // ✓
@@ -116,12 +123,12 @@ fn file_line(
         None => row.path.clone(),
     };
 
-    // Prefix columns: " X " (marker, 4) + "K " (kind, 2) = 6.
+    // Prefix columns: "C" (comment, 1) + " X " (marker, 3) + "K " (kind, 2) = 6.
     let prefix_cols = 6;
     let path_budget = max_width.saturating_sub(prefix_cols);
     let path_text = truncate_path(&path_raw, path_budget);
 
-    let plain = format!(" {marker} {kind_indicator} {path_text}");
+    let plain = format!("{comment_indicator} {marker} {kind_indicator} {path_text}");
 
     let path_style = if row.selected {
         let style = Style::default().fg(*fs.selected_fg);
@@ -135,6 +142,10 @@ fn file_line(
     };
 
     let line = Line::from(vec![
+        Span::styled(
+            comment_indicator.to_string(),
+            Style::default().fg(*fs.comment_fg),
+        ),
         Span::styled(format!(" {marker} "), Style::default().fg(marker_color)),
         Span::styled(
             format!("{kind_indicator} "),

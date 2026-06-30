@@ -321,6 +321,8 @@ pub struct FilesStyle {
     pub reviewed_fg: Color,
     /// Changed marker color.
     pub changed_fg: Color,
+    /// Unresolved comment indicator color.
+    pub comment_fg: Color,
 }
 
 impl Default for FilesStyle {
@@ -334,6 +336,7 @@ impl Default for FilesStyle {
             unreviewed_fg: Color::new(C::Red),
             reviewed_fg: Color::new(C::Green),
             changed_fg: Color::new(C::Yellow),
+            comment_fg: Color::new(C::Rgb(96, 165, 250)), // #60A5FA blue
         }
     }
 }
