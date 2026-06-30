@@ -1172,7 +1172,15 @@ async fn reanchor_comment(
     }
 
     let anchor = match current_file_content(ctx, &comment.file_path).await? {
-        Some((content, file_blob_sha)) => resolve_anchor(&comment, &content, file_blob_sha),
+        Some((content, file_blob_sha)) => {
+            // Skip re-resolution when the file content is unchanged
+            // since the last anchor version.  The stored line_start and
+            // status are already correct for this content.
+            if file_blob_sha == comment.file_blob_sha {
+                return Ok(comment);
+            }
+            resolve_anchor(&comment, &content, file_blob_sha)
+        }
         None => orphaned_anchor(&comment, String::new()),
     };
 
