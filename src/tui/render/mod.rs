@@ -117,7 +117,7 @@ fn draw_diff_region(
     area: Rect,
 ) {
     if model.comments_panel.visible && area.height >= 8 {
-        let panel_height = (area.height / 3).clamp(6, 12);
+        let panel_height = TuiState::comments_panel_height(area.height);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(3), Constraint::Length(panel_height)])
