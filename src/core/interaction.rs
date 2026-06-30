@@ -228,7 +228,7 @@ impl CoreInteractionEngine {
             if key.kind == KeyEventKind::Press {
                 if context.visual_selection_active
                     && context.diff_pane_visible
-                    && matches!(key.key, Key::Enter | Key::Char('c'))
+                    && matches!(key.key, Key::Enter | Key::Char(' ') | Key::Char('c'))
                     && key_has_no_modifier(key.modifiers)
                 {
                     let id = self.next_prompt(PromptKind::Comment);
@@ -309,7 +309,7 @@ impl CoreInteractionEngine {
                     ];
                 }
                 if context.pending_comment_anchor_active
-                    && key.key == Key::Enter
+                    && matches!(key.key, Key::Enter | Key::Char(' '))
                     && key_has_no_modifier(key.modifiers)
                 {
                     let id = self.next_prompt(PromptKind::Comment);
