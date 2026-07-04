@@ -271,7 +271,7 @@ impl CrtMcp {
             Err(e) => return format!("Error listing review comments: {e:#}"),
         };
         match client
-            .list_comments(params.file_path.as_deref(), params.include_resolved)
+            .list_comments(params.file_path.as_deref(), params.include_resolved, false)
             .await
         {
             Ok(result) => to_json(&summarize_comments(result.comments)),
@@ -422,7 +422,7 @@ impl CrtMcp {
             Ok(files) => files,
             Err(e) => return format!("Error summarizing review: {e:#}"),
         };
-        let comments = match client.list_comments(None, true).await {
+        let comments = match client.list_comments(None, true, false).await {
             Ok(comments) => comments,
             Err(e) => return format!("Error summarizing review comments: {e:#}"),
         };

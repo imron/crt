@@ -8,7 +8,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use super::super::state::TuiState;
-use crate::app::model::{AppModel, FileListRow, FileListSectionKind, ReviewStatus};
+use crate::app::model::{
+    AppModel, FileListRow, FileListRowKind, FileListSectionKind, ReviewStatus,
+};
 use crate::config::{FilesStyle, StyleConfig};
 use crate::review_types::{ChangeKind, PaneFocus};
 
@@ -29,29 +31,51 @@ pub fn draw(
     let mut lines: Vec<Line> = Vec::new();
     let mut rendered_text: Vec<String> = Vec::new();
     let mut row_to_file: Vec<Option<usize>> = Vec::new();
+    let mut row_to_comment: Vec<Option<i64>> = Vec::new();
 
     let inner_width = area.width.saturating_sub(2) as usize; // minus borders
 
-    for section in &model.file_list.sections {
+    for (section_index, section) in model.file_list.sections.iter().enumerate() {
+        if section_index > 0 {
+            lines.push(Line::from(""));
+            rendered_text.push(String::new());
+            row_to_file.push(None);
+            row_to_comment.push(None);
+        }
+
         let label = match section.kind {
             FileListSectionKind::Unreviewed => "Unreviewed",
             FileListSectionKind::Reviewed => "Reviewed",
+            FileListSectionKind::UnresolvedComments => "Unresolved Comments",
         };
-        let count = section.rows.len();
+        let count = match section.kind {
+            FileListSectionKind::UnresolvedComments => section
+                .rows
+                .iter()
+                .filter(|row| row.kind == FileListRowKind::Comment)
+                .count(),
+            _ => section.rows.len(),
+        };
         lines.push(section_header(fs, label, count, inner_width));
         rendered_text.push(format!("── {label} ({count}) ──"));
         row_to_file.push(None);
+        row_to_comment.push(None);
 
         for row in &section.rows {
-            let (line, text) = file_line(fs, row, focused, inner_width);
+            let (line, text) = match row.kind {
+                FileListRowKind::File => file_line(fs, row, focused, inner_width),
+                FileListRowKind::Comment => comment_line(fs, row, focused, inner_width),
+            };
             lines.push(line);
             rendered_text.push(text);
             row_to_file.push(Some(row.file_index));
+            row_to_comment.push(row.comment_id);
         }
     }
 
     tui_state.file_list_rendered_text = rendered_text;
     tui_state.file_list_row_to_file = row_to_file;
+    tui_state.file_list_row_to_comment = row_to_comment;
 
     // Apply scroll offset.
     let visible: Vec<Line> = lines.into_iter().skip(model.file_list.scroll).collect();
@@ -157,6 +181,49 @@ fn file_line(
     (line, plain)
 }
 
+fn comment_line(
+    fs: &FilesStyle,
+    row: &FileListRow,
+    pane_focused: bool,
+    max_width: usize,
+) -> (Line<'static>, String) {
+    let id = row
+        .comment_id
+        .map(|id| format!("#{id}"))
+        .unwrap_or_else(|| "#?".to_string());
+    let line = row
+        .comment_line_start
+        .map(|line| format!("L{line} "))
+        .unwrap_or_default();
+    let preview = row.comment_preview.as_deref().unwrap_or("");
+    let prefix = format!("  {id} {line}");
+    let preview_budget = max_width.saturating_sub(prefix.chars().count());
+    let preview_text = truncate_text(preview, preview_budget);
+    let plain = format!("{prefix}{preview_text}");
+
+    let style = if row.selected {
+        let style = Style::default().fg(*fs.selected_fg);
+        if pane_focused {
+            style.add_modifier(Modifier::BOLD)
+        } else {
+            style
+        }
+    } else {
+        Style::default().fg(*fs.text_fg)
+    };
+
+    (
+        Line::from(vec![
+            Span::styled("  ".to_string(), Style::default()),
+            Span::styled(id, Style::default().fg(*fs.comment_fg)),
+            Span::styled(" ".to_string(), Style::default()),
+            Span::styled(line, Style::default().fg(*fs.separator_fg)),
+            Span::styled(preview_text, style),
+        ]),
+        plain,
+    )
+}
+
 /// Truncate a file path to fit within `budget` characters.
 ///
 /// Strategy (in order of preference):
@@ -212,4 +279,13 @@ fn truncate_path(path: &str, budget: usize) -> String {
     let skip = fname_len - tail_budget;
     let truncated: String = filename.chars().skip(skip).collect();
     format!("\u{2026}{truncated}")
+}
+
+fn truncate_text(text: &str, budget: usize) -> String {
+    if text.chars().count() <= budget || budget < 2 {
+        return text.to_string();
+    }
+    let mut truncated: String = text.chars().take(budget.saturating_sub(1)).collect();
+    truncated.push('\u{2026}');
+    truncated
 }

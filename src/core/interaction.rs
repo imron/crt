@@ -29,6 +29,8 @@ pub enum CoreEffect {
     DismissHelp,
     ReviewToggle,
     NavigateFile(Direction),
+    NavigateFileSection(Direction),
+    NavigateUnresolvedComment(Direction),
     JumpHunk(Direction),
     GoToDefinition,
     PopJumpStack,
@@ -135,6 +137,7 @@ pub enum PaneEffect {
     ActivateFileListSelection,
     ActivateDiffSelection,
     SelectFile { file_index: usize },
+    SelectComment { comment_id: i64 },
 }
 
 /// Connection lifecycle states for UI adapters.
@@ -414,6 +417,34 @@ impl CoreInteractionEngine {
             }
             InputEvent::Key(key)
                 if key.kind == KeyEventKind::Press
+                    && key_has_control_shift_modifier_only(key.modifiers)
+                    && matches!(key.key, Key::Char('n') | Key::Char('N')) =>
+            {
+                vec![CoreEffect::NavigateFileSection(Direction::Next)]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_control_shift_modifier_only(key.modifiers)
+                    && matches!(key.key, Key::Char('p') | Key::Char('P')) =>
+            {
+                vec![CoreEffect::NavigateFileSection(Direction::Prev)]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_control_shift_modifier_only(key.modifiers)
+                    && matches!(key.key, Key::Char(']') | Key::Char('}')) =>
+            {
+                vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_control_shift_modifier_only(key.modifiers)
+                    && matches!(key.key, Key::Char('[') | Key::Char('{')) =>
+            {
+                vec![CoreEffect::NavigateUnresolvedComment(Direction::Prev)]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
                     && key_has_control_modifier_only(key.modifiers)
                     && key.key == Key::Char('n') =>
             {
@@ -616,6 +647,10 @@ fn key_has_no_modifier(modifiers: super::input::InputModifiers) -> bool {
 
 fn key_has_control_modifier_only(modifiers: super::input::InputModifiers) -> bool {
     modifiers.ctrl && !modifiers.alt && !modifiers.shift
+}
+
+fn key_has_control_shift_modifier_only(modifiers: super::input::InputModifiers) -> bool {
+    modifiers.ctrl && !modifiers.alt && modifiers.shift
 }
 
 fn approve_review_toggle_key(key: &super::input::KeyEvent) -> bool {
@@ -851,6 +886,9 @@ fn mouse_click_effect(mouse: &super::input::MouseEvent) -> Option<CoreEffect> {
     match hit.target {
         AppTarget::File { index } => Some(CoreEffect::Pane(PaneEffect::SelectFile {
             file_index: index,
+        })),
+        AppTarget::Comment { id } => Some(CoreEffect::Pane(PaneEffect::SelectComment {
+            comment_id: id,
         })),
         AppTarget::DiffText { anchor } => Some(CoreEffect::DiffCursor(DiffCursorEffect::MoveTo {
             line: anchor.line,
@@ -1761,6 +1799,37 @@ mod tests {
     }
 
     #[test]
+    fn semantic_file_list_mouse_down_requests_comment_selection() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            InputEvent::Mouse(super::super::input::MouseEvent {
+                kind: MouseEventKind::Down,
+                button: Some(MouseButton::Left),
+                local_pos: Some((4, 3)),
+                semantic_hit: Some(super::super::input::PointerSemanticHit {
+                    pane_id: PaneId::FileList,
+                    target: AppTarget::Comment { id: 9 },
+                    region_id: Some("comment:9".to_string()),
+                    text_anchor: Some(super::super::input::TextAnchor {
+                        line: 12,
+                        column: 3,
+                    }),
+                }),
+                modifiers: InputModifiers::default(),
+            }),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(
+            effects,
+            vec![CoreEffect::Pane(PaneEffect::SelectComment {
+                comment_id: 9
+            })]
+        );
+    }
+
+    #[test]
     fn semantic_diff_mouse_down_requests_cursor_move() {
         let mut engine = CoreInteractionEngine::new();
 
@@ -1893,7 +1962,7 @@ mod tests {
     }
 
     #[test]
-    fn shifted_control_n_does_not_request_file_navigation() {
+    fn shifted_control_n_requests_next_file_section_navigation() {
         let mut engine = CoreInteractionEngine::new();
 
         let effects = engine.handle_input(
@@ -1908,7 +1977,32 @@ mod tests {
             &InteractionContext::default(),
         );
 
-        assert!(effects.is_empty());
+        assert_eq!(
+            effects,
+            vec![CoreEffect::NavigateFileSection(Direction::Next)]
+        );
+    }
+
+    #[test]
+    fn shifted_control_p_requests_previous_file_section_navigation() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(
+                Key::Char('p'),
+                InputModifiers {
+                    ctrl: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(
+            effects,
+            vec![CoreEffect::NavigateFileSection(Direction::Prev)]
+        );
     }
 
     #[test]
@@ -1926,6 +2020,43 @@ mod tests {
 
         assert_eq!(next, vec![CoreEffect::JumpHunk(Direction::Next)]);
         assert_eq!(prev, vec![CoreEffect::JumpHunk(Direction::Prev)]);
+    }
+
+    #[test]
+    fn shifted_control_brackets_navigate_unresolved_comments() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let next = engine.handle_input(
+            key_event(
+                Key::Char(']'),
+                InputModifiers {
+                    ctrl: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+        let previous = engine.handle_input(
+            key_event(
+                Key::Char('['),
+                InputModifiers {
+                    ctrl: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(
+            next,
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)]
+        );
+        assert_eq!(
+            previous,
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Prev)]
+        );
     }
 
     #[test]

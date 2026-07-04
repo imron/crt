@@ -1196,6 +1196,46 @@ mod tests {
     }
 
     #[test]
+    fn mouse_input_event_maps_file_list_comment_hit() {
+        let state = test_state();
+        let model = AppModel::from_state(&state);
+        let tui_state = TuiState {
+            file_list_area: Rect::new(0, 0, 30, 10),
+            file_list_row_to_file: vec![Some(0)],
+            file_list_row_to_comment: vec![Some(9)],
+            ..TuiState::default()
+        };
+
+        let event = input_event_from_mouse(
+            &model,
+            &tui_state,
+            &CrosstermMouseEvent {
+                kind: CrosstermMouseEventKind::Down(CrosstermMouseButton::Left),
+                column: 5,
+                row: 1,
+                modifiers: KeyModifiers::NONE,
+            },
+        )
+        .expect("expected mouse input");
+
+        assert_eq!(
+            event,
+            InputEvent::Mouse(CoreMouseEvent {
+                kind: CoreMouseEventKind::Down,
+                button: Some(CoreMouseButton::Left),
+                local_pos: Some((5, 1)),
+                semantic_hit: Some(PointerSemanticHit {
+                    pane_id: PaneId::FileList,
+                    target: AppTarget::Comment { id: 9 },
+                    region_id: Some("comment:9".to_string()),
+                    text_anchor: Some(TextAnchor { line: 0, column: 4 }),
+                }),
+                modifiers: InputModifiers::default(),
+            })
+        );
+    }
+
+    #[test]
     fn mouse_input_event_maps_diff_hit_to_content_anchor() {
         let mut state = test_state();
         state.diff_scroll = 10;

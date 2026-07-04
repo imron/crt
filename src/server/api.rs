@@ -890,6 +890,7 @@ pub async fn handle_list_comments(
             &head_ref,
             p.file_path.as_deref(),
             p.include_resolved,
+            p.include_previous_bases,
         ) {
             Ok(comments) => comments,
             Err(e) => {
@@ -1669,7 +1670,7 @@ async fn load_comment_in_scope(
         }
     }?;
 
-    if stored.merge_base == ctx.merge_base_key() && stored.head_ref == ctx.head_scope_key() {
+    if stored.head_ref == ctx.head_scope_key() {
         Some(stored)
     } else {
         None

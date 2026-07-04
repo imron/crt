@@ -291,6 +291,8 @@ pub struct ListCommentsParams {
     pub file_path: Option<String>,
     #[serde(default)]
     pub include_resolved: bool,
+    #[serde(default)]
+    pub include_previous_bases: bool,
 }
 
 /// Parameters for `get_comment`.
@@ -724,6 +726,7 @@ mod tests {
         let params = ListCommentsParams {
             file_path: Some("src/lib.rs".to_string()),
             include_resolved: true,
+            include_previous_bases: false,
         };
         let json = serde_json::to_string(&params).unwrap();
         let deserialized: ListCommentsParams = serde_json::from_str(&json).unwrap();
@@ -745,6 +748,7 @@ mod tests {
         let json = r#"{"file_path": null}"#;
         let params: ListCommentsParams = serde_json::from_str(json).unwrap();
         assert!(!params.include_resolved);
+        assert!(!params.include_previous_bases);
         assert!(params.file_path.is_none());
     }
 }
