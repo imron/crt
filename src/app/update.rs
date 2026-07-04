@@ -137,6 +137,10 @@ pub fn apply_core_effects(
                 update.request_suspend();
             }
             CoreEffect::ShowHelp | CoreEffect::DismissHelp => {}
+            CoreEffect::Undo => {
+                update.request_undo();
+                update.clear_status();
+            }
             CoreEffect::ReviewToggle => {
                 navigation::toggle_review(state, &mut update);
                 update.clear_status();
