@@ -1,5 +1,11 @@
 # Stage 13: Comments
 
+## Status
+
+Partially complete. Core creation, persistence, re-anchoring, gutter markers,
+comments panel lifecycle, and unresolved file-panel scanning are implemented.
+Final live-update polish and future anchor/inline follow-ups remain.
+
 ## Goal
 
 Add the ability to create, view, edit, and resolve review comments attached
@@ -42,6 +48,22 @@ inline comment blocks or changes to line rendering. Inline comment display
 and the associated visual line abstraction are deferred so the panel-first
 UX can be evaluated first.
 
+Completed sub-plans:
+
+- 13a-selection-anchor-capture.md
+- 13b-composer-create.md
+- 13c-reanchor.md
+- 13d-gutter-display.md
+- 13e-panel-lifecycle.md
+- 13i-unresolved-comments-pane.md
+
+Remaining sub-plans:
+
+- 13f-live-polish-tests.md
+- 13g-visual-line-abstraction.md
+- 13j-check-comments-command.md
+- 13k-base-head-comment-anchors.md
+
 See the individual sub-plan files under `docs/plans/backlog/` and
 `docs/plans/completed/` for detailed requirements, acceptance criteria, and
 notes for each slice.
@@ -59,6 +81,8 @@ Keybinding decision (recorded here):
   If there is no comment at the current cursor, `e` does nothing.
 - In later lifecycle flows, `c` also switches to the comment editor for the
   current comment context; otherwise it creates a new comment at the cursor.
+- Use the file panel's `Unresolved Comments` section to scan outstanding
+  feedback without opening the full comments panel.
 
 ## Requirements
 
@@ -122,22 +146,27 @@ Keybinding decision (recorded here):
      a comment marker in the gutter, the relevant comment(s) are shown
      (expanded) in the comments panel.
 
+13. **Unresolved comments section**: the file panel includes an
+    `Unresolved Comments` section. It lists unresolved visible comments across
+    files, including unresolved comments carried over from previous bases.
+    Activating a row jumps to the owning file and anchored line.
+
 Later / optional (inline comments):
 
-13. **Inline toggle key (deferred)**: a possible future key can toggle
+14. **Inline toggle key (deferred)**: a possible future key can toggle
      comments inline in the diff pane. Do not use `c`; it is reserved for
      comment creation/editing.
 
-14. **Inline comment blocks** (deferred): unresolved comments displayed
+15. **Inline comment blocks** (deferred): unresolved comments displayed
      below the lines they're attached to when inline mode is active.
 
 ### Anchor Resolution
 
-15. **Only unresolved comments are re-anchored.** Resolved comments skip
+16. **Only unresolved comments are re-anchored.** Resolved comments skip
     anchoring entirely. A resolved comment whose anchor_text no longer
     exists is expected — the feedback was addressed.
 
-16. **Re-anchoring**: the server performs anchor resolution when loading
+17. **Re-anchoring**: the server performs anchor resolution when loading
     comments for a connection. For each unresolved comment:
     - **Step 1**: anchor_text at stored line number → anchored.
     - **Step 2**: anchor_text elsewhere in file → shifted, reattach.
@@ -148,57 +177,58 @@ Later / optional (inline comments):
     `file_blob_sha` and fresh context strings. The `v_current_anchors` view
     then provides the latest attachment for display and future re-anchoring.
 
-17. **Orphaned comments**: visible in the comments panel with their
+18. **Orphaned comments**: visible in the comments panel with their
     last-known context (from the most recent anchor version, or the
     creation version if none exists) and an orphaned indicator.
     Not silently lost.
 
 ### Comment Lifecycle
 
-18. **Resolve/unresolve**: a keybinding toggles resolved status. Sends
+19. **Resolve/unresolve**: a keybinding toggles resolved status. Sends
     `resolve_comment` or `unresolve_comment` to the server. When
     resolved, the inline block disappears; the comment remains in the
     panel.
 
-19. **Resolved + orphaned is success**: expected outcome when agent
+20. **Resolved + orphaned is success**: expected outcome when agent
     addresses feedback and code changes significantly.
 
-20. **Edit**: a keybinding reopens the comment input with existing body.
+21. **Edit**: a keybinding reopens the comment input with existing body.
     Sends `update_comment` to the server.
 
-21. **Delete**: a keybinding deletes the comment with confirmation. Sends
+22. **Delete**: a keybinding deletes the comment with confirmation. Sends
     `delete_comment` to the server.
 
-22. **Navigate between comments**: keybindings to jump to next/previous
+23. **Navigate between comments**: keybindings to jump to next/previous
     comment in the current file's diff.
 
-23. **Live updates**: when another client (e.g. agent via MCP) resolves
+24. **Live updates**: when another client (e.g. agent via MCP) resolves
     a comment, the server notifies the TUI. The comment's display
     updates immediately.
 
 ## Acceptance Criteria
 
-- [ ] `v` enters line selection mode; `j`/`k` extend visually.
-- [ ] `V` enters the same line selection mode.
+- [x] `v` enters line selection mode; `j`/`k` extend visually.
+- [x] `V` enters the same line selection mode.
 - [ ] Diff mouse selection copies to the clipboard and Enter opens the
       comment input for the selected lines.
-- [ ] `Escape` cancels selection without creating a comment.
-- [ ] `Enter` after selection opens the comment input.
-- [ ] Comment input supports multi-line text and `$EDITOR` escalation.
-- [ ] `$EDITOR` buffers include selected lines and context, and strip the
+- [x] `Escape` cancels selection without creating a comment.
+- [x] `Enter` after selection opens the comment input.
+- [x] Comment input supports multi-line text and `$EDITOR` escalation.
+- [x] `$EDITOR` buffers include selected lines and context, and strip the
       unchanged generated prefix on return.
-- [ ] Comments are persisted via the server and survive restart.
+- [x] Comments are persisted via the server and survive restart.
 - [ ] `c` (if implemented) toggles inline comment visibility (deferred).
 - [ ] Unresolved comments appear as inline blocks when visible (deferred).
-- [ ] Gutter indicators show `●` (unresolved) and `○` (resolved).
-- [ ] Comments panel lists all comments; resolved are collapsed.
-- [ ] `Enter` on collapsed resolved comment expands it.
-- [ ] Resolved comments can be unresolved from the panel.
-- [ ] After rebase, unresolved comments re-anchor correctly.
-- [ ] Orphaned unresolved comments appear in the panel.
-- [ ] Resolved comments are not re-anchored and produce no warnings.
-- [ ] Comments can be resolved, unresolved, edited, and deleted.
-- [ ] Next/previous comment navigation works.
+- [x] Gutter indicators show `●` (unresolved) and `○` (resolved).
+- [x] Comments panel lists all comments; resolved are collapsed.
+- [x] `Enter` on collapsed resolved comment expands it.
+- [x] Resolved comments can be unresolved from the panel.
+- [x] After rebase, unresolved comments re-anchor correctly.
+- [x] Orphaned unresolved comments appear in the panel.
+- [x] Resolved comments are not re-anchored and produce no warnings.
+- [x] Comments can be resolved, unresolved, edited, and deleted.
+- [x] Next/previous comment navigation works.
+- [x] Unresolved comments can be scanned from the file panel.
 - [ ] Live updates from other clients are reflected immediately.
 
 ## Open Questions
@@ -214,4 +244,10 @@ Later / optional (inline comments):
 
 ## Progress
 
-Sub-plans created. Implementation has not yet started.
+- 13a selection and anchor capture completed.
+- 13b composer and creation completed.
+- 13c server re-anchoring completed.
+- 13d gutter markers completed.
+- 13e comments panel and lifecycle completed.
+- 13i unresolved comments pane completed as a file-panel section.
+- 13f remains as the final live-update polish and full verification pass.
