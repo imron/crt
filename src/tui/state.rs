@@ -583,7 +583,7 @@ fn model_file_path(model: &AppModel, file_index: usize) -> Option<&str> {
         .sections
         .iter()
         .flat_map(|section| section.rows.iter())
-        .find(|row| row.file_index == file_index)
+        .find(|row| row.file_index == Some(file_index))
         .map(|row| row.path.as_str())
 }
 

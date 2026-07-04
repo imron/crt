@@ -1908,6 +1908,32 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_comment_navigation_selects_out_of_range_comment() {
+        let mut app = App::new(Config::default(), test_context(), vec![test_file("a.rs")]);
+        let mut comment = stored_comment(8, "mcp.rs");
+        comment.line_start = 12;
+        comment.line_end = 12;
+        comment.body = "Previous session feedback".to_string();
+        app.state.comments = vec![comment];
+        app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 20]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "a.rs");
+        assert_eq!(app.state.selected_comment_id, Some(8));
+        assert_eq!(app.state.pane_focus, PaneFocus::Comments);
+        assert!(app.state.show_comments_panel);
+
+        let model = app.model();
+        assert_eq!(model.comments_panel.comments.len(), 1);
+        assert_eq!(model.comments_panel.comments[0].file_path, "mcp.rs");
+        assert_eq!(model.comments_panel.comments[0].id, 8);
+    }
+
+    #[test]
     fn app_model_projects_current_file_comments() {
         let mut app = App::new(
             Config::default(),

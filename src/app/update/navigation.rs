@@ -368,7 +368,7 @@ fn navigate_unresolved_comment(state: &mut AppState, view: &impl AppViewport, di
         .or_else(|| {
             targets
                 .iter()
-                .position(|target| target.file_index == state.selected_file)
+                .position(|target| target.file_index == Some(state.selected_file))
         })
         .unwrap_or(0);
     let next = match dir {
@@ -410,16 +410,18 @@ pub fn navigate_unresolved_comment_from_cursor(
         Direction::Next => targets
             .iter()
             .find(|target| {
-                target.file_index > state.selected_file
-                    || (target.file_index == state.selected_file && target.line_start > cursor_line)
+                target.order_index > state.selected_file
+                    || (target.file_index == Some(state.selected_file)
+                        && target.line_start > cursor_line)
             })
             .or_else(|| targets.first()),
         Direction::Prev => targets
             .iter()
             .rev()
             .find(|target| {
-                target.file_index < state.selected_file
-                    || (target.file_index == state.selected_file && target.line_start < cursor_line)
+                target.order_index < state.selected_file
+                    || (target.file_index == Some(state.selected_file)
+                        && target.line_start < cursor_line)
             })
             .or_else(|| targets.last()),
     };
@@ -438,14 +440,17 @@ fn activate_unresolved_comment(state: &mut AppState, view: &impl AppViewport, co
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct UnresolvedCommentTarget {
-    file_index: usize,
+    file_index: Option<usize>,
+    order_index: usize,
     comment_id: i64,
     line_start: i64,
 }
 
 fn unresolved_comment_targets(state: &AppState) -> Vec<UnresolvedCommentTarget> {
     let mut targets = Vec::new();
+    let mut current_file_paths = std::collections::HashSet::new();
     for (file_index, entry) in state.files.iter().enumerate() {
+        current_file_paths.insert(entry.change.path.as_str());
         let mut comments: Vec<_> = state
             .comments
             .iter()
@@ -453,7 +458,33 @@ fn unresolved_comment_targets(state: &AppState) -> Vec<UnresolvedCommentTarget> 
             .collect();
         comments.sort_by_key(|comment| (comment.line_start, comment.line_end, comment.id));
         targets.extend(comments.into_iter().map(|comment| UnresolvedCommentTarget {
-            file_index,
+            file_index: Some(file_index),
+            order_index: file_index,
+            comment_id: comment.id,
+            line_start: comment.line_start,
+        }));
+    }
+    let mut external_paths: Vec<&str> = state
+        .comments
+        .iter()
+        .filter(|comment| {
+            !comment.resolved && !current_file_paths.contains(comment.file_path.as_str())
+        })
+        .map(|comment| comment.file_path.as_str())
+        .collect();
+    external_paths.sort_unstable();
+    external_paths.dedup();
+    let external_start = state.files.len();
+    for (offset, path) in external_paths.into_iter().enumerate() {
+        let mut comments: Vec<_> = state
+            .comments
+            .iter()
+            .filter(|comment| !comment.resolved && comment.file_path == path)
+            .collect();
+        comments.sort_by_key(|comment| (comment.line_start, comment.line_end, comment.id));
+        targets.extend(comments.into_iter().map(|comment| UnresolvedCommentTarget {
+            file_index: None,
+            order_index: external_start + offset,
             comment_id: comment.id,
             line_start: comment.line_start,
         }));
@@ -478,16 +509,26 @@ pub fn navigate_file_section(state: &mut AppState, dir: Direction) {
             Direction::Prev => (current + order.len() - offset) % order.len(),
         };
         let section = order[index];
+        if section == FileListSectionFocus::UnresolvedComments {
+            let Some(target) = unresolved_comment_targets(state).first().copied() else {
+                continue;
+            };
+            if let Some(file_index) = target.file_index {
+                state.select_file(file_index, section, true);
+            } else {
+                state.file_list_section_focus = section;
+                state.mark_model_changed();
+            }
+            state.selected_comment_id = Some(target.comment_id);
+            state.mark_model_changed();
+            return;
+        }
         let Some(file_index) = first_file_in_section(state, section) else {
             continue;
         };
         state.select_file(file_index, section, true);
-        if section == FileListSectionFocus::UnresolvedComments {
-            state.selected_comment_id = first_unresolved_comment_for_file(state, file_index);
-        } else {
-            state.selected_comment_id = None;
-            state.pending_delete_comment_id = None;
-        }
+        state.selected_comment_id = None;
+        state.pending_delete_comment_id = None;
         state.mark_model_changed();
         return;
     }
@@ -500,28 +541,10 @@ fn first_file_in_section(state: &AppState, section: FileListSectionFocus) -> Opt
             let start = state.unreviewed_count();
             (start < state.files.len()).then_some(start)
         }
-        FileListSectionFocus::UnresolvedComments => state
-            .files
-            .iter()
-            .enumerate()
-            .find(|(_, entry)| {
-                state
-                    .comments
-                    .iter()
-                    .any(|comment| !comment.resolved && comment.file_path == entry.change.path)
-            })
-            .map(|(index, _)| index),
+        FileListSectionFocus::UnresolvedComments => unresolved_comment_targets(state)
+            .first()
+            .and_then(|target| target.file_index),
     }
-}
-
-fn first_unresolved_comment_for_file(state: &AppState, file_index: usize) -> Option<i64> {
-    let path = &state.files.get(file_index)?.change.path;
-    state
-        .comments
-        .iter()
-        .filter(|comment| !comment.resolved && comment.file_path == *path)
-        .min_by_key(|comment| (comment.line_start, comment.line_end, comment.id))
-        .map(|comment| comment.id)
 }
 
 pub fn toggle_review(state: &AppState, update: &mut AppOutput) {
