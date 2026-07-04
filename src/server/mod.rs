@@ -29,7 +29,7 @@ use crate::db::Database;
 use crate::git::{CommitId, HeadIdentity, ReviewBase};
 use crate::protocol::{
     ERR_INTERNAL, ERR_METHOD_NOT_FOUND, ERR_NOT_IMPLEMENTED, ERR_NOT_INITIALIZED, ERR_PARSE,
-    JsonRpcRequest, JsonRpcResponse, Notification,
+    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Notification,
 };
 use crate::review_types::ActiveReviewSession;
 
@@ -400,11 +400,11 @@ async fn handle_connection(stream: UnixStream, state: Arc<ServerState>) -> Resul
                 result = notify_rx.recv() => {
                     match result {
                         Ok(notification) => {
-                            let msg = serde_json::json!({
-                                "jsonrpc": "2.0",
-                                "method": "notification",
-                                "params": notification,
-                            });
+                            let msg = JsonRpcNotification {
+                                jsonrpc: "2.0",
+                                method: "notification",
+                                params: notification,
+                            };
                             let mut json = match serde_json::to_string(&msg) {
                                 Ok(j) => j,
                                 Err(_) => continue,
