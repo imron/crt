@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU16, Ordering};
 
-use crt::client::Client;
+use crt::client::{Client, CommentScope};
 use crt::protocol::{JsonRpcCall, NotificationKind, RpcMethod};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UnixStream};
@@ -746,6 +746,54 @@ async fn test_carry_over_comment_can_be_unresolved_after_resolve() {
         "unresolve failed: {unresolved}"
     );
     assert_eq!(unresolved["result"]["comment"]["resolved"], false);
+}
+
+#[tokio::test]
+async fn test_client_visible_comments_include_previous_base_unresolved_comments() {
+    let server = TestServer::start().await;
+    let client = Client::connect(&server.socket_path).await.unwrap();
+    client
+        .init(&server.repo_dir.to_string_lossy(), "HEAD")
+        .await
+        .unwrap();
+
+    let created = client
+        .create_comment(crt::review_types::CreateCommentParams {
+            file_path: "file.txt".to_string(),
+            line_start: 1,
+            line_end: 1,
+            char_start: None,
+            char_end: None,
+            anchor_text: "hello".to_string(),
+            context_before: String::new(),
+            context_after: String::new(),
+            body: "previous base feedback".to_string(),
+        })
+        .await
+        .unwrap();
+    let id = created.comment.id;
+
+    let db_path = server.repo_dir.join(".crt/reviews.db");
+    let db = rusqlite::Connection::open(db_path).unwrap();
+    db.execute(
+        "UPDATE comments SET merge_base = ?1 WHERE id = ?2",
+        rusqlite::params!["old-merge-base", id],
+    )
+    .unwrap();
+    drop(db);
+
+    let exact_current = client
+        .list_comments(None, CommentScope::CurrentUnresolved)
+        .await
+        .unwrap();
+    assert!(exact_current.comments.is_empty());
+
+    let visible = client
+        .list_current_and_previous_unresolved_comments(None, false)
+        .await
+        .unwrap();
+    assert_eq!(visible.comments.len(), 1);
+    assert_eq!(visible.comments[0].id, id);
 }
 
 #[tokio::test]
