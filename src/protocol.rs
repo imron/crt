@@ -7,18 +7,103 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
-pub struct JsonRpcCall<'a, P: Serialize> {
+pub struct JsonRpcCall<P: Serialize> {
     pub jsonrpc: &'static str,
-    pub method: &'a str,
+    pub method: JsonRpcMethod,
     pub params: P,
     pub id: u64,
 }
 
 #[derive(Debug, Serialize)]
-pub struct JsonRpcNotification<'a, P: Serialize> {
+pub struct JsonRpcNotification<P: Serialize> {
     pub jsonrpc: &'static str,
-    pub method: &'a str,
+    pub method: JsonRpcNotificationMethod,
     pub params: P,
+}
+
+macro_rules! json_rpc_methods {
+    ($($variant:ident => $wire_name:literal),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum JsonRpcMethod {
+            $($variant),+
+        }
+
+        impl JsonRpcMethod {
+            pub fn from_str(value: &str) -> Option<Self> {
+                match value {
+                    $($wire_name => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $wire_name,)+
+                }
+            }
+        }
+
+        impl std::fmt::Display for JsonRpcMethod {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+    };
+}
+
+json_rpc_methods! {
+    Init => "init",
+    ListChangedFiles => "list_changed_files",
+    ListFileStatuses => "list_file_statuses",
+    GetFileDiff => "get_file_diff",
+    GetFileContent => "get_file_content",
+    MarkReviewed => "mark_reviewed",
+    UnmarkReviewed => "unmark_reviewed",
+    ResetReviews => "reset_reviews",
+    CreateComment => "create_comment",
+    ListComments => "list_comments",
+    GetComment => "get_comment",
+    UpdateComment => "update_comment",
+    ResolveComment => "resolve_comment",
+    UnresolveComment => "unresolve_comment",
+    DeleteComment => "delete_comment",
+    ApplyComments => "apply_comments",
+    ClearComments => "clear_comments",
+    SearchCodebase => "search_codebase",
+    FindDefinition => "find_definition",
+    TrackRepo => "track_repo",
+    ListRepos => "list_repos",
+}
+
+impl Serialize for JsonRpcMethod {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonRpcNotificationMethod {
+    Notification,
+}
+
+impl JsonRpcNotificationMethod {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Notification => "notification",
+        }
+    }
+}
+
+impl Serialize for JsonRpcNotificationMethod {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
 }
 
 #[derive(Debug, Deserialize)]

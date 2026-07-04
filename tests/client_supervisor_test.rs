@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use crt::client::{Client, ClientEvent, ReconnectOptions};
 use crt::core::ConnectionState;
-use crt::protocol::NotificationKind;
+use crt::protocol::{
+    JsonRpcMethod, JsonRpcNotification, JsonRpcNotificationMethod, Notification, NotificationKind,
+};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::task::JoinHandle;
@@ -61,18 +63,19 @@ impl TestRepo {
                 }
                 let request: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
                 let id = request["id"].clone();
-                let result = match request["method"].as_str().unwrap() {
-                    "init" => serde_json::json!({
+                let method = request["method"].as_str().unwrap();
+                let result = match JsonRpcMethod::from_str(method) {
+                    Some(JsonRpcMethod::Init) => serde_json::json!({
                         "repo_root": repo_dir.clone(),
                         "worktree": repo_dir.clone(),
                         "base_ref": "HEAD",
                         "head_ref": "HEAD",
                         "merge_base": "0000000000000000000000000000000000000000",
                     }),
-                    "list_changed_files" => serde_json::json!({ "files": [] }),
-                    method => panic!("unexpected fake server method: {method}"),
+                    Some(JsonRpcMethod::ListChangedFiles) => serde_json::json!({ "files": [] }),
+                    other => panic!("unexpected fake server method: {method} ({other:?})"),
                 };
-                let should_notify_after_init = request["method"] == "init";
+                let should_notify_after_init = method == JsonRpcMethod::Init.as_str();
                 let response = serde_json::json!({
                     "jsonrpc": "2.0",
                     "result": result,
@@ -86,19 +89,17 @@ impl TestRepo {
                     .await
                     .unwrap();
                 if should_notify_after_init && let Some(file_path) = notification_path.as_deref() {
-                    let notification = serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "method": "notification",
-                        "params": {
-                            "base_ref": "HEAD",
-                            "head_ref": "HEAD",
-                            "kind": {
-                                "ReviewChanged": {
-                                    "file_path": file_path,
-                                },
+                    let notification = JsonRpcNotification {
+                        jsonrpc: "2.0",
+                        method: JsonRpcNotificationMethod::Notification,
+                        params: Notification {
+                            base_ref: "HEAD".to_string(),
+                            head_ref: "HEAD".to_string(),
+                            kind: NotificationKind::ReviewChanged {
+                                file_path: file_path.to_string(),
                             },
                         },
-                    });
+                    };
                     let mut notification_line = serde_json::to_string(&notification).unwrap();
                     notification_line.push('\n');
                     stream

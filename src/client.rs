@@ -25,7 +25,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::ConnectionState;
-use crate::protocol::JsonRpcCall;
+use crate::protocol::{JsonRpcCall, JsonRpcMethod};
 use crate::review_types;
 
 /// Result of the `init` call. Alias for [`review_types::ConnectionContext`].
@@ -309,7 +309,7 @@ impl Client {
     pub async fn init(&self, worktree: &str, base_ref: &str) -> Result<InitResult> {
         let result = self
             .call(
-                "init",
+                JsonRpcMethod::Init,
                 review_types::InitParams {
                     worktree: worktree.to_string(),
                     base_ref: base_ref.to_string(),
@@ -325,7 +325,7 @@ impl Client {
 
     async fn reinit(&self, init_args: &InitArgs) -> Result<InitResult> {
         self.call_once(
-            "init",
+            JsonRpcMethod::Init,
             review_types::InitParams {
                 worktree: init_args.worktree.clone(),
                 base_ref: init_args.base_ref.clone(),
@@ -339,16 +339,18 @@ impl Client {
     // -----------------------------------------------------------------------
 
     pub async fn list_changed_files(&self) -> Result<review_types::ListChangedFilesResult> {
-        self.call("list_changed_files", EmptyParams {}).await
+        self.call(JsonRpcMethod::ListChangedFiles, EmptyParams {})
+            .await
     }
 
     pub async fn list_file_statuses(&self) -> Result<review_types::ListFileStatusesResult> {
-        self.call("list_file_statuses", EmptyParams {}).await
+        self.call(JsonRpcMethod::ListFileStatuses, EmptyParams {})
+            .await
     }
 
     pub async fn get_file_diff(&self, file_path: &str) -> Result<review_types::GetFileDiffResult> {
         self.call(
-            "get_file_diff",
+            JsonRpcMethod::GetFileDiff,
             review_types::GetFileDiffParams {
                 file_path: file_path.to_string(),
             },
@@ -362,7 +364,7 @@ impl Client {
         version: review_types::FileVersion,
     ) -> Result<review_types::GetFileContentResult> {
         self.call(
-            "get_file_content",
+            JsonRpcMethod::GetFileContent,
             review_types::GetFileContentParams {
                 file_path: file_path.to_string(),
                 version,
@@ -373,7 +375,7 @@ impl Client {
 
     pub async fn mark_reviewed(&self, file_path: &str) -> Result<review_types::ReviewActionResult> {
         self.call(
-            "mark_reviewed",
+            JsonRpcMethod::MarkReviewed,
             review_types::MarkReviewedParams {
                 file_path: file_path.to_string(),
             },
@@ -386,7 +388,7 @@ impl Client {
         file_path: &str,
     ) -> Result<review_types::ReviewActionResult> {
         self.call(
-            "unmark_reviewed",
+            JsonRpcMethod::UnmarkReviewed,
             review_types::UnmarkReviewedParams {
                 file_path: file_path.to_string(),
             },
@@ -395,7 +397,7 @@ impl Client {
     }
 
     pub async fn reset_reviews(&self) -> Result<review_types::ResetReviewsResult> {
-        self.call("reset_reviews", EmptyParams {}).await
+        self.call(JsonRpcMethod::ResetReviews, EmptyParams {}).await
     }
 
     // -----------------------------------------------------------------------
@@ -406,7 +408,7 @@ impl Client {
         &self,
         params: review_types::CreateCommentParams,
     ) -> Result<review_types::CommentResult> {
-        self.call("create_comment", params).await
+        self.call(JsonRpcMethod::CreateComment, params).await
     }
 
     pub async fn list_comments(
@@ -415,7 +417,7 @@ impl Client {
         scope: CommentScope,
     ) -> Result<review_types::ListCommentsResult> {
         self.call(
-            "list_comments",
+            JsonRpcMethod::ListComments,
             review_types::ListCommentsParams {
                 file_path: file_path.map(str::to_string),
                 include_resolved: scope.include_resolved(),
@@ -426,13 +428,16 @@ impl Client {
     }
 
     pub async fn get_comment(&self, id: i64) -> Result<review_types::CommentResult> {
-        self.call("get_comment", review_types::GetCommentParams { id })
-            .await
+        self.call(
+            JsonRpcMethod::GetComment,
+            review_types::GetCommentParams { id },
+        )
+        .await
     }
 
     pub async fn update_comment(&self, id: i64, body: &str) -> Result<review_types::CommentResult> {
         self.call(
-            "update_comment",
+            JsonRpcMethod::UpdateComment,
             review_types::UpdateCommentParams {
                 id,
                 body: body.to_string(),
@@ -442,25 +447,31 @@ impl Client {
     }
 
     pub async fn resolve_comment(&self, id: i64) -> Result<review_types::CommentResult> {
-        self.call("resolve_comment", review_types::ResolveCommentParams { id })
-            .await
+        self.call(
+            JsonRpcMethod::ResolveComment,
+            review_types::ResolveCommentParams { id },
+        )
+        .await
     }
 
     pub async fn unresolve_comment(&self, id: i64) -> Result<review_types::CommentResult> {
         self.call(
-            "unresolve_comment",
+            JsonRpcMethod::UnresolveComment,
             review_types::UnresolveCommentParams { id },
         )
         .await
     }
 
     pub async fn delete_comment(&self, id: i64) -> Result<review_types::DeleteCommentResult> {
-        self.call("delete_comment", review_types::DeleteCommentParams { id })
-            .await
+        self.call(
+            JsonRpcMethod::DeleteComment,
+            review_types::DeleteCommentParams { id },
+        )
+        .await
     }
 
     pub async fn list_repos(&self) -> Result<crate::review_types::ListReposResult> {
-        self.call("list_repos", EmptyParams {}).await
+        self.call(JsonRpcMethod::ListRepos, EmptyParams {}).await
     }
 
     // -----------------------------------------------------------------------
@@ -474,7 +485,7 @@ impl Client {
     ) -> Result<crate::review_types::SearchCodebaseResult> {
         let value = self
             .call(
-                "search_codebase",
+                JsonRpcMethod::SearchCodebase,
                 review_types::SearchCodebaseParams {
                     pattern: pattern.to_string(),
                     scope: Some(scope.to_string()),
@@ -492,7 +503,7 @@ impl Client {
     ) -> Result<crate::review_types::FindDefinitionResult> {
         let value = self
             .call(
-                "find_definition",
+                JsonRpcMethod::FindDefinition,
                 review_types::FindDefinitionParams {
                     symbol: symbol.to_string(),
                     context_file: context_file.map(str::to_string),
@@ -607,7 +618,11 @@ impl Client {
     // Generic JSON-RPC call
     // -----------------------------------------------------------------------
 
-    async fn call<R: DeserializeOwned>(&self, method: &str, params: impl Serialize) -> Result<R> {
+    async fn call<R: DeserializeOwned>(
+        &self,
+        method: JsonRpcMethod,
+        params: impl Serialize,
+    ) -> Result<R> {
         if !self.is_connected_like().await {
             bail!("Transient transport error: reconnecting");
         }
@@ -624,7 +639,7 @@ impl Client {
 
     async fn call_once<R: DeserializeOwned>(
         &self,
-        method: &str,
+        method: JsonRpcMethod,
         params: impl Serialize,
     ) -> Result<R> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -658,7 +673,12 @@ impl Client {
                 .get("message")
                 .and_then(|m| m.as_str())
                 .unwrap_or("Unknown error");
-            bail!("Server error ({}): {} [method: {}]", code, message, method);
+            bail!(
+                "Server error ({}): {} [method: {}]",
+                code,
+                message,
+                method.as_str()
+            );
         }
 
         // Extract result

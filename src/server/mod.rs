@@ -29,7 +29,8 @@ use crate::db::Database;
 use crate::git::{CommitId, HeadIdentity, ReviewBase};
 use crate::protocol::{
     ERR_INTERNAL, ERR_METHOD_NOT_FOUND, ERR_NOT_IMPLEMENTED, ERR_NOT_INITIALIZED, ERR_PARSE,
-    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Notification,
+    JsonRpcMethod, JsonRpcNotification, JsonRpcNotificationMethod, JsonRpcRequest, JsonRpcResponse,
+    Notification,
 };
 use crate::review_types::ActiveReviewSession;
 
@@ -402,7 +403,7 @@ async fn handle_connection(stream: UnixStream, state: Arc<ServerState>) -> Resul
                         Ok(notification) => {
                             let msg = JsonRpcNotification {
                                 jsonrpc: "2.0",
-                                method: "notification",
+                                method: JsonRpcNotificationMethod::Notification,
                                 params: notification,
                             };
                             let mut json = match serde_json::to_string(&msg) {
@@ -584,63 +585,6 @@ async fn send_response(
 // Dispatch
 // ---------------------------------------------------------------------------
 
-/// All API methods the server supports. As methods are implemented,
-/// their dispatch arms move from returning `ERR_NOT_IMPLEMENTED` to
-/// calling real handlers. The compiler enforces exhaustive matching.
-#[derive(Clone, Copy)]
-enum Method {
-    Init,
-    ListChangedFiles,
-    ListFileStatuses,
-    GetFileDiff,
-    GetFileContent,
-    MarkReviewed,
-    UnmarkReviewed,
-    ResetReviews,
-    CreateComment,
-    ListComments,
-    GetComment,
-    UpdateComment,
-    ResolveComment,
-    UnresolveComment,
-    DeleteComment,
-    ApplyComments,
-    ClearComments,
-    SearchCodebase,
-    FindDefinition,
-    TrackRepo,
-    ListRepos,
-}
-
-impl Method {
-    fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "init" => Some(Self::Init),
-            "list_changed_files" => Some(Self::ListChangedFiles),
-            "list_file_statuses" => Some(Self::ListFileStatuses),
-            "get_file_diff" => Some(Self::GetFileDiff),
-            "get_file_content" => Some(Self::GetFileContent),
-            "mark_reviewed" => Some(Self::MarkReviewed),
-            "unmark_reviewed" => Some(Self::UnmarkReviewed),
-            "reset_reviews" => Some(Self::ResetReviews),
-            "create_comment" => Some(Self::CreateComment),
-            "list_comments" => Some(Self::ListComments),
-            "get_comment" => Some(Self::GetComment),
-            "update_comment" => Some(Self::UpdateComment),
-            "resolve_comment" => Some(Self::ResolveComment),
-            "unresolve_comment" => Some(Self::UnresolveComment),
-            "delete_comment" => Some(Self::DeleteComment),
-            "apply_comments" => Some(Self::ApplyComments),
-            "clear_comments" => Some(Self::ClearComments),
-            "search_codebase" => Some(Self::SearchCodebase),
-            "find_definition" => Some(Self::FindDefinition),
-            "track_repo" => Some(Self::TrackRepo),
-            "list_repos" => Some(Self::ListRepos),
-            _ => None,
-        }
-    }
-}
-
 async fn dispatch(
     request: &JsonRpcRequest,
     id: &serde_json::Value,
@@ -648,7 +592,7 @@ async fn dispatch(
     conn_ctx: &mut Option<ConnectionContext>,
     conn_db: &mut Option<Arc<Mutex<Database>>>,
 ) -> JsonRpcResponse {
-    let method = match Method::from_str(&request.method) {
+    let method = match JsonRpcMethod::from_str(&request.method) {
         Some(m) => m,
         None => {
             return JsonRpcResponse::error(
@@ -660,8 +604,10 @@ async fn dispatch(
     };
 
     match method {
-        Method::Init => api::handle_init(&request.params, id, state, conn_ctx, conn_db).await,
-        Method::ListRepos => api::handle_list_repos(id, state).await,
+        JsonRpcMethod::Init => {
+            api::handle_init(&request.params, id, state, conn_ctx, conn_db).await
+        }
+        JsonRpcMethod::ListRepos => api::handle_list_repos(id, state).await,
         _ => dispatch_initialized(request, id, method, state, conn_ctx, conn_db).await,
     }
 }
@@ -669,7 +615,7 @@ async fn dispatch(
 async fn dispatch_initialized(
     request: &JsonRpcRequest,
     id: &serde_json::Value,
-    method: Method,
+    method: JsonRpcMethod,
     state: &Arc<ServerState>,
     conn_ctx: &mut Option<ConnectionContext>,
     conn_db: &mut Option<Arc<Mutex<Database>>>,
@@ -684,48 +630,56 @@ async fn dispatch_initialized(
 
     // Dispatch — the compiler ensures every variant is handled.
     match method {
-        Method::ListChangedFiles => {
+        JsonRpcMethod::ListChangedFiles => {
             api::handle_list_changed_files(id, ctx, db, &state.notify_tx).await
         }
-        Method::ListFileStatuses => {
+        JsonRpcMethod::ListFileStatuses => {
             api::handle_list_file_statuses(id, ctx, db, &state.notify_tx).await
         }
-        Method::GetFileDiff => api::handle_get_file_diff(&request.params, id, ctx).await,
-        Method::MarkReviewed => {
+        JsonRpcMethod::GetFileDiff => api::handle_get_file_diff(&request.params, id, ctx).await,
+        JsonRpcMethod::MarkReviewed => {
             api::handle_mark_reviewed(&request.params, id, ctx, db, &state.notify_tx).await
         }
-        Method::UnmarkReviewed => {
+        JsonRpcMethod::UnmarkReviewed => {
             api::handle_unmark_reviewed(&request.params, id, ctx, db, &state.notify_tx).await
         }
-        Method::ResetReviews => api::handle_reset_reviews(id, ctx, db, &state.notify_tx).await,
-        Method::CreateComment => {
+        JsonRpcMethod::ResetReviews => {
+            api::handle_reset_reviews(id, ctx, db, &state.notify_tx).await
+        }
+        JsonRpcMethod::CreateComment => {
             api::handle_create_comment(&request.params, id, ctx, db, &state.notify_tx).await
         }
-        Method::ListComments => api::handle_list_comments(&request.params, id, ctx, db).await,
-        Method::GetComment => api::handle_get_comment(&request.params, id, ctx, db).await,
-        Method::UpdateComment => {
+        JsonRpcMethod::ListComments => {
+            api::handle_list_comments(&request.params, id, ctx, db).await
+        }
+        JsonRpcMethod::GetComment => api::handle_get_comment(&request.params, id, ctx, db).await,
+        JsonRpcMethod::UpdateComment => {
             api::handle_update_comment(&request.params, id, ctx, db, &state.notify_tx).await
         }
-        Method::ResolveComment => {
+        JsonRpcMethod::ResolveComment => {
             api::handle_resolve_comment(&request.params, id, ctx, db, &state.notify_tx).await
         }
-        Method::UnresolveComment => {
+        JsonRpcMethod::UnresolveComment => {
             api::handle_unresolve_comment(&request.params, id, ctx, db, &state.notify_tx).await
         }
-        Method::DeleteComment => {
+        JsonRpcMethod::DeleteComment => {
             api::handle_delete_comment(&request.params, id, ctx, db, &state.notify_tx).await
         }
-        Method::GetFileContent
-        | Method::ApplyComments
-        | Method::ClearComments
-        | Method::TrackRepo => JsonRpcResponse::error(
+        JsonRpcMethod::GetFileContent
+        | JsonRpcMethod::ApplyComments
+        | JsonRpcMethod::ClearComments
+        | JsonRpcMethod::TrackRepo => JsonRpcResponse::error(
             id.clone(),
             ERR_NOT_IMPLEMENTED,
             format!("Method '{}' is not yet implemented", request.method),
         ),
-        Method::SearchCodebase => api::handle_search_codebase(&request.params, id, ctx).await,
-        Method::FindDefinition => api::handle_find_definition(&request.params, id, ctx).await,
-        Method::Init | Method::ListRepos => JsonRpcResponse::error(
+        JsonRpcMethod::SearchCodebase => {
+            api::handle_search_codebase(&request.params, id, ctx).await
+        }
+        JsonRpcMethod::FindDefinition => {
+            api::handle_find_definition(&request.params, id, ctx).await
+        }
+        JsonRpcMethod::Init | JsonRpcMethod::ListRepos => JsonRpcResponse::error(
             id.clone(),
             ERR_INTERNAL,
             format!(
