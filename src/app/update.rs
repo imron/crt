@@ -154,8 +154,11 @@ pub fn apply_core_effects(
                 update.clear_status();
             }
             CoreEffect::NavigateUnresolvedComment(direction) => {
-                navigation::navigate_unresolved_comment_from_cursor(state, view, direction);
-                update.clear_status();
+                if navigation::navigate_unresolved_comment_from_cursor(state, view, direction) {
+                    update.clear_status();
+                } else {
+                    update.set_status("No unresolved comments");
+                }
             }
             CoreEffect::JumpHunk(Direction::Next) => {
                 navigation::jump_to_next_hunk(state, view);
