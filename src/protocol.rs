@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize)]
 pub struct JsonRpcCall<P: Serialize> {
     pub jsonrpc: &'static str,
-    pub method: JsonRpcMethod,
+    pub method: RpcMethod,
     pub params: P,
     pub id: u64,
 }
@@ -17,18 +17,18 @@ pub struct JsonRpcCall<P: Serialize> {
 #[derive(Debug, Serialize)]
 pub struct JsonRpcNotification<P: Serialize> {
     pub jsonrpc: &'static str,
-    pub method: JsonRpcNotificationMethod,
+    pub method: RpcMethod,
     pub params: P,
 }
 
-macro_rules! json_rpc_methods {
+macro_rules! rpc_methods {
     ($($variant:ident => $wire_name:literal),+ $(,)?) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub enum JsonRpcMethod {
+        pub enum RpcMethod {
             $($variant),+
         }
 
-        impl JsonRpcMethod {
+        impl RpcMethod {
             pub fn from_str(value: &str) -> Option<Self> {
                 match value {
                     $($wire_name => Some(Self::$variant),)+
@@ -43,7 +43,7 @@ macro_rules! json_rpc_methods {
             }
         }
 
-        impl std::fmt::Display for JsonRpcMethod {
+        impl std::fmt::Display for RpcMethod {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.write_str(self.as_str())
             }
@@ -51,7 +51,7 @@ macro_rules! json_rpc_methods {
     };
 }
 
-json_rpc_methods! {
+rpc_methods! {
     Init => "init",
     ListChangedFiles => "list_changed_files",
     ListFileStatuses => "list_file_statuses",
@@ -73,31 +73,10 @@ json_rpc_methods! {
     FindDefinition => "find_definition",
     TrackRepo => "track_repo",
     ListRepos => "list_repos",
+    Notification => "notification",
 }
 
-impl Serialize for JsonRpcMethod {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JsonRpcNotificationMethod {
-    Notification,
-}
-
-impl JsonRpcNotificationMethod {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Notification => "notification",
-        }
-    }
-}
-
-impl Serialize for JsonRpcNotificationMethod {
+impl Serialize for RpcMethod {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,

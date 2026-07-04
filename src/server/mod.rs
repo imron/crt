@@ -29,8 +29,7 @@ use crate::db::Database;
 use crate::git::{CommitId, HeadIdentity, ReviewBase};
 use crate::protocol::{
     ERR_INTERNAL, ERR_METHOD_NOT_FOUND, ERR_NOT_IMPLEMENTED, ERR_NOT_INITIALIZED, ERR_PARSE,
-    JsonRpcMethod, JsonRpcNotification, JsonRpcNotificationMethod, JsonRpcRequest, JsonRpcResponse,
-    Notification,
+    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Notification, RpcMethod,
 };
 use crate::review_types::ActiveReviewSession;
 
@@ -403,7 +402,7 @@ async fn handle_connection(stream: UnixStream, state: Arc<ServerState>) -> Resul
                         Ok(notification) => {
                             let msg = JsonRpcNotification {
                                 jsonrpc: "2.0",
-                                method: JsonRpcNotificationMethod::Notification,
+                                method: RpcMethod::Notification,
                                 params: notification,
                             };
                             let mut json = match serde_json::to_string(&msg) {
@@ -592,7 +591,7 @@ async fn dispatch(
     conn_ctx: &mut Option<ConnectionContext>,
     conn_db: &mut Option<Arc<Mutex<Database>>>,
 ) -> JsonRpcResponse {
-    let method = match JsonRpcMethod::from_str(&request.method) {
+    let method = match RpcMethod::from_str(&request.method) {
         Some(m) => m,
         None => {
             return JsonRpcResponse::error(
@@ -604,10 +603,13 @@ async fn dispatch(
     };
 
     match method {
-        JsonRpcMethod::Init => {
-            api::handle_init(&request.params, id, state, conn_ctx, conn_db).await
-        }
-        JsonRpcMethod::ListRepos => api::handle_list_repos(id, state).await,
+        RpcMethod::Init => api::handle_init(&request.params, id, state, conn_ctx, conn_db).await,
+        RpcMethod::ListRepos => api::handle_list_repos(id, state).await,
+        RpcMethod::Notification => JsonRpcResponse::error(
+            id.clone(),
+            ERR_METHOD_NOT_FOUND,
+            format!("Method '{}' not found", request.method),
+        ),
         _ => dispatch_initialized(request, id, method, state, conn_ctx, conn_db).await,
     }
 }
@@ -615,7 +617,7 @@ async fn dispatch(
 async fn dispatch_initialized(
     request: &JsonRpcRequest,
     id: &serde_json::Value,
-    method: JsonRpcMethod,
+    method: RpcMethod,
     state: &Arc<ServerState>,
     conn_ctx: &mut Option<ConnectionContext>,
     conn_db: &mut Option<Arc<Mutex<Database>>>,
@@ -630,56 +632,48 @@ async fn dispatch_initialized(
 
     // Dispatch — the compiler ensures every variant is handled.
     match method {
-        JsonRpcMethod::ListChangedFiles => {
+        RpcMethod::ListChangedFiles => {
             api::handle_list_changed_files(id, ctx, db, &state.notify_tx).await
         }
-        JsonRpcMethod::ListFileStatuses => {
+        RpcMethod::ListFileStatuses => {
             api::handle_list_file_statuses(id, ctx, db, &state.notify_tx).await
         }
-        JsonRpcMethod::GetFileDiff => api::handle_get_file_diff(&request.params, id, ctx).await,
-        JsonRpcMethod::MarkReviewed => {
+        RpcMethod::GetFileDiff => api::handle_get_file_diff(&request.params, id, ctx).await,
+        RpcMethod::MarkReviewed => {
             api::handle_mark_reviewed(&request.params, id, ctx, db, &state.notify_tx).await
         }
-        JsonRpcMethod::UnmarkReviewed => {
+        RpcMethod::UnmarkReviewed => {
             api::handle_unmark_reviewed(&request.params, id, ctx, db, &state.notify_tx).await
         }
-        JsonRpcMethod::ResetReviews => {
-            api::handle_reset_reviews(id, ctx, db, &state.notify_tx).await
-        }
-        JsonRpcMethod::CreateComment => {
+        RpcMethod::ResetReviews => api::handle_reset_reviews(id, ctx, db, &state.notify_tx).await,
+        RpcMethod::CreateComment => {
             api::handle_create_comment(&request.params, id, ctx, db, &state.notify_tx).await
         }
-        JsonRpcMethod::ListComments => {
-            api::handle_list_comments(&request.params, id, ctx, db).await
-        }
-        JsonRpcMethod::GetComment => api::handle_get_comment(&request.params, id, ctx, db).await,
-        JsonRpcMethod::UpdateComment => {
+        RpcMethod::ListComments => api::handle_list_comments(&request.params, id, ctx, db).await,
+        RpcMethod::GetComment => api::handle_get_comment(&request.params, id, ctx, db).await,
+        RpcMethod::UpdateComment => {
             api::handle_update_comment(&request.params, id, ctx, db, &state.notify_tx).await
         }
-        JsonRpcMethod::ResolveComment => {
+        RpcMethod::ResolveComment => {
             api::handle_resolve_comment(&request.params, id, ctx, db, &state.notify_tx).await
         }
-        JsonRpcMethod::UnresolveComment => {
+        RpcMethod::UnresolveComment => {
             api::handle_unresolve_comment(&request.params, id, ctx, db, &state.notify_tx).await
         }
-        JsonRpcMethod::DeleteComment => {
+        RpcMethod::DeleteComment => {
             api::handle_delete_comment(&request.params, id, ctx, db, &state.notify_tx).await
         }
-        JsonRpcMethod::GetFileContent
-        | JsonRpcMethod::ApplyComments
-        | JsonRpcMethod::ClearComments
-        | JsonRpcMethod::TrackRepo => JsonRpcResponse::error(
+        RpcMethod::GetFileContent
+        | RpcMethod::ApplyComments
+        | RpcMethod::ClearComments
+        | RpcMethod::TrackRepo => JsonRpcResponse::error(
             id.clone(),
             ERR_NOT_IMPLEMENTED,
             format!("Method '{}' is not yet implemented", request.method),
         ),
-        JsonRpcMethod::SearchCodebase => {
-            api::handle_search_codebase(&request.params, id, ctx).await
-        }
-        JsonRpcMethod::FindDefinition => {
-            api::handle_find_definition(&request.params, id, ctx).await
-        }
-        JsonRpcMethod::Init | JsonRpcMethod::ListRepos => JsonRpcResponse::error(
+        RpcMethod::SearchCodebase => api::handle_search_codebase(&request.params, id, ctx).await,
+        RpcMethod::FindDefinition => api::handle_find_definition(&request.params, id, ctx).await,
+        RpcMethod::Init | RpcMethod::ListRepos | RpcMethod::Notification => JsonRpcResponse::error(
             id.clone(),
             ERR_INTERNAL,
             format!(
