@@ -154,6 +154,23 @@ pub struct Client {
     notify_rx: Mutex<tokio::sync::mpsc::UnboundedReceiver<Notification>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentScope {
+    CurrentUnresolved,
+    CurrentWithResolved,
+    PreviousBasesUnresolved,
+}
+
+impl CommentScope {
+    fn include_resolved(self) -> bool {
+        matches!(self, Self::CurrentWithResolved)
+    }
+
+    fn include_previous_bases(self) -> bool {
+        matches!(self, Self::PreviousBasesUnresolved)
+    }
+}
+
 impl Client {
     /// Connect to a running server at the given socket path.
     pub async fn connect(socket_path: &Path) -> Result<Self> {
@@ -382,15 +399,14 @@ impl Client {
     pub async fn list_comments(
         &self,
         file_path: Option<&str>,
-        include_resolved: bool,
-        include_previous_bases: bool,
+        scope: CommentScope,
     ) -> Result<review_types::ListCommentsResult> {
         self.call(
             "list_comments",
             serde_json::json!({
                 "file_path": file_path,
-                "include_resolved": include_resolved,
-                "include_previous_bases": include_previous_bases,
+                "include_resolved": scope.include_resolved(),
+                "include_previous_bases": scope.include_previous_bases(),
             }),
         )
         .await

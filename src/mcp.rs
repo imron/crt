@@ -21,7 +21,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::client::Client;
+use crate::client::{Client, CommentScope};
 use crate::review_types::{
     ActiveReviewSession, AnchorStatus, Comment, ConnectionContext, ListReposResult,
 };
@@ -270,8 +270,13 @@ impl CrtMcp {
             Ok(client) => client,
             Err(e) => return format!("Error listing review comments: {e:#}"),
         };
+        let scope = if params.include_resolved {
+            CommentScope::CurrentWithResolved
+        } else {
+            CommentScope::CurrentUnresolved
+        };
         match client
-            .list_comments(params.file_path.as_deref(), params.include_resolved, false)
+            .list_comments(params.file_path.as_deref(), scope)
             .await
         {
             Ok(result) => to_json(&summarize_comments(result.comments)),
@@ -422,7 +427,10 @@ impl CrtMcp {
             Ok(files) => files,
             Err(e) => return format!("Error summarizing review: {e:#}"),
         };
-        let comments = match client.list_comments(None, true, false).await {
+        let comments = match client
+            .list_comments(None, CommentScope::CurrentWithResolved)
+            .await
+        {
             Ok(comments) => comments,
             Err(e) => return format!("Error summarizing review comments: {e:#}"),
         };
