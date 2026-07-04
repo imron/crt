@@ -1670,7 +1670,9 @@ async fn load_comment_in_scope(
         }
     }?;
 
-    if stored.head_ref == ctx.head_scope_key() {
+    if (stored.merge_base == ctx.merge_base_key() && stored.head_ref == ctx.head_scope_key())
+        || !stored.resolved
+    {
         Some(stored)
     } else {
         None
@@ -1739,12 +1741,25 @@ async fn update_comment_resolved(
     }
 
     notify_comment_changed(ctx, notify_tx, comment_id);
-    let Some(stored) = load_comment_in_scope(ctx, db, comment_id).await else {
-        return JsonRpcResponse::error(
-            id.clone(),
-            ERR_INTERNAL,
-            format!("Comment {comment_id} disappeared after update"),
-        );
+    let stored = {
+        let db_guard = db.lock().await;
+        match db_guard.get_comment(comment_id) {
+            Ok(Some(stored)) => stored,
+            Ok(None) => {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INTERNAL,
+                    format!("Comment {comment_id} disappeared after update"),
+                );
+            }
+            Err(e) => {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INTERNAL,
+                    format!("Failed to load comment after update: {e:#}"),
+                );
+            }
+        }
     };
 
     comment_response(id, stored)
