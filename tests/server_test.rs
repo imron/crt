@@ -222,6 +222,32 @@ fn unused_local_port() -> u16 {
     panic!("could not find an unused localhost port for HTTP test");
 }
 
+async fn wait_for_http_available(port: u16) {
+    for _ in 0..50 {
+        if TcpStream::connect((crt::server::DEFAULT_HTTP_HOST, port))
+            .await
+            .is_ok()
+        {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("HTTP listener did not become available on port {port}");
+}
+
+async fn wait_for_http_unavailable(port: u16) {
+    for _ in 0..50 {
+        if TcpStream::connect((crt::server::DEFAULT_HTTP_HOST, port))
+            .await
+            .is_err()
+        {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("HTTP listener did not stop on port {port}");
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -491,6 +517,58 @@ async fn test_http_client_lists_repos() {
         repos.sessions[0].worktree,
         server.repo_dir.to_string_lossy()
     );
+}
+
+#[tokio::test]
+async fn test_http_client_recovers_after_server_restart() {
+    let port = unused_local_port();
+    let mut server = TestServer::start_with_http_port(Some(port)).await;
+    let client = {
+        let mut client = None;
+        for _ in 0..50 {
+            match Client::connect_http(crt::server::DEFAULT_HTTP_HOST, port).await {
+                Ok(connected) => {
+                    client = Some(connected);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
+        client.expect("HTTP client should connect")
+    };
+
+    client
+        .init(&server.repo_dir.to_string_lossy(), "HEAD")
+        .await
+        .unwrap();
+
+    server.handle.abort();
+    wait_for_http_unavailable(port).await;
+
+    let socket_path = server.socket_path.clone();
+    let previous_http_port = std::env::var_os(crt::server::ENV_HTTP_PORT);
+    unsafe {
+        std::env::set_var(crt::server::ENV_HTTP_PORT, port.to_string());
+    }
+    server.handle = tokio::spawn(async move {
+        let _ = crt::server::run_persistent(&socket_path).await;
+    });
+    wait_for_http_available(port).await;
+    match previous_http_port {
+        Some(value) => unsafe {
+            std::env::set_var(crt::server::ENV_HTTP_PORT, value);
+        },
+        None => unsafe {
+            std::env::remove_var(crt::server::ENV_HTTP_PORT);
+        },
+    }
+
+    client
+        .init(&server.repo_dir.to_string_lossy(), "HEAD")
+        .await
+        .unwrap();
+    let repos = client.list_repos().await.unwrap();
+    assert_eq!(repos.sessions.len(), 1);
 }
 
 #[tokio::test]
