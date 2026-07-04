@@ -4,7 +4,6 @@
 //! It intentionally excludes terminal cells, pixels, ratatui layout, and other
 //! backend-specific geometry.
 
-use std::cmp::Reverse;
 use std::collections::BTreeMap;
 
 use crate::app::{AppState, CommentAnchorCapture, FileListSectionFocus, VisualSelectionMode};
@@ -219,6 +218,14 @@ impl CommentMarker {
 
 impl CommentMarkerSet {
     pub fn new(comments: &[CommentAttachment], current_line: Option<u32>) -> Self {
+        Self::new_with_current_comment(comments, current_line, None)
+    }
+
+    pub fn new_with_current_comment(
+        comments: &[CommentAttachment],
+        current_line: Option<u32>,
+        selected_comment_id: Option<i64>,
+    ) -> Self {
         let mut marker_candidates: BTreeMap<u32, MarkerCandidate> = BTreeMap::new();
 
         for comment in comments {
@@ -237,7 +244,7 @@ impl CommentMarkerSet {
             }
         }
 
-        let current_comment = current_comment(comments, current_line);
+        let current_comment = current_comment(comments, current_line, selected_comment_id);
 
         Self {
             markers_by_line: marker_candidates,
@@ -292,10 +299,9 @@ impl CommentMarkerSet {
             return true;
         }
 
-        !self
-            .markers_by_line
-            .get(&line)
-            .is_some_and(|marker| marker.kind.is_boundary_marker())
+        !self.markers_by_line.get(&line).is_some_and(|marker| {
+            marker.kind.is_boundary_marker() && marker.start_line > current_comment.start
+        })
     }
 }
 
@@ -332,9 +338,10 @@ impl CurrentComment {
 fn current_comment(
     comments: &[CommentAttachment],
     current_line: Option<u32>,
+    selected_comment_id: Option<i64>,
 ) -> Option<CurrentComment> {
     let current_line = current_line?;
-    comments
+    let candidates: Vec<CurrentComment> = comments
         .iter()
         .filter_map(|comment| {
             let start = comment.line_start.max(1) as u32;
@@ -349,18 +356,27 @@ fn current_comment(
                 resolved: comment.resolved,
             })
         })
-        .min_by_key(|comment| {
-            (
-                comment.end.saturating_sub(comment.start),
-                Reverse(comment.id),
-            )
-        })
+        .collect();
+    let max_start = candidates.iter().map(|comment| comment.start).max()?;
+    if let Some(selected) = selected_comment_id.and_then(|id| {
+        candidates
+            .iter()
+            .copied()
+            .find(|comment| comment.id == id && comment.start == max_start)
+    }) {
+        return Some(selected);
+    }
+    candidates
+        .into_iter()
+        .filter(|comment| comment.start == max_start)
+        .max_by_key(|comment| comment.id)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct MarkerCandidate {
     kind: CommentMarkerKind,
     resolved: bool,
+    start_line: u32,
     range_len: u32,
     comment_id: i64,
 }
@@ -380,16 +396,20 @@ impl MarkerCandidate {
         Self {
             kind,
             resolved: comment.resolved,
+            start_line: start,
             range_len: end.saturating_sub(start).saturating_add(1),
             comment_id: comment.id,
         }
     }
 
     fn is_preferred_to(self, other: &Self) -> bool {
-        self.kind.priority() > other.kind.priority()
-            || (self.kind.priority() == other.kind.priority()
-                && (self.range_len < other.range_len
-                    || (self.range_len == other.range_len && self.comment_id > other.comment_id)))
+        self.start_line > other.start_line
+            || (self.start_line == other.start_line
+                && (self.kind.priority() > other.kind.priority()
+                    || (self.kind.priority() == other.kind.priority()
+                        && (self.range_len < other.range_len
+                            || (self.range_len == other.range_len
+                                && self.comment_id > other.comment_id)))))
     }
 }
 
@@ -862,13 +882,26 @@ fn comment_marker_set_for_current_view(
     state: &AppState,
     comments: &[CommentAttachment],
 ) -> CommentMarkerSet {
+    let current_line = current_head_line(state);
     match state.content_mode {
         ContentMode::FullFile => match state.render_variant {
-            RenderVariant::HeadVersion => CommentMarkerSet::new(comments, current_head_line(state)),
+            RenderVariant::HeadVersion => CommentMarkerSet::new_with_current_comment(
+                comments,
+                current_line,
+                state.selected_comment_id,
+            ),
             RenderVariant::BaseVersion => CommentMarkerSet::new(&[], None),
-            _ => CommentMarkerSet::new(comments, current_head_line(state)),
+            _ => CommentMarkerSet::new_with_current_comment(
+                comments,
+                current_line,
+                state.selected_comment_id,
+            ),
         },
-        ContentMode::Diff => CommentMarkerSet::new(comments, current_head_line(state)),
+        ContentMode::Diff => CommentMarkerSet::new_with_current_comment(
+            comments,
+            current_line,
+            state.selected_comment_id,
+        ),
     }
 }
 
@@ -906,21 +939,7 @@ fn comments_panel_model(state: &AppState) -> CommentsPanel {
     } else {
         current_line.and_then(|line| {
             selected_path.and_then(|path| {
-                state
-                    .comments
-                    .iter()
-                    .filter(|comment| {
-                        comment.file_path == path
-                            && comment.line_start <= line
-                            && comment.line_end >= line
-                    })
-                    .min_by_key(|comment| {
-                        (
-                            comment.line_end.saturating_sub(comment.line_start),
-                            comment.id,
-                        )
-                    })
-                    .map(|comment| comment.id)
+                current_comment_id_for_line(&state.comments, path, line, state.selected_comment_id)
             })
         })
     };
@@ -970,6 +989,34 @@ fn comments_panel_model(state: &AppState) -> CommentsPanel {
         }),
         total: file_comment_ids.len(),
     }
+}
+
+fn current_comment_id_for_line(
+    comments: &[review_types::Comment],
+    path: &str,
+    line: i64,
+    selected_comment_id: Option<i64>,
+) -> Option<i64> {
+    let candidates: Vec<&review_types::Comment> = comments
+        .iter()
+        .filter(|comment| {
+            comment.file_path == path && comment.line_start <= line && comment.line_end >= line
+        })
+        .collect();
+    let max_start = candidates.iter().map(|comment| comment.line_start).max()?;
+    if let Some(selected) = selected_comment_id.and_then(|id| {
+        candidates
+            .iter()
+            .copied()
+            .find(|comment| comment.id == id && comment.line_start == max_start)
+    }) {
+        return Some(selected.id);
+    }
+    candidates
+        .into_iter()
+        .filter(|comment| comment.line_start == max_start)
+        .max_by_key(|comment| comment.id)
+        .map(|comment| comment.id)
 }
 
 fn comment_preview(body: &str) -> String {
@@ -1335,6 +1382,29 @@ mod tests {
     }
 
     #[test]
+    fn current_comment_prefers_highest_starting_line() {
+        let markers = CommentMarkerSet::new(
+            &[comment(8, 10, 20, true), comment(9, 18, 29, false)],
+            Some(18),
+        );
+
+        assert_marker(&markers, 18, Some(CommentMarkerKind::Start), false, true);
+        assert_marker(&markers, 20, Some(CommentMarkerKind::Join), false, true);
+    }
+
+    #[test]
+    fn selected_comment_breaks_current_ties_for_same_start_line() {
+        let markers = CommentMarkerSet::new_with_current_comment(
+            &[comment(1, 10, 20, false), comment(2, 10, 25, true)],
+            Some(10),
+            Some(1),
+        );
+
+        assert_marker(&markers, 10, Some(CommentMarkerKind::Start), false, true);
+        assert_marker(&markers, 15, Some(CommentMarkerKind::Join), false, true);
+    }
+
+    #[test]
     fn current_outer_comment_leaves_nested_boundaries_inactive() {
         let markers = CommentMarkerSet::new(
             &[
@@ -1520,6 +1590,43 @@ mod tests {
         assert_eq!(rows[1].comment_id, Some(8));
         assert_eq!(rows[1].file_index, None);
         assert!(rows[1].selected);
+    }
+
+    #[test]
+    fn comments_panel_uses_selected_comment_as_same_start_tie_breaker() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![file(
+                "a.rs",
+                review_types::ReviewStatus::Unreviewed,
+                Vec::new(),
+            )],
+        );
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::HeadVersion;
+        app.state.diff_line_cursor = 9;
+        app.state.pane_focus = PaneFocus::Diff;
+        app.state.show_comments_panel = true;
+        let mut first = stored_comment(1, "a.rs", false);
+        first.line_start = 10;
+        first.line_end = 20;
+        first.body = "Selected same-start comment".to_string();
+        let mut second = stored_comment(2, "a.rs", false);
+        second.line_start = 10;
+        second.line_end = 25;
+        second.body = "Other same-start comment".to_string();
+        app.state.comments = vec![first, second];
+        app.state.selected_comment_id = Some(1);
+
+        let model = app.model();
+
+        assert_eq!(model.comments_panel.comments.len(), 1);
+        assert_eq!(model.comments_panel.comments[0].id, 1);
+        assert_eq!(
+            model.comments_panel.comments[0].body,
+            "Selected same-start comment"
+        );
     }
 
     #[test]

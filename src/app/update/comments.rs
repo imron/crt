@@ -16,20 +16,12 @@ pub fn current_comment(state: &AppState) -> Option<&Comment> {
 
     let path = selected_path(state)?;
     let line = current_head_line(state)?;
-    state
-        .comments
-        .iter()
-        .filter(|comment| {
-            comment.file_path == path
-                && comment.line_start <= i64::from(line)
-                && comment.line_end >= i64::from(line)
-        })
-        .min_by_key(|comment| {
-            (
-                comment.line_end.saturating_sub(comment.line_start),
-                comment.id,
-            )
-        })
+    current_comment_for_line(
+        &state.comments,
+        path,
+        i64::from(line),
+        state.selected_comment_id,
+    )
 }
 
 pub fn current_comment_id(state: &AppState) -> Option<i64> {
@@ -262,6 +254,33 @@ pub fn ensure_selected_comment(state: &mut AppState) {
 fn selected_comment(state: &AppState) -> Option<&Comment> {
     let id = state.selected_comment_id?;
     state.comments.iter().find(|comment| comment.id == id)
+}
+
+fn current_comment_for_line<'a>(
+    comments: &'a [Comment],
+    path: &str,
+    line: i64,
+    selected_comment_id: Option<i64>,
+) -> Option<&'a Comment> {
+    let candidates: Vec<&Comment> = comments
+        .iter()
+        .filter(|comment| {
+            comment.file_path == path && comment.line_start <= line && comment.line_end >= line
+        })
+        .collect();
+    let max_start = candidates.iter().map(|comment| comment.line_start).max()?;
+    if let Some(selected) = selected_comment_id.and_then(|id| {
+        candidates
+            .iter()
+            .copied()
+            .find(|comment| comment.id == id && comment.line_start == max_start)
+    }) {
+        return Some(selected);
+    }
+    candidates
+        .into_iter()
+        .filter(|comment| comment.line_start == max_start)
+        .max_by_key(|comment| comment.id)
 }
 
 fn current_file_comments(state: &AppState) -> Vec<&Comment> {
