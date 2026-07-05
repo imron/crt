@@ -2499,6 +2499,743 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum AnchorShape {
+        BaseOnly,
+        HeadOnly,
+        PairedSameRow,
+        PairedBaseBeforeHead,
+        PairedHeadBeforeBase,
+        PairedDifferentLinesSameDisplay,
+    }
+
+    impl AnchorShape {
+        fn all() -> [Self; 6] {
+            [
+                Self::BaseOnly,
+                Self::HeadOnly,
+                Self::PairedSameRow,
+                Self::PairedBaseBeforeHead,
+                Self::PairedHeadBeforeBase,
+                Self::PairedDifferentLinesSameDisplay,
+            ]
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum HistoryTopology {
+        SameBranch,
+        Rebase,
+        Merge,
+        Squash,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum SideMutation {
+        SameLine,
+        Moved,
+        StartContextChanged,
+        EndContextChanged,
+        BothContextChanged,
+        SelectedTextChangedWithContext,
+        SelectedTextRemovedWithContext,
+        SelectedTextRemovedNoContext,
+        StartContextRemoved,
+        EndContextRemoved,
+        BothContextRemoved,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ExpectedMatch {
+        ExactAtLine,
+        ExactElsewhere,
+        ExactAny,
+        Context,
+        NotFound,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct HistoryMatrixCase {
+        id: &'static str,
+        base: SideMutation,
+        head: SideMutation,
+        expected_base: ExpectedMatch,
+        expected_head: ExpectedMatch,
+    }
+
+    fn same_branch_history_cases() -> Vec<HistoryMatrixCase> {
+        use ExpectedMatch::{Context, ExactAtLine, NotFound};
+        use SideMutation::{
+            BothContextChanged, EndContextChanged, SameLine, SelectedTextChangedWithContext,
+            SelectedTextRemovedNoContext, StartContextChanged,
+        };
+        vec![
+            HistoryMatrixCase {
+                id: "1.1 same branch code unchanged",
+                base: SameLine,
+                head: SameLine,
+                expected_base: ExactAtLine,
+                expected_head: ExactAtLine,
+            },
+            HistoryMatrixCase {
+                id: "1.2 same branch start context changes",
+                base: StartContextChanged,
+                head: StartContextChanged,
+                expected_base: ExactAtLine,
+                expected_head: ExactAtLine,
+            },
+            HistoryMatrixCase {
+                id: "1.3 same branch end context changes",
+                base: EndContextChanged,
+                head: EndContextChanged,
+                expected_base: ExactAtLine,
+                expected_head: ExactAtLine,
+            },
+            HistoryMatrixCase {
+                id: "1.4 same branch both context sides change",
+                base: BothContextChanged,
+                head: BothContextChanged,
+                expected_base: ExactAtLine,
+                expected_head: ExactAtLine,
+            },
+            HistoryMatrixCase {
+                id: "1.5a same branch selected base text changes with context",
+                base: SelectedTextChangedWithContext,
+                head: SameLine,
+                expected_base: Context,
+                expected_head: ExactAtLine,
+            },
+            HistoryMatrixCase {
+                id: "1.5b same branch selected base text removed without context",
+                base: SelectedTextRemovedNoContext,
+                head: SameLine,
+                expected_base: NotFound,
+                expected_head: ExactAtLine,
+            },
+            HistoryMatrixCase {
+                id: "1.6a same branch selected head text changes with context",
+                base: SameLine,
+                head: SelectedTextChangedWithContext,
+                expected_base: ExactAtLine,
+                expected_head: Context,
+            },
+            HistoryMatrixCase {
+                id: "1.6b same branch selected head text removed without context",
+                base: SameLine,
+                head: SelectedTextRemovedNoContext,
+                expected_base: ExactAtLine,
+                expected_head: NotFound,
+            },
+            HistoryMatrixCase {
+                id: "1.7a same branch selected base and head text change with context",
+                base: SelectedTextChangedWithContext,
+                head: SelectedTextChangedWithContext,
+                expected_base: Context,
+                expected_head: Context,
+            },
+            HistoryMatrixCase {
+                id: "1.7b same branch base orphaned and head context anchors",
+                base: SelectedTextRemovedNoContext,
+                head: SelectedTextChangedWithContext,
+                expected_base: NotFound,
+                expected_head: Context,
+            },
+            HistoryMatrixCase {
+                id: "1.7c same branch base context anchors and head orphaned",
+                base: SelectedTextChangedWithContext,
+                head: SelectedTextRemovedNoContext,
+                expected_base: Context,
+                expected_head: NotFound,
+            },
+            HistoryMatrixCase {
+                id: "1.7d same branch base and head orphaned",
+                base: SelectedTextRemovedNoContext,
+                head: SelectedTextRemovedNoContext,
+                expected_base: NotFound,
+                expected_head: NotFound,
+            },
+        ]
+    }
+
+    fn rebase_equivalent_history_cases() -> Vec<HistoryMatrixCase> {
+        use ExpectedMatch::{Context, ExactAny, ExactElsewhere, NotFound};
+        use SideMutation::{
+            BothContextChanged, BothContextRemoved, EndContextChanged, EndContextRemoved, Moved,
+            SelectedTextChangedWithContext, SelectedTextRemovedNoContext,
+            SelectedTextRemovedWithContext, StartContextChanged, StartContextRemoved,
+        };
+        vec![
+            HistoryMatrixCase {
+                id: "2.1 rebase code unchanged",
+                base: Moved,
+                head: Moved,
+                expected_base: ExactElsewhere,
+                expected_head: ExactElsewhere,
+            },
+            HistoryMatrixCase {
+                id: "2.2 rebase base start context changes",
+                base: StartContextChanged,
+                head: Moved,
+                expected_base: ExactAny,
+                expected_head: ExactElsewhere,
+            },
+            HistoryMatrixCase {
+                id: "2.3 rebase base end context changes",
+                base: EndContextChanged,
+                head: Moved,
+                expected_base: ExactAny,
+                expected_head: ExactElsewhere,
+            },
+            HistoryMatrixCase {
+                id: "2.4 rebase base both context sides change",
+                base: BothContextChanged,
+                head: Moved,
+                expected_base: ExactAny,
+                expected_head: ExactElsewhere,
+            },
+            HistoryMatrixCase {
+                id: "2.5a rebase selected base text changes with context",
+                base: SelectedTextChangedWithContext,
+                head: Moved,
+                expected_base: Context,
+                expected_head: ExactElsewhere,
+            },
+            HistoryMatrixCase {
+                id: "2.5b rebase selected base text lacks sufficient context",
+                base: SelectedTextRemovedNoContext,
+                head: Moved,
+                expected_base: NotFound,
+                expected_head: ExactElsewhere,
+            },
+            HistoryMatrixCase {
+                id: "2.6 rebase head start context changes",
+                base: Moved,
+                head: StartContextChanged,
+                expected_base: ExactElsewhere,
+                expected_head: ExactAny,
+            },
+            HistoryMatrixCase {
+                id: "2.7 rebase head end context changes",
+                base: Moved,
+                head: EndContextChanged,
+                expected_base: ExactElsewhere,
+                expected_head: ExactAny,
+            },
+            HistoryMatrixCase {
+                id: "2.8 rebase head both context sides change",
+                base: Moved,
+                head: BothContextChanged,
+                expected_base: ExactElsewhere,
+                expected_head: ExactAny,
+            },
+            HistoryMatrixCase {
+                id: "2.9a rebase selected head text changes with context",
+                base: Moved,
+                head: SelectedTextChangedWithContext,
+                expected_base: ExactElsewhere,
+                expected_head: Context,
+            },
+            HistoryMatrixCase {
+                id: "2.9b rebase selected head text lacks sufficient context",
+                base: Moved,
+                head: SelectedTextRemovedNoContext,
+                expected_base: ExactElsewhere,
+                expected_head: NotFound,
+            },
+            HistoryMatrixCase {
+                id: "2.10 rebase base and head start context change",
+                base: StartContextChanged,
+                head: StartContextChanged,
+                expected_base: ExactAny,
+                expected_head: ExactAny,
+            },
+            HistoryMatrixCase {
+                id: "2.11 rebase base and head end context change",
+                base: EndContextChanged,
+                head: EndContextChanged,
+                expected_base: ExactAny,
+                expected_head: ExactAny,
+            },
+            HistoryMatrixCase {
+                id: "2.12 rebase base and head context both change",
+                base: BothContextChanged,
+                head: BothContextChanged,
+                expected_base: ExactAny,
+                expected_head: ExactAny,
+            },
+            HistoryMatrixCase {
+                id: "2.13a rebase selected base and head text change with context",
+                base: SelectedTextChangedWithContext,
+                head: SelectedTextChangedWithContext,
+                expected_base: Context,
+                expected_head: Context,
+            },
+            HistoryMatrixCase {
+                id: "2.13b rebase base orphaned and head context anchors",
+                base: SelectedTextRemovedNoContext,
+                head: SelectedTextChangedWithContext,
+                expected_base: NotFound,
+                expected_head: Context,
+            },
+            HistoryMatrixCase {
+                id: "2.13c rebase base context anchors and head orphaned",
+                base: SelectedTextChangedWithContext,
+                head: SelectedTextRemovedNoContext,
+                expected_base: Context,
+                expected_head: NotFound,
+            },
+            HistoryMatrixCase {
+                id: "2.13d rebase base and head orphaned",
+                base: SelectedTextRemovedNoContext,
+                head: SelectedTextRemovedNoContext,
+                expected_base: NotFound,
+                expected_head: NotFound,
+            },
+            HistoryMatrixCase {
+                id: "2.14 rebase base start context removed",
+                base: StartContextRemoved,
+                head: Moved,
+                expected_base: ExactAny,
+                expected_head: ExactElsewhere,
+            },
+            HistoryMatrixCase {
+                id: "2.15 rebase base end context removed",
+                base: EndContextRemoved,
+                head: Moved,
+                expected_base: ExactAny,
+                expected_head: ExactElsewhere,
+            },
+            HistoryMatrixCase {
+                id: "2.16 rebase base context removed",
+                base: BothContextRemoved,
+                head: Moved,
+                expected_base: ExactAny,
+                expected_head: ExactElsewhere,
+            },
+            HistoryMatrixCase {
+                id: "2.17a rebase selected base text removed with context",
+                base: SelectedTextRemovedWithContext,
+                head: Moved,
+                expected_base: Context,
+                expected_head: ExactElsewhere,
+            },
+            HistoryMatrixCase {
+                id: "2.17b rebase selected base text removed without context",
+                base: SelectedTextRemovedNoContext,
+                head: Moved,
+                expected_base: NotFound,
+                expected_head: ExactElsewhere,
+            },
+            HistoryMatrixCase {
+                id: "2.18 rebase head start context removed",
+                base: Moved,
+                head: StartContextRemoved,
+                expected_base: ExactElsewhere,
+                expected_head: ExactAny,
+            },
+            HistoryMatrixCase {
+                id: "2.19 rebase head end context removed",
+                base: Moved,
+                head: EndContextRemoved,
+                expected_base: ExactElsewhere,
+                expected_head: ExactAny,
+            },
+            HistoryMatrixCase {
+                id: "2.20 rebase head context removed",
+                base: Moved,
+                head: BothContextRemoved,
+                expected_base: ExactElsewhere,
+                expected_head: ExactAny,
+            },
+            HistoryMatrixCase {
+                id: "2.21a rebase selected head text removed with context",
+                base: Moved,
+                head: SelectedTextRemovedWithContext,
+                expected_base: ExactElsewhere,
+                expected_head: Context,
+            },
+            HistoryMatrixCase {
+                id: "2.21b rebase selected head text removed without context",
+                base: Moved,
+                head: SelectedTextRemovedNoContext,
+                expected_base: ExactElsewhere,
+                expected_head: NotFound,
+            },
+        ]
+    }
+
+    fn history_matrix_cases(topology: HistoryTopology) -> Vec<HistoryMatrixCase> {
+        match topology {
+            HistoryTopology::SameBranch => same_branch_history_cases(),
+            HistoryTopology::Rebase | HistoryTopology::Merge | HistoryTopology::Squash => {
+                rebase_equivalent_history_cases()
+            }
+        }
+    }
+
+    fn comment_for_shape(shape: AnchorShape) -> StoredComment {
+        let segments = match shape {
+            AnchorShape::BaseOnly => vec![anchor_segment(
+                review_types::CommentAnchorSide::Base,
+                2,
+                "base target",
+                "base before",
+                "base after",
+            )],
+            AnchorShape::HeadOnly => vec![anchor_segment(
+                review_types::CommentAnchorSide::Head,
+                2,
+                "head target",
+                "head before",
+                "head after",
+            )],
+            AnchorShape::PairedSameRow => vec![
+                anchor_segment(
+                    review_types::CommentAnchorSide::Base,
+                    2,
+                    "base target",
+                    "base before",
+                    "base after",
+                ),
+                anchor_segment(
+                    review_types::CommentAnchorSide::Head,
+                    2,
+                    "head target",
+                    "head before",
+                    "head after",
+                ),
+            ],
+            AnchorShape::PairedBaseBeforeHead => vec![
+                anchor_segment(
+                    review_types::CommentAnchorSide::Base,
+                    2,
+                    "base target",
+                    "base before",
+                    "base after",
+                ),
+                anchor_segment(
+                    review_types::CommentAnchorSide::Head,
+                    5,
+                    "head target",
+                    "head before",
+                    "head after",
+                ),
+            ],
+            AnchorShape::PairedHeadBeforeBase => vec![
+                anchor_segment(
+                    review_types::CommentAnchorSide::Base,
+                    5,
+                    "base target",
+                    "base before",
+                    "base after",
+                ),
+                anchor_segment(
+                    review_types::CommentAnchorSide::Head,
+                    2,
+                    "head target",
+                    "head before",
+                    "head after",
+                ),
+            ],
+            AnchorShape::PairedDifferentLinesSameDisplay => vec![
+                anchor_segment(
+                    review_types::CommentAnchorSide::Base,
+                    2,
+                    "base target",
+                    "base before",
+                    "base after",
+                ),
+                anchor_segment(
+                    review_types::CommentAnchorSide::Head,
+                    8,
+                    "head target",
+                    "head before",
+                    "head after",
+                ),
+            ],
+        };
+        compound_comment_with_segments(segments)
+    }
+
+    fn content_for_mutation(
+        segment: &review_types::CommentAnchorSegment,
+        mutation: SideMutation,
+    ) -> String {
+        match mutation {
+            SideMutation::SameLine => content_at_line(
+                segment.line_start,
+                &segment.context_before,
+                &segment.anchor_text,
+                &segment.context_after,
+            ),
+            SideMutation::Moved => content_at_line(
+                segment.line_start + 2,
+                &segment.context_before,
+                &segment.anchor_text,
+                &segment.context_after,
+            ),
+            SideMutation::StartContextChanged => content_at_line(
+                segment.line_start,
+                &format!("changed {}", segment.context_before),
+                &segment.anchor_text,
+                &segment.context_after,
+            ),
+            SideMutation::EndContextChanged => content_at_line(
+                segment.line_start,
+                &segment.context_before,
+                &segment.anchor_text,
+                &format!("changed {}", segment.context_after),
+            ),
+            SideMutation::BothContextChanged => content_at_line(
+                segment.line_start,
+                &format!("changed {}", segment.context_before),
+                &segment.anchor_text,
+                &format!("changed {}", segment.context_after),
+            ),
+            SideMutation::SelectedTextChangedWithContext => content_at_line(
+                segment.line_start,
+                &segment.context_before,
+                &replacement_text(segment),
+                &segment.context_after,
+            ),
+            SideMutation::SelectedTextRemovedWithContext => content_at_line(
+                segment.line_start,
+                &segment.context_before,
+                &replacement_text(segment),
+                &segment.context_after,
+            ),
+            SideMutation::SelectedTextRemovedNoContext => "unrelated\ncontent\n".to_string(),
+            SideMutation::StartContextRemoved => {
+                format!("{}\n{}\n", segment.anchor_text, segment.context_after)
+            }
+            SideMutation::EndContextRemoved => content_at_line(
+                segment.line_start,
+                &segment.context_before,
+                &segment.anchor_text,
+                "",
+            ),
+            SideMutation::BothContextRemoved => format!("{}\n", segment.anchor_text),
+        }
+    }
+
+    fn content_at_line(line_start: i64, before: &str, anchor_text: &str, after: &str) -> String {
+        let mut lines = Vec::new();
+        let filler_count = line_start.saturating_sub(2);
+        for idx in 0..filler_count {
+            lines.push(format!("filler {}", idx + 1));
+        }
+        if !before.is_empty() {
+            lines.push(before.to_string());
+        }
+        lines.push(anchor_text.to_string());
+        if !after.is_empty() {
+            lines.push(after.to_string());
+        }
+        format!("{}\n", lines.join("\n"))
+    }
+
+    fn replacement_text(segment: &review_types::CommentAnchorSegment) -> String {
+        match segment.side {
+            review_types::CommentAnchorSide::Base => "changed base target".to_string(),
+            review_types::CommentAnchorSide::Head => "changed head target".to_string(),
+        }
+    }
+
+    fn assert_history_matrix(topology: HistoryTopology) {
+        let mut failures = Vec::new();
+        for case in history_matrix_cases(topology) {
+            for shape in AnchorShape::all() {
+                collect_history_matrix_failures(topology, shape, case, &mut failures);
+            }
+        }
+
+        if !failures.is_empty() {
+            panic!(
+                "history matrix failures for {topology:?}:\n{}",
+                failures.join("\n")
+            );
+        }
+    }
+
+    fn collect_history_matrix_failures(
+        topology: HistoryTopology,
+        shape: AnchorShape,
+        case: HistoryMatrixCase,
+        failures: &mut Vec<String>,
+    ) {
+        let comment = comment_for_shape(shape);
+        let base_segment = comment
+            .anchor
+            .segments
+            .iter()
+            .find(|segment| segment.side == review_types::CommentAnchorSide::Base);
+        let head_segment = comment
+            .anchor
+            .segments
+            .iter()
+            .find(|segment| segment.side == review_types::CommentAnchorSide::Head);
+        let base_content = base_segment.map(|segment| content_for_mutation(segment, case.base));
+        let head_content = head_segment.map(|segment| content_for_mutation(segment, case.head));
+        let anchor = resolve_anchor_with_side_content(
+            &comment,
+            base_content.as_deref(),
+            head_content.as_deref(),
+        );
+
+        if let Some(segment) = base_segment {
+            let actual = segment_for_side(&anchor, review_types::CommentAnchorSide::Base);
+            check_segment_expectation(
+                topology,
+                shape,
+                case,
+                segment,
+                actual,
+                case.expected_base,
+                failures,
+            );
+        }
+        if let Some(segment) = head_segment {
+            let actual = segment_for_side(&anchor, review_types::CommentAnchorSide::Head);
+            check_segment_expectation(
+                topology,
+                shape,
+                case,
+                segment,
+                actual,
+                case.expected_head,
+                failures,
+            );
+        }
+
+        let expected_aggregate = expected_aggregate_status(
+            base_segment.map(|_| case.expected_base),
+            head_segment.map(|_| case.expected_head),
+        );
+        if anchor.aggregate_status != expected_aggregate {
+            failures.push(format!(
+                "{topology:?} {shape:?} {} aggregate: expected {:?}, got {:?}",
+                case.id, expected_aggregate, anchor.aggregate_status
+            ));
+        }
+    }
+
+    fn check_segment_expectation(
+        topology: HistoryTopology,
+        shape: AnchorShape,
+        case: HistoryMatrixCase,
+        original: &review_types::CommentAnchorSegment,
+        actual: &NewCommentAnchorSegment,
+        expected: ExpectedMatch,
+        failures: &mut Vec<String>,
+    ) {
+        let expected_placement = match expected {
+            ExpectedMatch::NotFound => review_types::AnchorPlacementStatus::Orphaned,
+            ExpectedMatch::ExactAtLine
+            | ExpectedMatch::ExactElsewhere
+            | ExpectedMatch::ExactAny
+            | ExpectedMatch::Context => review_types::AnchorPlacementStatus::Anchored,
+        };
+        if actual.placement_status != expected_placement {
+            failures.push(format!(
+                "{topology:?} {shape:?} {} {:?}: expected placement {:?}, got {:?}",
+                case.id, original.side, expected_placement, actual.placement_status
+            ));
+        }
+
+        let method_ok = match expected {
+            ExpectedMatch::ExactAtLine => {
+                actual.match_method == review_types::AnchorMatchMethod::ExactAtLine
+            }
+            ExpectedMatch::ExactElsewhere => {
+                actual.match_method == review_types::AnchorMatchMethod::ExactElsewhere
+            }
+            ExpectedMatch::ExactAny => {
+                actual.match_method == review_types::AnchorMatchMethod::ExactAtLine
+                    || actual.match_method == review_types::AnchorMatchMethod::ExactElsewhere
+            }
+            ExpectedMatch::Context => {
+                actual.match_method == review_types::AnchorMatchMethod::Context
+            }
+            ExpectedMatch::NotFound => {
+                actual.match_method == review_types::AnchorMatchMethod::NotFound
+            }
+        };
+        if !method_ok {
+            failures.push(format!(
+                "{topology:?} {shape:?} {} {:?}: expected method {:?}, got {:?}",
+                case.id, original.side, expected, actual.match_method
+            ));
+        }
+
+        match expected {
+            ExpectedMatch::Context => {
+                let replacement = replacement_text(original);
+                if actual.anchor_text != replacement {
+                    failures.push(format!(
+                        "{topology:?} {shape:?} {} {:?}: expected replacement text {:?}, got {:?}",
+                        case.id, original.side, replacement, actual.anchor_text
+                    ));
+                }
+            }
+            ExpectedMatch::NotFound => {
+                if actual.anchor_text != original.anchor_text {
+                    failures.push(format!(
+                        "{topology:?} {shape:?} {} {:?}: orphaned segment should preserve text {:?}, got {:?}",
+                        case.id, original.side, original.anchor_text, actual.anchor_text
+                    ));
+                }
+            }
+            ExpectedMatch::ExactAtLine
+            | ExpectedMatch::ExactElsewhere
+            | ExpectedMatch::ExactAny => {}
+        }
+    }
+
+    fn expected_aggregate_status(
+        base: Option<ExpectedMatch>,
+        head: Option<ExpectedMatch>,
+    ) -> review_types::AnchorAggregateStatus {
+        let expectations = [base, head].into_iter().flatten();
+        let mut anchored = 0;
+        let mut orphaned = 0;
+        for expected in expectations {
+            match expected {
+                ExpectedMatch::NotFound => orphaned += 1,
+                ExpectedMatch::ExactAtLine
+                | ExpectedMatch::ExactElsewhere
+                | ExpectedMatch::ExactAny
+                | ExpectedMatch::Context => anchored += 1,
+            }
+        }
+        if anchored > 0 && orphaned == 0 {
+            review_types::AnchorAggregateStatus::Anchored
+        } else if anchored > 0 {
+            review_types::AnchorAggregateStatus::Partial
+        } else {
+            review_types::AnchorAggregateStatus::Orphaned
+        }
+    }
+
+    #[test]
+    fn same_branch_history_matrix_covers_all_anchor_shapes() {
+        assert_history_matrix(HistoryTopology::SameBranch);
+    }
+
+    #[test]
+    fn rebase_history_matrix_covers_all_anchor_shapes() {
+        assert_history_matrix(HistoryTopology::Rebase);
+    }
+
+    #[test]
+    fn merge_history_matrix_covers_all_anchor_shapes() {
+        assert_history_matrix(HistoryTopology::Merge);
+    }
+
+    #[test]
+    fn squash_history_matrix_covers_all_anchor_shapes() {
+        assert_history_matrix(HistoryTopology::Squash);
+    }
+
     #[test]
     fn resolves_exact_anchor_at_stored_line() {
         let comment = stored_comment(2, "target");
