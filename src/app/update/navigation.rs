@@ -2,12 +2,13 @@ use super::comments;
 use super::cursor::clamp_cursor_and_scroll;
 use super::output::AppOutput;
 use super::viewport::AppViewport;
+use crate::app::diff_rows::{inline_diff_rows, side_by_side_diff_rows};
 use crate::app::{AppState, FileListSectionFocus, JumpLocation};
 use crate::core::command::Command;
 use crate::core::navigation::{self as core_navigation, Direction, FileNavigationScope};
 use crate::core::search as core_search;
 use crate::core::text::suffix_from_char;
-use crate::review_types::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
+use crate::review_types::{CommentAnchorSide, ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
 pub fn navigate_to_search_match(
     state: &mut AppState,
@@ -75,6 +76,7 @@ fn push_jump_stack(state: &mut AppState) {
 pub fn toggle_inline_diff(state: &mut AppState, update: &mut AppOutput) {
     if state.content_mode == ContentMode::Diff {
         let previous = state.render_variant;
+        let target = current_diff_source_line(state);
         state.render_variant = match state.render_variant {
             RenderVariant::Inline => RenderVariant::SideBySide,
             RenderVariant::SideBySide => RenderVariant::Inline,
@@ -84,11 +86,95 @@ pub fn toggle_inline_diff(state: &mut AppState, update: &mut AppOutput) {
             state.load_base_content();
         }
         if state.render_variant != previous {
+            if let Some(row) = target.and_then(|target| row_for_diff_source_line(state, target)) {
+                state.diff_line_cursor = row;
+                state.diff_scroll = state.diff_scroll.min(state.diff_line_cursor);
+                state.diff_col_cursor = 0;
+            }
             state.invalidate_diff_search_matches();
             state.mark_model_changed();
         }
     }
     update.clear_status();
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DiffSourceLine {
+    side: CommentAnchorSide,
+    line: u32,
+}
+
+fn current_diff_source_line(state: &AppState) -> Option<DiffSourceLine> {
+    let entry = state.selected_file_entry()?;
+    match state.render_variant {
+        RenderVariant::Inline => {
+            let rows = inline_diff_rows(&entry.diff.hunks, state.head_content.as_deref());
+            let row = rows.rows.get(state.diff_line_cursor)?;
+            row.new_lineno
+                .map(|line| DiffSourceLine {
+                    side: CommentAnchorSide::Head,
+                    line,
+                })
+                .or_else(|| {
+                    row.old_lineno.map(|line| DiffSourceLine {
+                        side: CommentAnchorSide::Base,
+                        line,
+                    })
+                })
+        }
+        RenderVariant::SideBySide => {
+            let rows = side_by_side_diff_rows(
+                &entry.diff.hunks,
+                state.base_content.as_deref(),
+                state.head_content.as_deref(),
+            );
+            let row = rows.rows.get(state.diff_line_cursor)?;
+            row.head
+                .as_ref()
+                .map(|cell| DiffSourceLine {
+                    side: CommentAnchorSide::Head,
+                    line: cell.line_number,
+                })
+                .or_else(|| {
+                    row.base.as_ref().map(|cell| DiffSourceLine {
+                        side: CommentAnchorSide::Base,
+                        line: cell.line_number,
+                    })
+                })
+        }
+        _ => None,
+    }
+}
+
+fn row_for_diff_source_line(state: &AppState, target: DiffSourceLine) -> Option<usize> {
+    let entry = state.selected_file_entry()?;
+    match state.render_variant {
+        RenderVariant::Inline => {
+            let rows = inline_diff_rows(&entry.diff.hunks, state.head_content.as_deref());
+            rows.rows.iter().position(|row| match target.side {
+                CommentAnchorSide::Base => row.old_lineno == Some(target.line),
+                CommentAnchorSide::Head => row.new_lineno == Some(target.line),
+            })
+        }
+        RenderVariant::SideBySide => {
+            let rows = side_by_side_diff_rows(
+                &entry.diff.hunks,
+                state.base_content.as_deref(),
+                state.head_content.as_deref(),
+            );
+            rows.rows.iter().position(|row| match target.side {
+                CommentAnchorSide::Base => row
+                    .base
+                    .as_ref()
+                    .is_some_and(|cell| cell.line_number == target.line),
+                CommentAnchorSide::Head => row
+                    .head
+                    .as_ref()
+                    .is_some_and(|cell| cell.line_number == target.line),
+            })
+        }
+        _ => None,
+    }
 }
 
 pub fn toggle_blame(state: &mut AppState, update: &mut AppOutput) {
