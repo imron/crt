@@ -350,6 +350,10 @@ impl CommentMarkerSet {
             review_types::CommentAnchorSide::Base => self.base_current_comment,
             review_types::CommentAnchorSide::Head => self.head_current_comment,
         };
+        let opposite_current_comment = match side {
+            review_types::CommentAnchorSide::Base => self.head_current_comment,
+            review_types::CommentAnchorSide::Head => self.base_current_comment,
+        };
         let markers_by_line = match side {
             review_types::CommentAnchorSide::Base => &self.base_markers_by_line,
             review_types::CommentAnchorSide::Head => &self.head_markers_by_line,
@@ -361,6 +365,19 @@ impl CommentMarkerSet {
                 return CommentMarker {
                     kind: Some(current_comment.kind_for_line(line)),
                     resolved: current_comment.resolved,
+                    current: true,
+                };
+            }
+        }
+        if let Some(opposite_current_comment) = opposite_current_comment {
+            if let Some(marker) = markers_by_line
+                .get(&line)
+                .filter(|marker| marker.comment_id == opposite_current_comment.id)
+                .copied()
+            {
+                return CommentMarker {
+                    kind: Some(marker.kind),
+                    resolved: marker.resolved,
                     current: true,
                 };
             }
@@ -2076,6 +2093,14 @@ mod tests {
             &model.diff.comment_markers,
             review_types::CommentAnchorSide::Base,
             192,
+            Some(CommentMarkerKind::SingleLine),
+            false,
+            true,
+        );
+        assert_side_marker(
+            &model.diff.comment_markers,
+            review_types::CommentAnchorSide::Head,
+            211,
             Some(CommentMarkerKind::SingleLine),
             false,
             true,
