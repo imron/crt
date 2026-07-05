@@ -119,16 +119,7 @@ fn capture_visual_selection(
     }
 
     let (start_anchor, end_anchor) = ordered_anchors(selection.start, selection.end);
-    let hunk_lines = hunk_source_lines(state);
-    let selection_lines = if state.content_mode == ContentMode::Diff
-        && !hunk_lines.is_empty()
-        && end_anchor.line < hunk_lines.len()
-        && state.render_variant != RenderVariant::SideBySide
-    {
-        &hunk_lines
-    } else {
-        &source_lines
-    };
+    let selection_lines = &source_lines;
     let start_row = start_anchor
         .line
         .min(selection_lines.len().saturating_sub(1));
@@ -508,42 +499,6 @@ fn source_line_entry_from_side_by_side_cell(cell: &SideBySideCell) -> SourceLine
         side: cell.side,
         line_number: cell.line_number as i64,
         content: cell.content.clone(),
-    }
-}
-
-fn hunk_source_lines(state: &AppState) -> Vec<SourceLine> {
-    let Some(entry) = state.selected_file_entry() else {
-        return Vec::new();
-    };
-    let mut lines = Vec::new();
-    for hunk in &entry.diff.hunks {
-        for line in &hunk.lines {
-            lines.push(source_line_from_diff_line(line));
-        }
-    }
-    lines
-}
-
-fn source_line_from_diff_line(line: &crate::review_types::DiffLine) -> SourceLine {
-    let mut entries = Vec::new();
-    if let Some(line_number) = line.old_lineno {
-        entries.push(SourceLineEntry {
-            side: CommentAnchorSide::Base,
-            line_number: line_number as i64,
-            content: line.content.trim_end_matches('\n').to_string(),
-        });
-    }
-    if let Some(line_number) = line.new_lineno {
-        entries.push(SourceLineEntry {
-            side: CommentAnchorSide::Head,
-            line_number: line_number as i64,
-            content: line.content.trim_end_matches('\n').to_string(),
-        });
-    }
-    SourceLine {
-        entries,
-        content: line.content.trim_end_matches('\n').to_string(),
-        is_change: line.kind != LineKind::Context,
     }
 }
 
