@@ -1676,6 +1676,25 @@ mod tests {
     }
 
     #[test]
+    fn test_resolution_events_store_stable_patch_id_evidence() {
+        let (_dir, db) = test_db();
+
+        let columns: Vec<String> = db
+            .conn
+            .prepare("PRAGMA table_info(comment_resolution_events)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+
+        assert!(
+            columns.iter().any(|column| column == "resolved_patch_id"),
+            "resolution events must store stable patch-id evidence"
+        );
+    }
+
+    #[test]
     fn test_comment_delete() {
         let (_dir, db) = test_db();
 
