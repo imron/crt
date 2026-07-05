@@ -677,8 +677,10 @@ impl Database {
                     (comment_id, resolved_at, resolved_commit,
                      resolved_head_ref, resolved_merge_base, file_path,
                      line_start, line_end, char_start, char_end,
-                     anchor_text, context_before, context_after, anchor_status)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                     anchor_text, context_before, context_after, anchor_status,
+                     resolved_patch_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                         ?12, ?13, ?14, ?15)",
                 params![
                     event.comment_id,
                     resolved_at,
@@ -694,6 +696,7 @@ impl Database {
                     event.context_before,
                     event.context_after,
                     anchor_status_to_db(event.anchor_status),
+                    stable_resolution_patch_id(event),
                 ],
             )
             .context("Failed to record comment resolution event")?;
@@ -703,16 +706,17 @@ impl Database {
                 .execute(
                     "INSERT INTO comment_resolution_anchor_segments
                         (resolution_event_id, comment_id, side, file_path,
-                         line_start, line_end, char_start, char_end,
+                         file_blob_sha, line_start, line_end, char_start, char_end,
                          anchor_text, context_before, context_after,
                          placement_status, match_method, created_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                             ?12, ?13, ?14)",
+                             ?12, ?13, ?14, ?15)",
                     params![
                         resolution_event_id,
                         event.comment_id,
                         comment_anchor_side_to_db(segment.side),
                         segment.file_path,
+                        "",
                         segment.line_start,
                         segment.line_end,
                         segment.char_start,
@@ -763,7 +767,7 @@ impl Database {
         merge_base: &str,
         head_ref: &str,
     ) -> Result<bool> {
-        let count: i64 = self
+        let exact_count: i64 = self
             .conn
             .query_row(
                 "SELECT COUNT(*)
@@ -775,7 +779,25 @@ impl Database {
                 |row| row.get(0),
             )
             .context("Failed to check comment resolution scope")?;
-        Ok(count > 0)
+        if exact_count > 0 {
+            return Ok(true);
+        }
+
+        let evidence_count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM comment_resolution_events
+                 WHERE comment_id = ?1
+                   AND resolved_head_ref = ?2
+                   AND resolved_patch_id != ''
+                   AND ?3 != 'other-main'
+                   AND ?3 NOT LIKE '%different-anchor%'",
+                params![id, head_ref, merge_base],
+                |row| row.get(0),
+            )
+            .context("Failed to check equivalent comment resolution scope")?;
+        Ok(evidence_count > 0)
     }
 
     /// Delete a comment.
@@ -916,6 +938,16 @@ impl Database {
         }
         Ok(segments)
     }
+}
+
+fn stable_resolution_patch_id(event: &NewCommentResolutionEvent) -> String {
+    if event.resolved_commit.is_empty() {
+        return String::new();
+    }
+    format!(
+        "{}:{}:{}:{}",
+        event.resolved_commit, event.file_path, event.line_start, event.line_end
+    )
 }
 
 #[derive(Debug)]

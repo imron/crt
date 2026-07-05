@@ -4,6 +4,7 @@ CREATE TABLE comment_resolution_anchor_segments (
     comment_id            INTEGER NOT NULL,
     side                  TEXT NOT NULL,
     file_path             TEXT NOT NULL,
+    file_blob_sha         TEXT NOT NULL DEFAULT '',
     line_start            INTEGER NOT NULL,
     line_end              INTEGER NOT NULL,
     char_start            INTEGER,

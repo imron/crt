@@ -98,6 +98,7 @@ pub fn build_side_by_side_diff(
     // Helper: build one side of a row (blame + gutter + content), padded to col_w.
     let make_half = |lineno: Option<u32>,
                      content: &str,
+                     prefix: &str,
                      comment_marker: &CommentMarker,
                      style: Style,
                      emphasis: Option<(&[super::super::word_diff::DiffSpan<'_>], Style)>,
@@ -136,7 +137,10 @@ pub fn build_side_by_side_diff(
         }
 
         if let Some((word_spans, em_style)) = emphasis {
-            let mut chars = 0;
+            let mut chars = prefix.chars().count();
+            if !prefix.is_empty() {
+                spans.push(Span::styled(prefix.to_string(), style));
+            }
             for ws in word_spans {
                 let (text, s) = match ws {
                     super::super::word_diff::DiffSpan::Common(t) => (*t, style),
@@ -155,8 +159,9 @@ pub fn build_side_by_side_diff(
             }
         } else {
             let truncated: String = content.chars().take(col_w).collect();
-            let pad = col_w.saturating_sub(truncated.chars().count());
-            spans.push(Span::styled(truncated, style));
+            let text = format!("{prefix}{truncated}");
+            let pad = col_w.saturating_sub(text.chars().count());
+            spans.push(Span::styled(text, style));
             if pad > 0 {
                 spans.push(Span::styled(" ".repeat(pad), style));
             }
@@ -200,7 +205,8 @@ pub fn build_side_by_side_diff(
             let left = make_half(
                 Some(old_cursor),
                 content,
-                &CommentMarker::blank(comment_marker_w),
+                "",
+                &marker_for_line(comment_markers, Some(old_cursor)),
                 context_style,
                 None,
                 bblame(Some(old_cursor)),
@@ -208,6 +214,7 @@ pub fn build_side_by_side_diff(
             let right = make_half(
                 Some(new_cursor),
                 content,
+                "",
                 &marker_for_line(comment_markers, Some(new_cursor)),
                 context_style,
                 None,
@@ -237,7 +244,8 @@ pub fn build_side_by_side_diff(
                 let left = make_half(
                     dl.old_lineno,
                     content,
-                    &CommentMarker::blank(comment_marker_w),
+                    "",
+                    &marker_for_line(comment_markers, dl.old_lineno),
                     context_style,
                     None,
                     bblame(dl.old_lineno),
@@ -245,6 +253,7 @@ pub fn build_side_by_side_diff(
                 let right = make_half(
                     dl.new_lineno,
                     content,
+                    "",
                     &marker_for_line(comment_markers, dl.new_lineno),
                     context_style,
                     None,
@@ -290,7 +299,8 @@ pub fn build_side_by_side_diff(
                             make_half(
                                 dels[idx].old_lineno,
                                 dc,
-                                &CommentMarker::blank(comment_marker_w),
+                                "- ",
+                                &marker_for_line(comment_markers, dels[idx].old_lineno),
                                 deletion_style,
                                 Some((old_spans, deletion_emphasis)),
                                 bblame(dels[idx].old_lineno),
@@ -299,7 +309,8 @@ pub fn build_side_by_side_diff(
                             make_half(
                                 dels[idx].old_lineno,
                                 dc,
-                                &CommentMarker::blank(comment_marker_w),
+                                "- ",
+                                &marker_for_line(comment_markers, dels[idx].old_lineno),
                                 deletion_style,
                                 None,
                                 bblame(dels[idx].old_lineno),
@@ -309,7 +320,8 @@ pub fn build_side_by_side_diff(
                         make_half(
                             dels[idx].old_lineno,
                             dc,
-                            &CommentMarker::blank(comment_marker_w),
+                            "- ",
+                            &marker_for_line(comment_markers, dels[idx].old_lineno),
                             deletion_style,
                             None,
                             bblame(dels[idx].old_lineno),
@@ -326,6 +338,7 @@ pub fn build_side_by_side_diff(
                             make_half(
                                 adds[idx].new_lineno,
                                 ac,
+                                "+ ",
                                 &marker_for_line(comment_markers, adds[idx].new_lineno),
                                 addition_style,
                                 Some((new_spans, addition_emphasis)),
@@ -335,6 +348,7 @@ pub fn build_side_by_side_diff(
                             make_half(
                                 adds[idx].new_lineno,
                                 ac,
+                                "+ ",
                                 &marker_for_line(comment_markers, adds[idx].new_lineno),
                                 addition_style,
                                 None,
@@ -345,6 +359,7 @@ pub fn build_side_by_side_diff(
                         make_half(
                             adds[idx].new_lineno,
                             ac,
+                            "+ ",
                             &marker_for_line(comment_markers, adds[idx].new_lineno),
                             addition_style,
                             None,
@@ -376,7 +391,8 @@ pub fn build_side_by_side_diff(
         let left = make_half(
             Some(old_cursor),
             content,
-            &CommentMarker::blank(comment_marker_w),
+            "",
+            &marker_for_line(comment_markers, Some(old_cursor)),
             context_style,
             None,
             bblame(Some(old_cursor)),
@@ -384,6 +400,7 @@ pub fn build_side_by_side_diff(
         let right = make_half(
             Some(new_cursor),
             content,
+            "",
             &marker_for_line(comment_markers, Some(new_cursor)),
             context_style,
             None,

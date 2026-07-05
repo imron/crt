@@ -155,7 +155,11 @@ pub fn apply_core_effects(
             }
             CoreEffect::NavigateUnresolvedComment(direction) => {
                 if navigation::navigate_unresolved_comment_from_cursor(state, view, direction) {
-                    update.clear_status();
+                    if navigation::selected_comment_visible_in_current_view(state) {
+                        update.clear_status();
+                    } else {
+                        update.set_status("Comment is not visible in this view");
+                    }
                 } else {
                     update.set_status("No unresolved comments");
                 }
