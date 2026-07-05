@@ -1071,7 +1071,8 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
     let comments = selected
         .map(|entry| comment_attachments_for_current_view(state, &entry.change.path))
         .unwrap_or_default();
-    let comment_markers = comment_marker_set_for_current_view(state, &comments, &side_by_side_rows);
+    let comment_markers =
+        comment_marker_set_for_current_view(state, &comments, &inline_rows, &side_by_side_rows);
 
     DiffPanel {
         selected_file_index: selected.map(|_| state.selected_file),
@@ -1133,6 +1134,7 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
 fn comment_marker_set_for_current_view(
     state: &AppState,
     comments: &[CommentAttachment],
+    inline_rows: &LinearDiffRows,
     side_by_side_rows: &SideBySideDiffRows,
 ) -> CommentMarkerSet {
     let current_line = current_visible_line(state);
@@ -1157,6 +1159,18 @@ fn comment_marker_set_for_current_view(
                 current_row.and_then(|row| row.base.as_ref().map(|cell| cell.line_number));
             let head_current_line =
                 current_row.and_then(|row| row.head.as_ref().map(|cell| cell.line_number));
+            CommentMarkerSet::new_with_current_side_lines(
+                comments,
+                current_line,
+                base_current_line,
+                head_current_line,
+                state.selected_comment_id,
+            )
+        }
+        ContentMode::Diff if state.render_variant == RenderVariant::Inline => {
+            let current_row = inline_rows.rows.get(state.diff_line_cursor);
+            let base_current_line = current_row.and_then(|row| row.old_lineno);
+            let head_current_line = current_row.and_then(|row| row.new_lineno);
             CommentMarkerSet::new_with_current_side_lines(
                 comments,
                 current_line,
@@ -1988,6 +2002,81 @@ mod tests {
             review_types::CommentAnchorSide::Head,
             27,
             Some(CommentMarkerKind::End),
+            false,
+            true,
+        );
+    }
+
+    #[test]
+    fn inline_current_comment_uses_base_line_on_deletion_rows() {
+        let hunk = review_types::DiffHunk {
+            old_start: 192,
+            old_lines: 1,
+            new_start: 211,
+            new_lines: 1,
+            header: "@@ -192 +211 @@".to_string(),
+            lines: vec![
+                review_types::DiffLine {
+                    kind: LineKind::Deletion,
+                    content: "fn navigate_to_comment(state: &mut AppState) {".to_string(),
+                    old_lineno: Some(192),
+                    new_lineno: None,
+                },
+                review_types::DiffLine {
+                    kind: LineKind::Addition,
+                    content: "fn navigate_to_comment(state: &mut AppState) -> bool {".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(211),
+                },
+            ],
+        };
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![file(
+                "src/lib.rs",
+                review_types::ReviewStatus::Unreviewed,
+                vec![hunk],
+            )],
+        );
+        app.state.content_mode = ContentMode::Diff;
+        app.state.render_variant = RenderVariant::Inline;
+        app.state.head_content = Some(
+            (1..=211)
+                .map(|n| format!("head {n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.state.diff_line_cursor = 210;
+        app.state.selected_comment_id = Some(1);
+        app.state.comments = vec![compound_comment(
+            1,
+            "src/lib.rs",
+            vec![
+                anchor_segment(
+                    review_types::CommentAnchorSide::Base,
+                    "src/lib.rs",
+                    192,
+                    192,
+                    "base",
+                ),
+                anchor_segment(
+                    review_types::CommentAnchorSide::Head,
+                    "src/lib.rs",
+                    211,
+                    211,
+                    "head",
+                ),
+            ],
+        )];
+
+        let model = app.model();
+
+        assert_side_marker(
+            &model.diff.comment_markers,
+            review_types::CommentAnchorSide::Base,
+            192,
+            Some(CommentMarkerKind::SingleLine),
             false,
             true,
         );
