@@ -1568,6 +1568,61 @@ mod tests {
     }
 
     #[test]
+    fn test_resolution_event_persists_compound_anchor_snapshot() {
+        let (_dir, db) = test_db();
+
+        let mut comment = simple_comment("a.rs", 1, "head text", "fix this");
+        comment.anchor = NewCommentAnchor {
+            segments: vec![
+                NewCommentAnchorSegment {
+                    side: CommentAnchorSide::Base,
+                    file_path: "a.rs".to_string(),
+                    file_blob_sha: "base-blob".to_string(),
+                    line_start: 3,
+                    line_end: 3,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "base text".to_string(),
+                    context_before: "before base".to_string(),
+                    context_after: "after base".to_string(),
+                    placement_status: AnchorPlacementStatus::Anchored,
+                    match_method: AnchorMatchMethod::ExactAtLine,
+                },
+                NewCommentAnchorSegment {
+                    side: CommentAnchorSide::Head,
+                    file_path: "a.rs".to_string(),
+                    file_blob_sha: "head-blob".to_string(),
+                    line_start: 7,
+                    line_end: 8,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "head text".to_string(),
+                    context_before: "before head".to_string(),
+                    context_after: "after head".to_string(),
+                    placement_status: AnchorPlacementStatus::Anchored,
+                    match_method: AnchorMatchMethod::ExactAtLine,
+                },
+            ],
+            aggregate_status: AnchorAggregateStatus::Anchored,
+        };
+
+        let comment = db.create_comment(&comment).unwrap();
+        db.resolve_comment(&resolution_event(&comment)).unwrap();
+
+        let segment_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM comment_resolution_anchor_segments
+                 WHERE comment_id = ?1",
+                [comment.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(segment_count, 2);
+    }
+
+    #[test]
     fn test_comment_delete() {
         let (_dir, db) = test_db();
 

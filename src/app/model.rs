@@ -1678,6 +1678,66 @@ mod tests {
     }
 
     #[test]
+    fn comment_attachment_uses_compound_anchor_span() {
+        let comment = review_types::Comment {
+            id: 42,
+            merge_base: "abc123".to_string(),
+            head_ref: "feature".to_string(),
+            created_head_commit: "head-commit".to_string(),
+            anchor: review_types::CommentAnchor {
+                segments: vec![
+                    review_types::CommentAnchorSegment {
+                        side: review_types::CommentAnchorSide::Base,
+                        file_path: "src/lib.rs".to_string(),
+                        line_start: 10,
+                        line_end: 12,
+                        char_start: None,
+                        char_end: None,
+                        anchor_text: "base".to_string(),
+                        context_before: String::new(),
+                        context_after: String::new(),
+                        placement_status: review_types::AnchorPlacementStatus::Anchored,
+                        match_method: review_types::AnchorMatchMethod::ExactAtLine,
+                    },
+                    review_types::CommentAnchorSegment {
+                        side: review_types::CommentAnchorSide::Head,
+                        file_path: "src/lib.rs".to_string(),
+                        line_start: 18,
+                        line_end: 19,
+                        char_start: None,
+                        char_end: None,
+                        anchor_text: "head".to_string(),
+                        context_before: String::new(),
+                        context_after: String::new(),
+                        placement_status: review_types::AnchorPlacementStatus::Anchored,
+                        match_method: review_types::AnchorMatchMethod::ExactAtLine,
+                    },
+                ],
+                aggregate_status: review_types::AnchorAggregateStatus::Anchored,
+            },
+            file_path: "src/lib.rs".to_string(),
+            line_start: 18,
+            line_end: 19,
+            char_start: None,
+            char_end: None,
+            anchor_text: "head".to_string(),
+            context_before: String::new(),
+            context_after: String::new(),
+            body: "compound".to_string(),
+            resolved: false,
+            created_at: "2026-06-28T00:00:00+10:00".to_string(),
+            updated_at: "2026-06-28T00:00:00+10:00".to_string(),
+            anchor_status: AnchorStatus::Anchored,
+        };
+
+        let attachments = comment_attachments_for_file(&[comment], "src/lib.rs");
+
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].line_start, 10);
+        assert_eq!(attachments[0].line_end, 19);
+    }
+
+    #[test]
     fn model_projects_diff_content_cursor_and_search_highlights() {
         let mut app = App::new(
             Config::default(),
