@@ -1810,6 +1810,133 @@ mod tests {
     }
 
     #[test]
+    fn full_file_head_view_hides_base_only_comment_markers() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![file(
+                "src/lib.rs",
+                review_types::ReviewStatus::Unreviewed,
+                Vec::new(),
+            )],
+        );
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::HeadVersion;
+        app.state.base_content = Some("base one\nbase two\n".to_string());
+        app.state.head_content = Some("head one\nhead two\n".to_string());
+
+        let mut comment = stored_comment(7, "src/lib.rs", false);
+        comment.anchor = review_types::CommentAnchor {
+            segments: vec![review_types::CommentAnchorSegment {
+                side: review_types::CommentAnchorSide::Base,
+                file_path: "src/lib.rs".to_string(),
+                line_start: 2,
+                line_end: 2,
+                char_start: None,
+                char_end: None,
+                anchor_text: "base two".to_string(),
+                context_before: "base one".to_string(),
+                context_after: String::new(),
+                placement_status: review_types::AnchorPlacementStatus::Anchored,
+                match_method: review_types::AnchorMatchMethod::ExactAtLine,
+            }],
+            aggregate_status: review_types::AnchorAggregateStatus::Anchored,
+        };
+        comment.line_start = 2;
+        comment.line_end = 2;
+        app.state.comments = vec![comment];
+
+        let model = app.model();
+
+        assert_marker(&model.diff.comment_markers, 2, None, false, false);
+    }
+
+    #[test]
+    fn full_file_base_view_hides_head_only_comment_markers() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![file(
+                "src/lib.rs",
+                review_types::ReviewStatus::Unreviewed,
+                Vec::new(),
+            )],
+        );
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::BaseVersion;
+        app.state.base_content = Some("base one\nbase two\n".to_string());
+        app.state.head_content = Some("head one\nhead two\n".to_string());
+        let mut comment = stored_comment(8, "src/lib.rs", false);
+        comment.line_start = 2;
+        comment.line_end = 2;
+        app.state.comments = vec![comment];
+
+        let model = app.model();
+
+        assert_marker(&model.diff.comment_markers, 2, None, false, false);
+    }
+
+    #[test]
+    fn paired_anchor_span_is_order_independent_when_head_precedes_base() {
+        let comment = review_types::Comment {
+            id: 43,
+            merge_base: "abc123".to_string(),
+            head_ref: "feature".to_string(),
+            created_head_commit: "head-commit".to_string(),
+            anchor: review_types::CommentAnchor {
+                segments: vec![
+                    review_types::CommentAnchorSegment {
+                        side: review_types::CommentAnchorSide::Head,
+                        file_path: "src/lib.rs".to_string(),
+                        line_start: 3,
+                        line_end: 4,
+                        char_start: None,
+                        char_end: None,
+                        anchor_text: "head".to_string(),
+                        context_before: String::new(),
+                        context_after: String::new(),
+                        placement_status: review_types::AnchorPlacementStatus::Anchored,
+                        match_method: review_types::AnchorMatchMethod::ExactAtLine,
+                    },
+                    review_types::CommentAnchorSegment {
+                        side: review_types::CommentAnchorSide::Base,
+                        file_path: "src/lib.rs".to_string(),
+                        line_start: 12,
+                        line_end: 14,
+                        char_start: None,
+                        char_end: None,
+                        anchor_text: "base".to_string(),
+                        context_before: String::new(),
+                        context_after: String::new(),
+                        placement_status: review_types::AnchorPlacementStatus::Anchored,
+                        match_method: review_types::AnchorMatchMethod::ExactAtLine,
+                    },
+                ],
+                aggregate_status: review_types::AnchorAggregateStatus::Anchored,
+            },
+            file_path: "src/lib.rs".to_string(),
+            line_start: 3,
+            line_end: 4,
+            char_start: None,
+            char_end: None,
+            anchor_text: "head".to_string(),
+            context_before: String::new(),
+            context_after: String::new(),
+            body: "compound".to_string(),
+            resolved: false,
+            created_at: "2026-06-28T00:00:00+10:00".to_string(),
+            updated_at: "2026-06-28T00:00:00+10:00".to_string(),
+            anchor_status: AnchorStatus::Anchored,
+        };
+
+        let attachments = comment_attachments_for_file(&[comment], "src/lib.rs");
+
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].line_start, 3);
+        assert_eq!(attachments[0].line_end, 14);
+    }
+
+    #[test]
     fn model_projects_diff_content_cursor_and_search_highlights() {
         let mut app = App::new(
             Config::default(),
