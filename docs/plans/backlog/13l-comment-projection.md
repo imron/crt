@@ -2,7 +2,7 @@
 
 ## Status
 
-Backlog.
+Completed.
 
 ## Goal
 
@@ -66,18 +66,18 @@ again instead of advancing.
 
 ## Acceptance Criteria
 
-- [ ] Comment lookup for commands and the comments panel goes through
+- [x] Comment lookup for commands and the comments panel goes through
       `CommentProjection`.
-- [ ] Inline diff markers are keyed by rendered row, not by a merged
+- [x] Inline diff markers are keyed by rendered row, not by a merged
       base/head line number range.
-- [ ] Side-by-side diff markers remain side-aware.
-- [ ] `{` and `}` navigation uses projection targets and works from
+- [x] Side-by-side diff markers remain side-aware.
+- [x] `{` and `}` navigation uses projection targets and works from
       deletion rows, addition rows, context rows, and full-file rows.
-- [ ] Multiple comments with overlapping or identical starts preserve the
+- [x] Multiple comments with overlapping or identical starts preserve the
       current selected-comment tie breaker.
-- [ ] Tests cover inline, side-by-side, full-file, compound base/head
+- [x] Tests cover inline, side-by-side, full-file, compound base/head
       comments, deletion-row cursor lookup, and same-start navigation.
-- [ ] The TUI renderer contains no comment range precedence logic.
+- [x] The TUI renderer contains no comment range precedence logic.
 
 ## Implementation Notes
 
