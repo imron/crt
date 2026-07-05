@@ -1632,6 +1632,65 @@ mod tests {
         }
     }
 
+    fn test_file_with_two_hunks(path: &str) -> FileEntry {
+        FileEntry {
+            change: FileChange {
+                path: path.to_string(),
+                old_path: None,
+                kind: ChangeKind::Modified,
+            },
+            status: ReviewStatus::Unreviewed,
+            diff: DiffContent {
+                hunks: vec![
+                    DiffHunk {
+                        old_start: 10,
+                        old_lines: 2,
+                        new_start: 10,
+                        new_lines: 2,
+                        header: "@@ -10,2 +10,2 @@".to_string(),
+                        lines: vec![
+                            DiffLine {
+                                kind: LineKind::Deletion,
+                                content: "old first".to_string(),
+                                old_lineno: Some(10),
+                                new_lineno: None,
+                            },
+                            DiffLine {
+                                kind: LineKind::Addition,
+                                content: "new first".to_string(),
+                                old_lineno: None,
+                                new_lineno: Some(10),
+                            },
+                        ],
+                    },
+                    DiffHunk {
+                        old_start: 20,
+                        old_lines: 2,
+                        new_start: 20,
+                        new_lines: 2,
+                        header: "@@ -20,2 +20,2 @@".to_string(),
+                        lines: vec![
+                            DiffLine {
+                                kind: LineKind::Deletion,
+                                content: "old second".to_string(),
+                                old_lineno: Some(20),
+                                new_lineno: None,
+                            },
+                            DiffLine {
+                                kind: LineKind::Addition,
+                                content: "new second".to_string(),
+                                old_lineno: None,
+                                new_lineno: Some(20),
+                            },
+                        ],
+                    },
+                ],
+                is_binary: false,
+                diff_hash: format!("hash-{path}"),
+            },
+        }
+    }
+
     fn reviewed() -> ReviewStatus {
         ReviewStatus::Reviewed {
             at: "2026-06-22T00:00:00Z".to_string(),
@@ -2259,6 +2318,56 @@ mod tests {
     }
 
     #[test]
+    fn context_line_visual_selection_captures_base_and_head_segments() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_hunk("src/main.rs")],
+        );
+        app.state.base_content = Some(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\n\
+             before one\nafter one\nafter two\nafter three\n"
+                .to_string(),
+        );
+        app.state.head_content = Some(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\n\
+             before one\nlet alpha = beta;\nlet gamma = delta;\nafter one\n\
+             after two\nafter three\n"
+                .to_string(),
+        );
+        app.state.pane_focus = PaneFocus::Diff;
+        app.state.diff_line_cursor = 0;
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartLine),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+            ],
+        );
+
+        let capture = app
+            .state
+            .pending_comment_anchor
+            .as_ref()
+            .expect("context selection should capture anchor data");
+        assert_eq!(capture.segments.len(), 2);
+        let base = segment_for_side(capture, CommentAnchorSide::Base)
+            .expect("context selection should capture a base segment");
+        let head = segment_for_side(capture, CommentAnchorSide::Head)
+            .expect("context selection should capture a head segment");
+        assert_eq!(base.line_start, 10);
+        assert_eq!(base.line_end, 10);
+        assert_eq!(base.anchor_text, "before one");
+        assert_eq!(head.line_start, 10);
+        assert_eq!(head.line_end, 10);
+        assert_eq!(head.anchor_text, "before one");
+        assert_eq!(capture.line_start, 10);
+        assert_eq!(capture.line_end, 10);
+        assert_eq!(capture.anchor_text, "before one");
+    }
+
+    #[test]
     fn lowercase_visual_selection_captures_full_line_anchor() {
         let mut app = App::new(
             Config::default(),
@@ -2539,6 +2648,75 @@ mod tests {
     }
 
     #[test]
+    fn visual_selection_across_hunks_captures_all_side_segments() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_two_hunks("src/main.rs")],
+        );
+        app.state.base_content = Some(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\n\
+             old first\nline11\nline12\nline13\nline14\nline15\nline16\nline17\n\
+             line18\nline19\nold second\n"
+                .to_string(),
+        );
+        app.state.head_content = Some(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\n\
+             new first\nline11\nline12\nline13\nline14\nline15\nline16\nline17\n\
+             line18\nline19\nnew second\n"
+                .to_string(),
+        );
+        app.state.pane_focus = PaneFocus::Diff;
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartText {
+                    anchor: TextAnchor { line: 0, column: 0 },
+                }),
+                CoreEffect::VisualSelection(VisualSelectionEffect::ExtendTo {
+                    anchor: TextAnchor { line: 3, column: 0 },
+                }),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+            ],
+        );
+
+        let capture = app
+            .state
+            .pending_comment_anchor
+            .as_ref()
+            .expect("cross-hunk selection should capture anchor data");
+        assert_eq!(capture.segments.len(), 4);
+        let base_segments: Vec<&CommentAnchorSegment> = capture
+            .segments
+            .iter()
+            .filter(|segment| segment.side == CommentAnchorSide::Base)
+            .collect();
+        let head_segments: Vec<&CommentAnchorSegment> = capture
+            .segments
+            .iter()
+            .filter(|segment| segment.side == CommentAnchorSide::Head)
+            .collect();
+        assert_eq!(
+            base_segments
+                .iter()
+                .map(|segment| (segment.line_start, segment.anchor_text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(10, "old first"), (20, "old second")]
+        );
+        assert_eq!(
+            head_segments
+                .iter()
+                .map(|segment| (segment.line_start, segment.anchor_text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(10, "new first"), (20, "new second")]
+        );
+        assert_eq!(capture.file_path, "src/main.rs");
+        assert_eq!(capture.line_start, 10);
+        assert_eq!(capture.line_end, 20);
+    }
+
+    #[test]
     fn full_file_base_visual_selection_captures_base_segment() {
         let mut app = App::new(
             Config::default(),
@@ -2642,6 +2820,139 @@ mod tests {
                 "Comment is not visible in this view".to_string()
             ))
         );
+    }
+
+    #[test]
+    fn full_file_base_navigation_uses_visible_base_segment() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        let mut comment = stored_comment(8, "src/main.rs");
+        comment.anchor = crate::review_types::CommentAnchor {
+            segments: vec![
+                CommentAnchorSegment {
+                    side: CommentAnchorSide::Base,
+                    file_path: "src/main.rs".to_string(),
+                    line_start: 2,
+                    line_end: 2,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "base two".to_string(),
+                    context_before: "base one".to_string(),
+                    context_after: "base three".to_string(),
+                    placement_status: AnchorPlacementStatus::Anchored,
+                    match_method: AnchorMatchMethod::ExactAtLine,
+                },
+                CommentAnchorSegment {
+                    side: CommentAnchorSide::Head,
+                    file_path: "src/main.rs".to_string(),
+                    line_start: 10,
+                    line_end: 10,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "head ten".to_string(),
+                    context_before: "head nine".to_string(),
+                    context_after: "head eleven".to_string(),
+                    placement_status: AnchorPlacementStatus::Anchored,
+                    match_method: AnchorMatchMethod::ExactAtLine,
+                },
+            ],
+            aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
+        };
+        comment.line_start = 10;
+        comment.line_end = 10;
+        app.state.comments = vec![comment];
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::BaseVersion;
+        app.state.base_content = Some("base one\nbase two\nbase three\n".to_string());
+        app.state.head_content = Some(
+            (1..=12)
+                .map(|n| format!("head {n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["base one", "base two", "base three"]),
+            vec![CoreEffect::CommentsPanel(
+                CommentsPanelEffect::NavigateNextComment,
+            )],
+        );
+
+        assert_eq!(app.state.selected_comment_id, Some(8));
+        assert_eq!(app.state.diff_line_cursor, 1);
+    }
+
+    #[test]
+    fn full_file_head_navigation_uses_visible_head_segment() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        let mut comment = stored_comment(8, "src/main.rs");
+        comment.anchor = crate::review_types::CommentAnchor {
+            segments: vec![
+                CommentAnchorSegment {
+                    side: CommentAnchorSide::Base,
+                    file_path: "src/main.rs".to_string(),
+                    line_start: 2,
+                    line_end: 2,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "base two".to_string(),
+                    context_before: "base one".to_string(),
+                    context_after: "base three".to_string(),
+                    placement_status: AnchorPlacementStatus::Anchored,
+                    match_method: AnchorMatchMethod::ExactAtLine,
+                },
+                CommentAnchorSegment {
+                    side: CommentAnchorSide::Head,
+                    file_path: "src/main.rs".to_string(),
+                    line_start: 10,
+                    line_end: 10,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "head ten".to_string(),
+                    context_before: "head nine".to_string(),
+                    context_after: "head eleven".to_string(),
+                    placement_status: AnchorPlacementStatus::Anchored,
+                    match_method: AnchorMatchMethod::ExactAtLine,
+                },
+            ],
+            aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
+        };
+        comment.line_start = 10;
+        comment.line_end = 10;
+        app.state.comments = vec![comment];
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::HeadVersion;
+        app.state.base_content = Some("base one\nbase two\nbase three\n".to_string());
+        app.state.head_content = Some(
+            (1..=12)
+                .map(|n| format!("head {n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+
+        app.apply_core_effects(
+            &RenderedViewport::new(
+                (1..=12)
+                    .map(|n| format!("head {n}"))
+                    .collect::<Vec<_>>()
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+            ),
+            vec![CoreEffect::CommentsPanel(
+                CommentsPanelEffect::NavigateNextComment,
+            )],
+        );
+
+        assert_eq!(app.state.selected_comment_id, Some(8));
+        assert_eq!(app.state.diff_line_cursor, 9);
     }
 
     #[test]
