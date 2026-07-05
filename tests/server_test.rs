@@ -822,6 +822,84 @@ async fn test_comment_lifecycle() {
 }
 
 #[tokio::test]
+async fn test_compound_comment_api_shape_roundtrips() {
+    let server = TestServer::start().await;
+    let mut conn = server.connect_and_init().await;
+
+    let params = params(review_types::CreateCommentParams {
+        anchor: review_types::CommentAnchor {
+            segments: vec![
+                review_types::CommentAnchorSegment {
+                    side: review_types::CommentAnchorSide::Base,
+                    file_path: "file.txt".to_string(),
+                    line_start: 1,
+                    line_end: 1,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "hello".to_string(),
+                    context_before: String::new(),
+                    context_after: String::new(),
+                    placement_status: review_types::AnchorPlacementStatus::Anchored,
+                    match_method: review_types::AnchorMatchMethod::ExactAtLine,
+                },
+                review_types::CommentAnchorSegment {
+                    side: review_types::CommentAnchorSide::Head,
+                    file_path: "file.txt".to_string(),
+                    line_start: 1,
+                    line_end: 1,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "hello".to_string(),
+                    context_before: String::new(),
+                    context_after: String::new(),
+                    placement_status: review_types::AnchorPlacementStatus::Anchored,
+                    match_method: review_types::AnchorMatchMethod::ExactAtLine,
+                },
+            ],
+            aggregate_status: review_types::AnchorAggregateStatus::Anchored,
+        },
+        body: "paired feedback".to_string(),
+    });
+
+    let create = conn.request(RpcMethod::CreateComment, params).await;
+    assert!(create["error"].is_null(), "create failed: {create}");
+    let id = create["result"]["comment"]["id"].as_i64().unwrap();
+    assert_eq!(
+        create["result"]["comment"]["anchor"]["segments"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        create["result"]["comment"]["anchor"]["aggregate_status"],
+        "anchored"
+    );
+
+    let list = conn
+        .request(
+            RpcMethod::ListComments,
+            list_comments_params("file.txt", false),
+        )
+        .await;
+    assert!(list["error"].is_null(), "list failed: {list}");
+    let listed = &list["result"]["comments"].as_array().unwrap()[0];
+    assert_eq!(listed["id"], id);
+    assert_eq!(listed["anchor"]["segments"].as_array().unwrap().len(), 2);
+
+    let detail = conn
+        .request(RpcMethod::GetComment, get_comment_params(id))
+        .await;
+    assert!(detail["error"].is_null(), "get failed: {detail}");
+    let segments = detail["result"]["comment"]["anchor"]["segments"]
+        .as_array()
+        .unwrap();
+    assert_eq!(segments.len(), 2);
+    assert_eq!(segments[0]["side"], "base");
+    assert_eq!(segments[1]["side"], "head");
+}
+
+#[tokio::test]
 async fn test_carry_over_comment_can_be_unresolved_after_resolve() {
     let server = TestServer::start().await;
     let mut conn = server.connect_and_init().await;
