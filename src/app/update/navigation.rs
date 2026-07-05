@@ -80,6 +80,9 @@ pub fn toggle_inline_diff(state: &mut AppState, update: &mut AppOutput) {
             RenderVariant::SideBySide => RenderVariant::Inline,
             other => other,
         };
+        if state.render_variant == RenderVariant::SideBySide && state.base_content.is_none() {
+            state.load_base_content();
+        }
         if state.render_variant != previous {
             state.invalidate_diff_search_matches();
             state.mark_model_changed();
