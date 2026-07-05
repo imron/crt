@@ -44,6 +44,12 @@ pub fn marker_for_side_line(
     comment_marker_from_semantic(width, marker)
 }
 
+pub fn marker_for_inline_row(markers: &CommentMarkerSet, row: usize) -> CommentMarker {
+    let width = marker_column_width(markers);
+    let marker = markers.marker_for_inline_row(row);
+    comment_marker_from_semantic(width, marker)
+}
+
 fn comment_marker_from_semantic(width: usize, marker: SemanticCommentMarker) -> CommentMarker {
     let mut text = marker_text(marker);
     let pad = width.saturating_sub(text.chars().count());

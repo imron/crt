@@ -1,15 +1,13 @@
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 
-use super::comment_markers::{
-    CommentMarker, CommentMarkerSet, marker_column_width, marker_for_side_line,
-};
+use super::comment_markers::{CommentMarkerSet, marker_column_width, marker_for_inline_row};
 use super::content::BuiltContent;
 use super::line::{digit_width, make_line, make_line_with_emphasis};
 use crate::app::diff_rows::{LinearDiffRow, LinearDiffRows};
 use crate::app::model::BlameLine;
 use crate::config::DiffStyle;
-use crate::review_types::{CommentAnchorSide, LineKind};
+use crate::review_types::LineKind;
 
 // ---------------------------------------------------------------------------
 // Inline diff: full file with additions + deletions interleaved
@@ -65,10 +63,12 @@ pub fn build_inline_diff(
     let result = rows
         .rows
         .iter()
-        .map(|row| {
+        .enumerate()
+        .map(|(row_index, row)| {
             inline_row(
                 ds,
                 default_bg,
+                row_index,
                 row,
                 comment_markers,
                 current_comment_fg,
@@ -96,6 +96,7 @@ pub fn build_inline_diff(
 fn inline_row(
     ds: &DiffStyle,
     default_bg: Color,
+    row_index: usize,
     row: &LinearDiffRow,
     comment_markers: &CommentMarkerSet,
     current_comment_fg: Color,
@@ -106,7 +107,7 @@ fn inline_row(
     blame: Option<&BlameLine>,
     context_style: Style,
 ) -> Line<'static> {
-    let marker = marker_for_inline_row(comment_markers, row);
+    let marker = marker_for_inline_row(comment_markers, row_index);
     match row.kind {
         LineKind::Context => make_line(
             row.old_lineno,
@@ -210,33 +211,13 @@ fn inline_row(
     }
 }
 
-fn marker_for_inline_row(comment_markers: &CommentMarkerSet, row: &LinearDiffRow) -> CommentMarker {
-    match row.kind {
-        LineKind::Deletion => {
-            marker_for_side_line(comment_markers, CommentAnchorSide::Base, row.old_lineno)
-        }
-        LineKind::Addition => {
-            marker_for_side_line(comment_markers, CommentAnchorSide::Head, row.new_lineno)
-        }
-        LineKind::Context => {
-            let head =
-                marker_for_side_line(comment_markers, CommentAnchorSide::Head, row.new_lineno);
-            if head.text().is_empty() {
-                marker_for_side_line(comment_markers, CommentAnchorSide::Base, row.old_lineno)
-            } else {
-                head
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::diff_rows::inline_diff_rows;
     use crate::app::model::{CommentAttachment, CommentAttachmentRange};
     use crate::config::DiffStyle;
-    use crate::review_types::{AnchorStatus, DiffHunk, DiffLine};
+    use crate::review_types::{AnchorStatus, CommentAnchorSide, DiffHunk, DiffLine};
 
     #[test]
     fn inline_replacement_uses_side_specific_comment_marker_ranges() {
@@ -259,7 +240,6 @@ mod tests {
                 },
             ],
         }];
-        let markers = CommentMarkerSet::new(&comments, None);
         let hunk = DiffHunk {
             header: "@@ -29 +31 @@".to_string(),
             old_start: 29,
@@ -286,6 +266,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let rows = inline_diff_rows(&[hunk], Some(&head_content));
+        let markers =
+            CommentMarkerSet::new_with_current_inline_rows(&comments, None, None, &rows, None);
 
         let built = build_inline_diff(
             &DiffStyle::default(),
@@ -310,5 +292,111 @@ mod tests {
 
         assert!(deletion.contains("● -"));
         assert!(addition.contains("● +"));
+    }
+
+    #[test]
+    fn inline_replacement_draws_one_logical_multiline_comment() {
+        let comments = [CommentAttachment {
+            id: 1,
+            line_start: 130,
+            line_end: 142,
+            resolved: false,
+            anchor_status: AnchorStatus::Anchored,
+            side_ranges: vec![
+                CommentAttachmentRange {
+                    side: CommentAnchorSide::Base,
+                    line_start: 130,
+                    line_end: 130,
+                },
+                CommentAttachmentRange {
+                    side: CommentAnchorSide::Head,
+                    line_start: 139,
+                    line_end: 142,
+                },
+            ],
+        }];
+        let hunk = DiffHunk {
+            header: "@@ -121,2 +130,5 @@".to_string(),
+            old_start: 121,
+            old_lines: 2,
+            new_start: 130,
+            new_lines: 5,
+            lines: vec![
+                DiffLine {
+                    kind: LineKind::Context,
+                    content: "return;".to_string(),
+                    old_lineno: Some(121),
+                    new_lineno: Some(130),
+                },
+                DiffLine {
+                    kind: LineKind::Deletion,
+                    content: ".position(|comment| comment.line_start > cursor_line)".to_string(),
+                    old_lineno: Some(130),
+                    new_lineno: None,
+                },
+                DiffLine {
+                    kind: LineKind::Addition,
+                    content: ".position(|comment| {".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(139),
+                },
+                DiffLine {
+                    kind: LineKind::Addition,
+                    content: "    visible_comment_line_range(state, comment)".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(140),
+                },
+                DiffLine {
+                    kind: LineKind::Addition,
+                    content: "        .is_some_and(|(line_start, _)| line_start > cursor_line)"
+                        .to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(141),
+                },
+                DiffLine {
+                    kind: LineKind::Addition,
+                    content: "})".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(142),
+                },
+            ],
+        };
+        let rows = inline_diff_rows(&[hunk], None);
+        let markers = CommentMarkerSet::new_with_current_inline_rows(
+            &comments,
+            Some(130),
+            Some(1),
+            &rows,
+            None,
+        );
+
+        let built = build_inline_diff(
+            &DiffStyle::default(),
+            Color::Black,
+            &rows,
+            &[],
+            &[],
+            &markers,
+            Color::Blue,
+            120,
+        );
+        let rendered = built
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(!rendered[0].contains("●"));
+        assert!(!rendered[0].contains("┃"));
+        assert!(rendered[1].contains("● -"));
+        assert!(rendered[2].contains("┃ +"));
+        assert!(rendered[3].contains("┃ +"));
+        assert!(rendered[4].contains("┃ +"));
+        assert!(rendered[5].contains("● +"));
     }
 }
