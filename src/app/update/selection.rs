@@ -196,10 +196,9 @@ fn segments_for_selected_lines(
                 .map(move |entry| (entry, entry.line_number))
         })
         .collect();
-    let Some(content) = content_for_side(state, side) else {
-        return Vec::new();
-    };
-    let content_lines: Vec<&str> = content.lines().collect();
+    let content_lines: Vec<&str> = content_for_side(state, side)
+        .map(|content| content.lines().collect())
+        .unwrap_or_default();
     let mut segments = Vec::new();
     let mut current: Vec<(&SourceLineEntry, i64)> = Vec::new();
 
@@ -265,6 +264,9 @@ fn context_before(lines: &[&str], line_start: i64) -> String {
         .checked_sub(1)
         .and_then(|line| usize::try_from(line).ok())
         .unwrap_or(0);
+    if idx > lines.len() {
+        return String::new();
+    }
     let from = idx.saturating_sub(CONTEXT_LINES);
     lines[from..idx.min(lines.len())].join("\n")
 }
@@ -274,6 +276,9 @@ fn context_after(lines: &[&str], line_end: i64) -> String {
         .checked_sub(1)
         .and_then(|line| usize::try_from(line).ok())
         .unwrap_or(0);
+    if idx >= lines.len() {
+        return String::new();
+    }
     let from = idx.saturating_add(1);
     if from >= lines.len() {
         String::new()

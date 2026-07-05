@@ -3010,6 +3010,85 @@ mod tests {
     }
 
     #[test]
+    fn side_by_side_context_selection_uses_diff_base_entry_without_base_content() {
+        let hunk = DiffHunk {
+            old_start: 163,
+            old_lines: 10,
+            new_start: 182,
+            new_lines: 10,
+            header: "@@ -163,10 +182,10 @@".to_string(),
+            lines: vec![
+                DiffLine {
+                    kind: LineKind::Context,
+                    content: "fn toggle_resolved_current(state: &mut AppState) {".to_string(),
+                    old_lineno: Some(163),
+                    new_lineno: Some(182),
+                },
+                DiffLine {
+                    kind: LineKind::Context,
+                    content: "    let Some(comment) = current_comment(state).cloned() else {"
+                        .to_string(),
+                    old_lineno: Some(164),
+                    new_lineno: Some(183),
+                },
+            ],
+        };
+        let path = "src/app/update/comments.rs";
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![FileEntry {
+                change: FileChange {
+                    path: path.to_string(),
+                    old_path: None,
+                    kind: ChangeKind::Modified,
+                },
+                status: ReviewStatus::Unreviewed,
+                diff: DiffContent {
+                    hunks: vec![hunk],
+                    is_binary: false,
+                    diff_hash: "hash-context".to_string(),
+                },
+            }],
+        );
+        app.state.render_variant = RenderVariant::SideBySide;
+        app.state.head_content = Some(
+            (1..=183)
+                .map(|n| format!("head {n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.state.base_content = None;
+        app.state.pane_focus = PaneFocus::Diff;
+        app.state.diff_line_cursor = 181;
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartLine),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Move(
+                    DiffCursorEffect::LineDown,
+                )),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+            ],
+        );
+
+        let capture = app
+            .state
+            .pending_comment_anchor
+            .as_ref()
+            .expect("side-by-side context should capture anchor data");
+        let base = segment_for_side(capture, CommentAnchorSide::Base)
+            .expect("context selection should capture a base segment from diff rows");
+        let head = segment_for_side(capture, CommentAnchorSide::Head)
+            .expect("context selection should capture a head segment");
+        assert_eq!(base.line_start, 163);
+        assert_eq!(base.line_end, 164);
+        assert_eq!(head.line_start, 182);
+        assert_eq!(head.line_end, 183);
+    }
+
+    #[test]
     fn inline_visual_selection_captures_offset_replacement_sides() {
         let path = "migrations/0005_comment_resolution_events.up.sql";
         let mut app = App::new(
