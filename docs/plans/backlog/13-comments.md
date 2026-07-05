@@ -4,7 +4,7 @@
 
 Partially complete. Core creation, persistence, re-anchoring, gutter markers,
 comments panel lifecycle, and unresolved file-panel scanning are implemented.
-Final live-update polish and future anchor/inline follow-ups remain.
+Final live-update polish, agent checks, and base/head anchor follow-ups remain.
 
 ## Goal
 
@@ -35,18 +35,17 @@ order (core panel-based flow first):
 5. 13e-panel-lifecycle.md
 6. 13f-live-polish-tests.md
 
-Later / optional sub-plans (inline comments + virtual rows):
+Later / optional sub-plans:
 
-- 13g-visual-line-abstraction.md
-- 13h-inline-comment-blocks.md (and related)
 - 13i-unresolved-comments-pane.md
 - 13k-base-head-comment-anchors.md
 
 The core comment functionality (selection/capture, composer, re-anchoring,
 gutter markers, and comments panel) can be built and used without any
 inline comment blocks or changes to line rendering. Inline comment display
-and the associated visual line abstraction are deferred so the panel-first
-UX can be evaluated first.
+and the associated visual line abstraction have been abandoned for now because
+the comments panel and unresolved comments file-panel section cover the needed
+review workflows.
 
 Completed sub-plans:
 
@@ -60,9 +59,13 @@ Completed sub-plans:
 Remaining sub-plans:
 
 - 13f-live-polish-tests.md
-- 13g-visual-line-abstraction.md
 - 13j-check-comments-command.md
 - 13k-base-head-comment-anchors.md
+
+Abandoned sub-plans:
+
+- 13g-visual-line-abstraction.md
+- 13h-inline-comment-blocks.md and related inline-row work
 
 See the individual sub-plan files under `docs/plans/backlog/` and
 `docs/plans/completed/` for detailed requirements, acceptance criteria, and
@@ -151,22 +154,13 @@ Keybinding decision (recorded here):
     files, including unresolved comments carried over from previous bases.
     Activating a row jumps to the owning file and anchored line.
 
-Later / optional (inline comments):
-
-14. **Inline toggle key (deferred)**: a possible future key can toggle
-     comments inline in the diff pane. Do not use `c`; it is reserved for
-     comment creation/editing.
-
-15. **Inline comment blocks** (deferred): unresolved comments displayed
-     below the lines they're attached to when inline mode is active.
-
 ### Anchor Resolution
 
-16. **Only unresolved comments are re-anchored.** Resolved comments skip
+14. **Only unresolved comments are re-anchored.** Resolved comments skip
     anchoring entirely. A resolved comment whose anchor_text no longer
     exists is expected — the feedback was addressed.
 
-17. **Re-anchoring**: the server performs anchor resolution when loading
+15. **Re-anchoring**: the server performs anchor resolution when loading
     comments for a connection. For each unresolved comment:
     - **Step 1**: anchor_text at stored line number → anchored.
     - **Step 2**: anchor_text elsewhere in file → shifted, reattach.
@@ -177,31 +171,30 @@ Later / optional (inline comments):
     `file_blob_sha` and fresh context strings. The `v_current_anchors` view
     then provides the latest attachment for display and future re-anchoring.
 
-18. **Orphaned comments**: visible in the comments panel with their
+16. **Orphaned comments**: visible in the comments panel with their
     last-known context (from the most recent anchor version, or the
     creation version if none exists) and an orphaned indicator.
     Not silently lost.
 
 ### Comment Lifecycle
 
-19. **Resolve/unresolve**: a keybinding toggles resolved status. Sends
+17. **Resolve/unresolve**: a keybinding toggles resolved status. Sends
     `resolve_comment` or `unresolve_comment` to the server. When
-    resolved, the inline block disappears; the comment remains in the
-    panel.
+    resolved, the comment remains available through the panel and history.
 
-20. **Resolved + orphaned is success**: expected outcome when agent
+18. **Resolved + orphaned is success**: expected outcome when agent
     addresses feedback and code changes significantly.
 
-21. **Edit**: a keybinding reopens the comment input with existing body.
+19. **Edit**: a keybinding reopens the comment input with existing body.
     Sends `update_comment` to the server.
 
-22. **Delete**: a keybinding deletes the comment with confirmation. Sends
+20. **Delete**: a keybinding deletes the comment with confirmation. Sends
     `delete_comment` to the server.
 
-23. **Navigate between comments**: keybindings to jump to next/previous
+21. **Navigate between comments**: keybindings to jump to next/previous
     comment in the current file's diff.
 
-24. **Live updates**: when another client (e.g. agent via MCP) resolves
+22. **Live updates**: when another client (e.g. agent via MCP) resolves
     a comment, the server notifies the TUI. The comment's display
     updates immediately.
 
@@ -217,8 +210,6 @@ Later / optional (inline comments):
 - [x] `$EDITOR` buffers include selected lines and context, and strip the
       unchanged generated prefix on return.
 - [x] Comments are persisted via the server and survive restart.
-- [ ] `c` (if implemented) toggles inline comment visibility (deferred).
-- [ ] Unresolved comments appear as inline blocks when visible (deferred).
 - [x] Gutter indicators show `●` (unresolved) and `○` (resolved).
 - [x] Comments panel lists all comments; resolved are collapsed.
 - [x] `Enter` on collapsed resolved comment expands it.
@@ -238,9 +229,6 @@ Later / optional (inline comments):
 - Should there be a way to reply to a comment (threaded comments)?
 - How should the comment input handle very long comments — scrollable
   input area, or always escalate to `$EDITOR`?
-- Should gutter indicators be visible when inline comments are toggled
-  off with `c`? (Deferred question — panel-first flow uses gutter markers
-  regardless of any inline toggle.)
 
 ## Progress
 
@@ -250,4 +238,6 @@ Later / optional (inline comments):
 - 13d gutter markers completed.
 - 13e comments panel and lifecycle completed.
 - 13i unresolved comments pane completed as a file-panel section.
+- 13g visual line abstraction and related inline-row work abandoned because
+  comment workflows no longer need inline comment rows.
 - 13f remains as the final live-update polish and full verification pass.
