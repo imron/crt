@@ -1760,6 +1760,56 @@ mod tests {
     }
 
     #[test]
+    fn full_file_base_view_shows_base_segment_comment_markers() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![file(
+                "src/lib.rs",
+                review_types::ReviewStatus::Unreviewed,
+                Vec::new(),
+            )],
+        );
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::BaseVersion;
+        app.state.base_content = Some("base one\nbase two\nbase three\n".to_string());
+        app.state.head_content = Some("head one\nhead two\nhead three\n".to_string());
+
+        let mut comment = stored_comment(7, "src/lib.rs", false);
+        comment.anchor = review_types::CommentAnchor {
+            segments: vec![review_types::CommentAnchorSegment {
+                side: review_types::CommentAnchorSide::Base,
+                file_path: "src/lib.rs".to_string(),
+                line_start: 2,
+                line_end: 2,
+                char_start: None,
+                char_end: None,
+                anchor_text: "base two".to_string(),
+                context_before: "base one".to_string(),
+                context_after: "base three".to_string(),
+                placement_status: review_types::AnchorPlacementStatus::Anchored,
+                match_method: review_types::AnchorMatchMethod::ExactAtLine,
+            }],
+            aggregate_status: review_types::AnchorAggregateStatus::Anchored,
+        };
+        comment.line_start = 2;
+        comment.line_end = 2;
+        comment.anchor_text = "base two".to_string();
+        app.state.comments = vec![comment];
+
+        let model = app.model();
+
+        assert_eq!(model.diff.comments.len(), 1);
+        assert_marker(
+            &model.diff.comment_markers,
+            2,
+            Some(CommentMarkerKind::SingleLine),
+            false,
+            false,
+        );
+    }
+
+    #[test]
     fn model_projects_diff_content_cursor_and_search_highlights() {
         let mut app = App::new(
             Config::default(),
