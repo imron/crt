@@ -1,7 +1,9 @@
 use super::cursor;
 use super::output::AppOutput;
 use super::viewport::AppViewport;
-use crate::app::diff_rows::{SideBySideCell, side_by_side_diff_rows};
+use crate::app::diff_rows::{
+    LinearDiffRow, SideBySideCell, inline_diff_rows, side_by_side_diff_rows,
+};
 use crate::app::{AppState, CommentAnchorCapture, VisualSelection, VisualSelectionMode};
 use crate::core::text::char_to_byte_index;
 use crate::core::{TextAnchor, VisualSelectionEffect};
@@ -431,133 +433,36 @@ fn diff_source_lines(state: &AppState) -> Option<Vec<SourceLine>> {
     }
 
     let entry = state.selected_file_entry()?;
-    let head_lines: Vec<&str> = state
-        .head_content
-        .as_deref()
-        .map(|content| content.lines().collect())
-        .unwrap_or_default();
-
-    if entry.diff.hunks.is_empty() {
-        return if head_lines.is_empty() {
-            None
-        } else {
-            Some(
-                head_lines
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, content)| SourceLine {
-                        entries: vec![SourceLineEntry {
-                            side: CommentAnchorSide::Head,
-                            line_number: (idx + 1) as i64,
-                            content: (*content).to_string(),
-                        }],
-                        content: (*content).to_string(),
-                        is_change: false,
-                    })
-                    .collect(),
-            )
-        };
-    }
-
-    let mut lines = Vec::new();
-    let mut old_cursor: u32 = 1;
-    let mut new_cursor: u32 = 1;
-
-    for hunk in &entry.diff.hunks {
-        while new_cursor < hunk.new_start && (new_cursor as usize) <= head_lines.len() {
-            lines.push(SourceLine {
-                entries: vec![SourceLineEntry {
-                    side: CommentAnchorSide::Head,
-                    line_number: new_cursor as i64,
-                    content: head_lines
-                        .get((new_cursor - 1) as usize)
-                        .copied()
-                        .unwrap_or("")
-                        .to_string(),
-                }],
-                content: head_lines
-                    .get((new_cursor - 1) as usize)
-                    .copied()
-                    .unwrap_or("")
-                    .to_string(),
-                is_change: false,
-            });
-            old_cursor = old_cursor.saturating_add(1);
-            new_cursor = new_cursor.saturating_add(1);
-        }
-
-        for line in &hunk.lines {
-            match line.kind {
-                LineKind::Context => {
-                    lines.push(SourceLine {
-                        entries: vec![
-                            SourceLineEntry {
-                                side: CommentAnchorSide::Base,
-                                line_number: line.old_lineno.unwrap_or(old_cursor) as i64,
-                                content: line.content.trim_end_matches('\n').to_string(),
-                            },
-                            SourceLineEntry {
-                                side: CommentAnchorSide::Head,
-                                line_number: line.new_lineno.unwrap_or(new_cursor) as i64,
-                                content: line.content.trim_end_matches('\n').to_string(),
-                            },
-                        ],
-                        content: line.content.trim_end_matches('\n').to_string(),
-                        is_change: false,
-                    });
-                    old_cursor = old_cursor.saturating_add(1);
-                    new_cursor = new_cursor.saturating_add(1);
-                }
-                LineKind::Addition => {
-                    lines.push(SourceLine {
-                        entries: vec![SourceLineEntry {
-                            side: CommentAnchorSide::Head,
-                            line_number: line.new_lineno.unwrap_or(new_cursor) as i64,
-                            content: line.content.trim_end_matches('\n').to_string(),
-                        }],
-                        content: line.content.trim_end_matches('\n').to_string(),
-                        is_change: true,
-                    });
-                    new_cursor = new_cursor.saturating_add(1);
-                }
-                LineKind::Deletion => {
-                    lines.push(SourceLine {
-                        entries: vec![SourceLineEntry {
-                            side: CommentAnchorSide::Base,
-                            line_number: line.old_lineno.unwrap_or(old_cursor) as i64,
-                            content: line.content.trim_end_matches('\n').to_string(),
-                        }],
-                        content: line.content.trim_end_matches('\n').to_string(),
-                        is_change: true,
-                    });
-                    old_cursor = old_cursor.saturating_add(1);
-                }
-            }
-        }
-    }
-
-    while (new_cursor as usize) <= head_lines.len() {
-        lines.push(SourceLine {
-            entries: vec![SourceLineEntry {
-                side: CommentAnchorSide::Head,
-                line_number: new_cursor as i64,
-                content: head_lines
-                    .get((new_cursor - 1) as usize)
-                    .copied()
-                    .unwrap_or("")
-                    .to_string(),
-            }],
-            content: head_lines
-                .get((new_cursor - 1) as usize)
-                .copied()
-                .unwrap_or("")
-                .to_string(),
-            is_change: false,
-        });
-        new_cursor = new_cursor.saturating_add(1);
-    }
-
+    let rows = inline_diff_rows(&entry.diff.hunks, state.head_content.as_deref());
+    let lines = rows
+        .rows
+        .iter()
+        .map(source_line_from_linear_row)
+        .collect::<Vec<_>>();
     Some(lines)
+}
+
+fn source_line_from_linear_row(row: &LinearDiffRow) -> SourceLine {
+    let mut entries = Vec::new();
+    if let Some(line_number) = row.old_lineno {
+        entries.push(SourceLineEntry {
+            side: CommentAnchorSide::Base,
+            line_number: line_number as i64,
+            content: row.content.clone(),
+        });
+    }
+    if let Some(line_number) = row.new_lineno {
+        entries.push(SourceLineEntry {
+            side: CommentAnchorSide::Head,
+            line_number: line_number as i64,
+            content: row.content.clone(),
+        });
+    }
+    SourceLine {
+        entries,
+        content: row.content.clone(),
+        is_change: row.kind != LineKind::Context,
+    }
 }
 
 fn side_by_side_diff_source_lines(state: &AppState) -> Option<Vec<SourceLine>> {

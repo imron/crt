@@ -1,13 +1,15 @@
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 
-use super::comment_markers::{CommentMarkerSet, marker_column_width, marker_for_line};
+use super::comment_markers::{
+    CommentMarker, CommentMarkerSet, marker_column_width, marker_for_side_line,
+};
 use super::content::BuiltContent;
 use super::line::{digit_width, make_line, make_line_with_emphasis};
 use crate::app::diff_rows::{LinearDiffRow, LinearDiffRows};
 use crate::app::model::BlameLine;
 use crate::config::DiffStyle;
-use crate::review_types::LineKind;
+use crate::review_types::{CommentAnchorSide, LineKind};
 
 // ---------------------------------------------------------------------------
 // Inline diff: full file with additions + deletions interleaved
@@ -104,8 +106,7 @@ fn inline_row(
     blame: Option<&BlameLine>,
     context_style: Style,
 ) -> Line<'static> {
-    let marker_line = row.new_lineno;
-    let marker = marker_for_line(comment_markers, marker_line);
+    let marker = marker_for_inline_row(comment_markers, row);
     match row.kind {
         LineKind::Context => make_line(
             row.old_lineno,
@@ -206,5 +207,108 @@ fn inline_row(
                 )
             }
         }
+    }
+}
+
+fn marker_for_inline_row(comment_markers: &CommentMarkerSet, row: &LinearDiffRow) -> CommentMarker {
+    match row.kind {
+        LineKind::Deletion => {
+            marker_for_side_line(comment_markers, CommentAnchorSide::Base, row.old_lineno)
+        }
+        LineKind::Addition => {
+            marker_for_side_line(comment_markers, CommentAnchorSide::Head, row.new_lineno)
+        }
+        LineKind::Context => {
+            let head =
+                marker_for_side_line(comment_markers, CommentAnchorSide::Head, row.new_lineno);
+            if head.text().is_empty() {
+                marker_for_side_line(comment_markers, CommentAnchorSide::Base, row.old_lineno)
+            } else {
+                head
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::diff_rows::inline_diff_rows;
+    use crate::app::model::{CommentAttachment, CommentAttachmentRange};
+    use crate::config::DiffStyle;
+    use crate::review_types::{AnchorStatus, DiffHunk, DiffLine};
+
+    #[test]
+    fn inline_replacement_uses_side_specific_comment_marker_ranges() {
+        let comments = [CommentAttachment {
+            id: 1,
+            line_start: 29,
+            line_end: 31,
+            resolved: false,
+            anchor_status: AnchorStatus::Anchored,
+            side_ranges: vec![
+                CommentAttachmentRange {
+                    side: CommentAnchorSide::Base,
+                    line_start: 29,
+                    line_end: 29,
+                },
+                CommentAttachmentRange {
+                    side: CommentAnchorSide::Head,
+                    line_start: 31,
+                    line_end: 31,
+                },
+            ],
+        }];
+        let markers = CommentMarkerSet::new(&comments, None);
+        let hunk = DiffHunk {
+            header: "@@ -29 +31 @@".to_string(),
+            old_start: 29,
+            old_lines: 1,
+            new_start: 31,
+            new_lines: 1,
+            lines: vec![
+                DiffLine {
+                    kind: LineKind::Deletion,
+                    content: "a.context_before, a.context_after, a.status".to_string(),
+                    old_lineno: Some(29),
+                    new_lineno: None,
+                },
+                DiffLine {
+                    kind: LineKind::Addition,
+                    content: "a.context_before, a.context_after, a.status, ''".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(31),
+                },
+            ],
+        };
+        let head_content = (1..=34)
+            .map(|n| format!("head {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rows = inline_diff_rows(&[hunk], Some(&head_content));
+
+        let built = build_inline_diff(
+            &DiffStyle::default(),
+            Color::Black,
+            &rows,
+            &[],
+            &[],
+            &markers,
+            Color::Blue,
+            120,
+        );
+        let deletion: String = built.lines[30]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let addition: String = built.lines[31]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(deletion.contains("● -"));
+        assert!(addition.contains("● +"));
     }
 }
