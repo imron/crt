@@ -372,21 +372,17 @@ fn current_comment_for_line<'a>(
                     .is_some_and(|(start, end)| start <= line && end >= line)
         })
         .collect();
+    if let Some(selected) = selected_comment_id
+        .and_then(|id| candidates.iter().copied().find(|comment| comment.id == id))
+    {
+        return Some(selected);
+    }
     let max_start = candidates
         .iter()
         .filter_map(|comment| {
             visible_comment_line_range_for_side(comment, side).map(|(start, _)| start)
         })
         .max()?;
-    if let Some(selected) = selected_comment_id.and_then(|id| {
-        candidates.iter().copied().find(|comment| {
-            comment.id == id
-                && visible_comment_line_range_for_side(comment, side)
-                    .is_some_and(|(start, _)| start == max_start)
-        })
-    }) {
-        return Some(selected);
-    }
     candidates
         .into_iter()
         .filter(|comment| {

@@ -558,15 +558,12 @@ fn current_comment(
             })
         })
         .collect();
-    let max_start = candidates.iter().map(|comment| comment.start).max()?;
-    if let Some(selected) = selected_comment_id.and_then(|id| {
-        candidates
-            .iter()
-            .copied()
-            .find(|comment| comment.id == id && comment.start == max_start)
-    }) {
+    if let Some(selected) = selected_comment_id
+        .and_then(|id| candidates.iter().copied().find(|comment| comment.id == id))
+    {
         return Some(selected);
     }
+    let max_start = candidates.iter().map(|comment| comment.start).max()?;
     candidates
         .into_iter()
         .filter(|comment| comment.start == max_start)
@@ -645,15 +642,12 @@ fn inline_current_comment(
             })
         })
         .collect();
-    let max_start = candidates.iter().map(|comment| comment.start).max()?;
-    if let Some(selected) = selected_comment_id.and_then(|id| {
-        candidates
-            .iter()
-            .copied()
-            .find(|comment| comment.id == id && comment.start == max_start)
-    }) {
+    if let Some(selected) = selected_comment_id
+        .and_then(|id| candidates.iter().copied().find(|comment| comment.id == id))
+    {
         return Some(selected);
     }
+    let max_start = candidates.iter().map(|comment| comment.start).max()?;
     candidates
         .into_iter()
         .filter(|comment| comment.start == max_start)
@@ -762,15 +756,12 @@ fn side_current_comment(
             }
         }
     }
-    let max_start = candidates.iter().map(|comment| comment.start).max()?;
-    if let Some(selected) = selected_comment_id.and_then(|id| {
-        candidates
-            .iter()
-            .copied()
-            .find(|comment| comment.id == id && comment.start == max_start)
-    }) {
+    if let Some(selected) = selected_comment_id
+        .and_then(|id| candidates.iter().copied().find(|comment| comment.id == id))
+    {
         return Some(selected);
     }
+    let max_start = candidates.iter().map(|comment| comment.start).max()?;
     candidates
         .into_iter()
         .filter(|comment| comment.start == max_start)
@@ -1535,18 +1526,15 @@ fn current_comment_id_for_line(
                     .is_some_and(|(start, end)| start <= line && end >= line)
         })
         .collect();
+    if let Some(selected) = selected_comment_id
+        .and_then(|id| candidates.iter().copied().find(|comment| comment.id == id))
+    {
+        return Some(selected.id);
+    }
     let max_start = candidates
         .iter()
         .filter_map(|comment| logical_comment_line_range(comment).map(|(start, _)| start))
         .max()?;
-    if let Some(selected) = selected_comment_id.and_then(|id| {
-        candidates.iter().copied().find(|comment| {
-            comment.id == id
-                && logical_comment_line_range(comment).is_some_and(|(start, _)| start == max_start)
-        })
-    }) {
-        return Some(selected.id);
-    }
     candidates
         .into_iter()
         .filter(|comment| {
