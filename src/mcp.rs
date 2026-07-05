@@ -463,7 +463,7 @@ impl CrtMcp {
         let mut per_file_comments = BTreeMap::<String, ReviewFileCommentCounts>::new();
         for comment in &comments.comments {
             let entry = per_file_comments
-                .entry(comment.file_path.clone())
+                .entry(comment.file_path().to_string())
                 .or_default();
             entry.total += 1;
             if comment.resolved {
@@ -631,14 +631,18 @@ fn summarize_comment_result(comment: Comment) -> ReviewCommentSummaryResult {
 }
 
 fn summarize_comment(comment: Comment) -> ReviewCommentSummary {
+    let file_path = comment.file_path().to_string();
+    let line_start = comment.line_start();
+    let line_end = comment.line_end();
+    let anchor_status = comment.anchor_status();
     ReviewCommentSummary {
         id: comment.id,
-        file_path: comment.file_path,
-        line_start: comment.line_start,
-        line_end: comment.line_end,
+        file_path,
+        line_start,
+        line_end,
         body: comment.body,
         resolved: comment.resolved,
-        anchor_status: comment.anchor_status,
+        anchor_status,
     }
 }
 
@@ -769,7 +773,7 @@ mod tests {
     }
 
     fn comment() -> Comment {
-        Comment {
+        Comment::new(crate::review_types::CommentInit {
             id: 7,
             merge_base: "merge-base".to_string(),
             head_ref: "HEAD".to_string(),
@@ -790,19 +794,12 @@ mod tests {
                 }],
                 aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
             },
-            file_path: "src/lib.rs".to_string(),
-            line_start: 12,
-            line_end: 14,
-            char_start: Some(2),
-            char_end: Some(8),
-            anchor_text: "if condition {\n    do_work();\n}".to_string(),
-            context_before: "fn example() {".to_string(),
-            context_after: "}".to_string(),
             body: "Please simplify this branch.".to_string(),
             resolved: false,
             created_at: "2026-07-01T00:00:00+10:00".to_string(),
             updated_at: "2026-07-01T00:01:00+10:00".to_string(),
             anchor_status: AnchorStatus::Approximate,
-        }
+        })
+        .expect("test comment anchor should be valid")
     }
 }

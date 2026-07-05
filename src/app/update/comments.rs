@@ -214,7 +214,7 @@ fn navigate_to_comment(state: &mut AppState, view: &impl AppViewport, comment: &
     let Some(file_index) = state
         .files
         .iter()
-        .position(|entry| entry.change.path == comment.file_path)
+        .position(|entry| entry.change.path == comment.file_path())
     else {
         select_out_of_range_comment(state, comment.id);
         return false;
@@ -261,34 +261,20 @@ fn display_rows_for_comment(state: &AppState, comment: &Comment) -> Option<(usiz
 }
 
 fn diff_display_rows_for_comment(state: &AppState, comment: &Comment) -> Vec<usize> {
-    if comment.anchor.segments.len() <= 1 {
-        return fallback_display_rows_for_comment(state, comment);
-    }
-
     let mut rows = Vec::new();
     for segment in comment
-        .anchor
+        .anchor()
         .segments
         .iter()
-        .filter(|segment| segment.file_path == comment.file_path)
+        .filter(|segment| segment.file_path == comment.file_path())
     {
         rows.extend(diff_display_rows_for_segment(state, segment));
     }
 
     if rows.is_empty() {
-        rows.extend(fallback_display_rows_for_comment(state, comment));
+        return Vec::new();
     }
     rows
-}
-
-fn fallback_display_rows_for_comment(state: &AppState, comment: &Comment) -> Vec<usize> {
-    let Some((line_start, line_end)) = visible_comment_line_range(state, comment) else {
-        return Vec::new();
-    };
-    vec![
-        display_row_for_visible_line(state, comment_line(line_start)),
-        display_row_for_visible_line(state, comment_line(line_end)),
-    ]
 }
 
 fn diff_display_rows_for_segment(state: &AppState, segment: &CommentAnchorSegment) -> Vec<usize> {
@@ -381,7 +367,7 @@ fn current_comment_for_line<'a>(
     let candidates: Vec<&Comment> = comments
         .iter()
         .filter(|comment| {
-            comment.file_path == path
+            comment.file_path() == path
                 && visible_comment_line_range_for_side(comment, side)
                     .is_some_and(|(start, end)| start <= line && end >= line)
         })
@@ -427,17 +413,17 @@ fn visible_comment_line_range_for_side(
     side: Option<CommentAnchorSide>,
 ) -> Option<(i64, i64)> {
     let Some(side) = side else {
-        return Some((comment.line_start, comment.line_end));
+        return Some((comment.line_start(), comment.line_end()));
     };
-    if side == CommentAnchorSide::Head && comment.anchor.segments.len() == 1 {
-        return Some((comment.line_start, comment.line_end));
+    if side == CommentAnchorSide::Head && comment.anchor().segments.len() == 1 {
+        return Some((comment.line_start(), comment.line_end()));
     }
 
     let mut segments = comment
-        .anchor
+        .anchor()
         .segments
         .iter()
-        .filter(|segment| segment.file_path == comment.file_path)
+        .filter(|segment| segment.file_path == comment.file_path())
         .filter(|segment| segment.side == side);
     let first = segments.next()?;
     let mut line_start = first.line_start;
@@ -457,12 +443,12 @@ fn current_file_comments(state: &AppState) -> Vec<&Comment> {
         .comments
         .iter()
         .filter(|comment| {
-            comment.file_path == path && visible_comment_line_range(state, comment).is_some()
+            comment.file_path() == path && visible_comment_line_range(state, comment).is_some()
         })
         .collect();
     comments.sort_by_key(|comment| {
         let (start, end) = visible_comment_line_range(state, comment)
-            .unwrap_or((comment.line_start, comment.line_end));
+            .unwrap_or((comment.line_start(), comment.line_end()));
         (start, end, comment.id)
     });
     comments

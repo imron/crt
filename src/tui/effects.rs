@@ -88,8 +88,7 @@ mod tests {
             vec![test_file("src/main.rs")],
         );
         let mut comment = stored_comment(7, "src/main.rs");
-        comment.line_start = 16;
-        comment.line_end = 24;
+        move_comment_head_range(&mut comment, 16, 24);
         app.state.comments = vec![comment];
         app.state.head_content = Some(
             (1..=60)
@@ -146,7 +145,7 @@ mod tests {
     }
 
     fn stored_comment(id: i64, file_path: &str) -> Comment {
-        Comment {
+        Comment::new(crate::review_types::CommentInit {
             id,
             merge_base: "abc123".to_string(),
             head_ref: "feature".to_string(),
@@ -167,19 +166,35 @@ mod tests {
                 }],
                 aggregate_status: AnchorAggregateStatus::Anchored,
             },
-            file_path: file_path.to_string(),
-            line_start: 2,
-            line_end: 2,
-            char_start: None,
-            char_end: None,
-            anchor_text: "anchor".to_string(),
-            context_before: String::new(),
-            context_after: String::new(),
             body: "comment".to_string(),
             resolved: false,
             created_at: "2026-06-28T00:00:00+10:00".to_string(),
             updated_at: "2026-06-28T00:00:00+10:00".to_string(),
             anchor_status: AnchorStatus::Anchored,
-        }
+        })
+        .expect("test comment anchor should be valid")
+    }
+
+    fn move_comment_head_range(comment: &mut Comment, line_start: i64, line_end: i64) {
+        let file_path = comment.file_path().to_string();
+        let anchor_text = comment.anchor_text().to_string();
+        comment
+            .replace_anchor(CommentAnchor {
+                segments: vec![CommentAnchorSegment {
+                    side: CommentAnchorSide::Head,
+                    file_path,
+                    line_start,
+                    line_end,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text,
+                    context_before: String::new(),
+                    context_after: String::new(),
+                    placement_status: AnchorPlacementStatus::Anchored,
+                    match_method: AnchorMatchMethod::ExactAtLine,
+                }],
+                aggregate_status: AnchorAggregateStatus::Anchored,
+            })
+            .expect("test comment anchor should be valid");
     }
 }

@@ -1914,26 +1914,19 @@ mod tests {
     }
 
     fn stored_comment(id: i64, file_path: &str) -> crate::review_types::Comment {
-        crate::review_types::Comment {
+        crate::review_types::Comment::new(crate::review_types::CommentInit {
             id,
             merge_base: "abc123".to_string(),
             head_ref: "feature".to_string(),
             created_head_commit: "head-commit".to_string(),
             anchor: test_anchor(file_path, 2, 2, "anchor"),
-            file_path: file_path.to_string(),
-            line_start: 2,
-            line_end: 2,
-            char_start: None,
-            char_end: None,
-            anchor_text: "anchor".to_string(),
-            context_before: String::new(),
-            context_after: String::new(),
             body: "comment".to_string(),
             resolved: false,
             created_at: "2026-06-28T00:00:00+10:00".to_string(),
             updated_at: "2026-06-28T00:00:00+10:00".to_string(),
             anchor_status: crate::review_types::AnchorStatus::Anchored,
-        }
+        })
+        .expect("test comment anchor should be valid")
     }
 
     fn test_anchor(
@@ -1958,6 +1951,18 @@ mod tests {
             }],
             aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
         }
+    }
+
+    fn move_comment_head_range(
+        comment: &mut crate::review_types::Comment,
+        line_start: i64,
+        line_end: i64,
+    ) {
+        let file_path = comment.file_path().to_string();
+        let anchor_text = comment.anchor_text().to_string();
+        comment
+            .replace_anchor(test_anchor(&file_path, line_start, line_end, &anchor_text))
+            .expect("test comment anchor should be valid");
     }
 
     fn segment_for_side(
@@ -2149,11 +2154,9 @@ mod tests {
             vec![test_file("a.rs"), test_file("b.rs")],
         );
         let mut first = stored_comment(3, "a.rs");
-        first.line_start = 2;
-        first.line_end = 2;
+        move_comment_head_range(&mut first, 2, 2);
         let mut second = stored_comment(5, "b.rs");
-        second.line_start = 6;
-        second.line_end = 6;
+        move_comment_head_range(&mut second, 6, 6);
         app.state.comments = vec![first, second];
         app.state.pane_focus = PaneFocus::FileList;
         app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
@@ -2194,8 +2197,7 @@ mod tests {
             vec![test_file("a.rs"), test_file("b.rs")],
         );
         let mut comment = stored_comment(9, "b.rs");
-        comment.line_start = 4;
-        comment.line_end = 4;
+        move_comment_head_range(&mut comment, 4, 4);
         app.state.comments = vec![comment];
         app.state.selected_file = 1;
         app.state.pane_focus = PaneFocus::FileList;
@@ -2226,11 +2228,9 @@ mod tests {
             vec![test_file("a.rs"), test_file("b.rs")],
         );
         let mut first = stored_comment(3, "a.rs");
-        first.line_start = 4;
-        first.line_end = 4;
+        move_comment_head_range(&mut first, 4, 4);
         let mut second = stored_comment(5, "b.rs");
-        second.line_start = 2;
-        second.line_end = 2;
+        move_comment_head_range(&mut second, 2, 2);
         app.state.comments = vec![first, second];
         app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
         app.state.content_mode = ContentMode::FullFile;
@@ -2284,17 +2284,13 @@ mod tests {
             vec![test_file("a.rs"), test_file("b.rs")],
         );
         let mut outer = stored_comment(9, "a.rs");
-        outer.line_start = 18;
-        outer.line_end = 29;
+        move_comment_head_range(&mut outer, 18, 29);
         let mut middle = stored_comment(14, "a.rs");
-        middle.line_start = 18;
-        middle.line_end = 21;
+        move_comment_head_range(&mut middle, 18, 21);
         let mut single = stored_comment(15, "a.rs");
-        single.line_start = 18;
-        single.line_end = 18;
+        move_comment_head_range(&mut single, 18, 18);
         let mut next_file = stored_comment(20, "b.rs");
-        next_file.line_start = 4;
-        next_file.line_end = 4;
+        move_comment_head_range(&mut next_file, 4, 4);
         app.state.comments = vec![outer, next_file, single, middle];
         app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
         app.state.content_mode = ContentMode::FullFile;
@@ -2367,8 +2363,7 @@ mod tests {
     fn unresolved_comment_navigation_selects_out_of_range_comment() {
         let mut app = App::new(Config::default(), test_context(), vec![test_file("a.rs")]);
         let mut comment = stored_comment(8, "mcp.rs");
-        comment.line_start = 12;
-        comment.line_end = 12;
+        move_comment_head_range(&mut comment, 12, 12);
         comment.body = "Previous session feedback".to_string();
         app.state.comments = vec![comment];
         app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
@@ -3405,8 +3400,7 @@ mod tests {
             vec![test_file("src/main.rs")],
         );
         let mut comment = stored_comment(8, "src/main.rs");
-        comment.line_start = 2;
-        comment.line_end = 2;
+        move_comment_head_range(&mut comment, 2, 2);
         app.state.comments = vec![comment];
         app.state.content_mode = ContentMode::FullFile;
         app.state.render_variant = RenderVariant::BaseVersion;
@@ -3437,39 +3431,39 @@ mod tests {
             vec![test_file("src/main.rs")],
         );
         let mut comment = stored_comment(8, "src/main.rs");
-        comment.anchor = crate::review_types::CommentAnchor {
-            segments: vec![
-                CommentAnchorSegment {
-                    side: CommentAnchorSide::Base,
-                    file_path: "src/main.rs".to_string(),
-                    line_start: 2,
-                    line_end: 2,
-                    char_start: None,
-                    char_end: None,
-                    anchor_text: "base two".to_string(),
-                    context_before: "base one".to_string(),
-                    context_after: "base three".to_string(),
-                    placement_status: AnchorPlacementStatus::Anchored,
-                    match_method: AnchorMatchMethod::ExactAtLine,
-                },
-                CommentAnchorSegment {
-                    side: CommentAnchorSide::Head,
-                    file_path: "src/main.rs".to_string(),
-                    line_start: 10,
-                    line_end: 10,
-                    char_start: None,
-                    char_end: None,
-                    anchor_text: "head ten".to_string(),
-                    context_before: "head nine".to_string(),
-                    context_after: "head eleven".to_string(),
-                    placement_status: AnchorPlacementStatus::Anchored,
-                    match_method: AnchorMatchMethod::ExactAtLine,
-                },
-            ],
-            aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
-        };
-        comment.line_start = 10;
-        comment.line_end = 10;
+        comment
+            .replace_anchor(crate::review_types::CommentAnchor {
+                segments: vec![
+                    CommentAnchorSegment {
+                        side: CommentAnchorSide::Base,
+                        file_path: "src/main.rs".to_string(),
+                        line_start: 2,
+                        line_end: 2,
+                        char_start: None,
+                        char_end: None,
+                        anchor_text: "base two".to_string(),
+                        context_before: "base one".to_string(),
+                        context_after: "base three".to_string(),
+                        placement_status: AnchorPlacementStatus::Anchored,
+                        match_method: AnchorMatchMethod::ExactAtLine,
+                    },
+                    CommentAnchorSegment {
+                        side: CommentAnchorSide::Head,
+                        file_path: "src/main.rs".to_string(),
+                        line_start: 10,
+                        line_end: 10,
+                        char_start: None,
+                        char_end: None,
+                        anchor_text: "head ten".to_string(),
+                        context_before: "head nine".to_string(),
+                        context_after: "head eleven".to_string(),
+                        placement_status: AnchorPlacementStatus::Anchored,
+                        match_method: AnchorMatchMethod::ExactAtLine,
+                    },
+                ],
+                aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
+            })
+            .expect("test comment anchor should be valid");
         app.state.comments = vec![comment];
         app.state.content_mode = ContentMode::FullFile;
         app.state.render_variant = RenderVariant::BaseVersion;
@@ -3500,39 +3494,39 @@ mod tests {
             vec![test_file("src/main.rs")],
         );
         let mut comment = stored_comment(8, "src/main.rs");
-        comment.anchor = crate::review_types::CommentAnchor {
-            segments: vec![
-                CommentAnchorSegment {
-                    side: CommentAnchorSide::Base,
-                    file_path: "src/main.rs".to_string(),
-                    line_start: 2,
-                    line_end: 2,
-                    char_start: None,
-                    char_end: None,
-                    anchor_text: "base two".to_string(),
-                    context_before: "base one".to_string(),
-                    context_after: "base three".to_string(),
-                    placement_status: AnchorPlacementStatus::Anchored,
-                    match_method: AnchorMatchMethod::ExactAtLine,
-                },
-                CommentAnchorSegment {
-                    side: CommentAnchorSide::Head,
-                    file_path: "src/main.rs".to_string(),
-                    line_start: 10,
-                    line_end: 10,
-                    char_start: None,
-                    char_end: None,
-                    anchor_text: "head ten".to_string(),
-                    context_before: "head nine".to_string(),
-                    context_after: "head eleven".to_string(),
-                    placement_status: AnchorPlacementStatus::Anchored,
-                    match_method: AnchorMatchMethod::ExactAtLine,
-                },
-            ],
-            aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
-        };
-        comment.line_start = 10;
-        comment.line_end = 10;
+        comment
+            .replace_anchor(crate::review_types::CommentAnchor {
+                segments: vec![
+                    CommentAnchorSegment {
+                        side: CommentAnchorSide::Base,
+                        file_path: "src/main.rs".to_string(),
+                        line_start: 2,
+                        line_end: 2,
+                        char_start: None,
+                        char_end: None,
+                        anchor_text: "base two".to_string(),
+                        context_before: "base one".to_string(),
+                        context_after: "base three".to_string(),
+                        placement_status: AnchorPlacementStatus::Anchored,
+                        match_method: AnchorMatchMethod::ExactAtLine,
+                    },
+                    CommentAnchorSegment {
+                        side: CommentAnchorSide::Head,
+                        file_path: "src/main.rs".to_string(),
+                        line_start: 10,
+                        line_end: 10,
+                        char_start: None,
+                        char_end: None,
+                        anchor_text: "head ten".to_string(),
+                        context_before: "head nine".to_string(),
+                        context_after: "head eleven".to_string(),
+                        placement_status: AnchorPlacementStatus::Anchored,
+                        match_method: AnchorMatchMethod::ExactAtLine,
+                    },
+                ],
+                aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
+            })
+            .expect("test comment anchor should be valid");
         app.state.comments = vec![comment];
         app.state.content_mode = ContentMode::FullFile;
         app.state.render_variant = RenderVariant::HeadVersion;
@@ -3769,11 +3763,9 @@ mod tests {
             vec![test_file("src/main.rs")],
         );
         let mut first = stored_comment(7, "src/main.rs");
-        first.line_start = 2;
-        first.line_end = 2;
+        move_comment_head_range(&mut first, 2, 2);
         let mut second = stored_comment(8, "src/main.rs");
-        second.line_start = 3;
-        second.line_end = 3;
+        move_comment_head_range(&mut second, 3, 3);
         app.state.comments = vec![first, second];
         app.state.head_content = Some("one\ntwo\nthree\n".to_string());
         app.state.show_comments_panel = true;
@@ -3802,11 +3794,9 @@ mod tests {
             vec![test_file("src/main.rs")],
         );
         let mut first = stored_comment(7, "src/main.rs");
-        first.line_start = 2;
-        first.line_end = 2;
+        move_comment_head_range(&mut first, 2, 2);
         let mut second = stored_comment(8, "src/main.rs");
-        second.line_start = 4;
-        second.line_end = 4;
+        move_comment_head_range(&mut second, 4, 4);
         app.state.comments = vec![first, second];
         app.state.head_content = Some("one\ntwo\nthree\nfour\nfive\n".to_string());
         app.state.diff_line_cursor = 2;
@@ -3846,8 +3836,7 @@ mod tests {
             vec![test_file("src/main.rs")],
         );
         let mut comment = stored_comment(7, "src/main.rs");
-        comment.line_start = 18;
-        comment.line_end = 20;
+        move_comment_head_range(&mut comment, 18, 20);
         app.state.comments = vec![comment];
         app.state.head_content = Some(
             (1..=30)
@@ -3878,8 +3867,7 @@ mod tests {
             vec![test_file("src/main.rs")],
         );
         let mut comment = stored_comment(7, "src/main.rs");
-        comment.line_start = 27;
-        comment.line_end = 29;
+        move_comment_head_range(&mut comment, 27, 29);
         app.state.comments = vec![comment];
         app.state.head_content = Some(
             (1..=30)
@@ -3910,8 +3898,7 @@ mod tests {
             vec![test_file("src/main.rs")],
         );
         let mut comment = stored_comment(7, "src/main.rs");
-        comment.line_start = 12;
-        comment.line_end = 30;
+        move_comment_head_range(&mut comment, 12, 30);
         app.state.comments = vec![comment];
         app.state.head_content = Some(
             (1..=40)
@@ -3942,8 +3929,7 @@ mod tests {
             vec![test_file_with_leading_deletion_hunk("src/main.rs")],
         );
         let mut comment = stored_comment(7, "src/main.rs");
-        comment.line_start = 16;
-        comment.line_end = 16;
+        move_comment_head_range(&mut comment, 16, 16);
         app.state.comments = vec![comment];
         app.state.head_content = Some(
             (1..=20)
@@ -3976,39 +3962,39 @@ mod tests {
             )],
         );
         let mut comment = stored_comment(7, "src/main.rs");
-        comment.line_start = 26;
-        comment.line_end = 28;
-        comment.anchor = crate::review_types::CommentAnchor {
-            segments: vec![
-                CommentAnchorSegment {
-                    side: CommentAnchorSide::Base,
-                    file_path: "src/main.rs".to_string(),
-                    line_start: 26,
-                    line_end: 26,
-                    char_start: None,
-                    char_end: None,
-                    anchor_text: "old".to_string(),
-                    context_before: String::new(),
-                    context_after: String::new(),
-                    placement_status: AnchorPlacementStatus::Anchored,
-                    match_method: AnchorMatchMethod::ExactAtLine,
-                },
-                CommentAnchorSegment {
-                    side: CommentAnchorSide::Head,
-                    file_path: "src/main.rs".to_string(),
-                    line_start: 27,
-                    line_end: 28,
-                    char_start: None,
-                    char_end: None,
-                    anchor_text: "new".to_string(),
-                    context_before: String::new(),
-                    context_after: String::new(),
-                    placement_status: AnchorPlacementStatus::Anchored,
-                    match_method: AnchorMatchMethod::ExactAtLine,
-                },
-            ],
-            aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
-        };
+        comment
+            .replace_anchor(crate::review_types::CommentAnchor {
+                segments: vec![
+                    CommentAnchorSegment {
+                        side: CommentAnchorSide::Base,
+                        file_path: "src/main.rs".to_string(),
+                        line_start: 26,
+                        line_end: 26,
+                        char_start: None,
+                        char_end: None,
+                        anchor_text: "old".to_string(),
+                        context_before: String::new(),
+                        context_after: String::new(),
+                        placement_status: AnchorPlacementStatus::Anchored,
+                        match_method: AnchorMatchMethod::ExactAtLine,
+                    },
+                    CommentAnchorSegment {
+                        side: CommentAnchorSide::Head,
+                        file_path: "src/main.rs".to_string(),
+                        line_start: 27,
+                        line_end: 28,
+                        char_start: None,
+                        char_end: None,
+                        anchor_text: "new".to_string(),
+                        context_before: String::new(),
+                        context_after: String::new(),
+                        placement_status: AnchorPlacementStatus::Anchored,
+                        match_method: AnchorMatchMethod::ExactAtLine,
+                    },
+                ],
+                aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
+            })
+            .expect("test comment anchor should be valid");
         app.state.comments = vec![comment];
         app.state.head_content = Some(
             (1..=34)
@@ -4038,8 +4024,7 @@ mod tests {
             vec![test_file_with_replacement_hunk("src/main.rs")],
         );
         let mut comment = stored_comment(7, "src/main.rs");
-        comment.line_start = 16;
-        comment.line_end = 16;
+        move_comment_head_range(&mut comment, 16, 16);
         app.state.comments = vec![comment];
         app.state.head_content = Some(
             (1..=20)
@@ -4071,14 +4056,11 @@ mod tests {
             vec![test_file("src/main.rs")],
         );
         let mut early = stored_comment(7, "src/main.rs");
-        early.line_start = 16;
-        early.line_end = 20;
+        move_comment_head_range(&mut early, 16, 20);
         let mut outer = stored_comment(8, "src/main.rs");
-        outer.line_start = 31;
-        outer.line_end = 50;
+        move_comment_head_range(&mut outer, 31, 50);
         let mut nested = stored_comment(9, "src/main.rs");
-        nested.line_start = 36;
-        nested.line_end = 36;
+        move_comment_head_range(&mut nested, 36, 36);
         app.state.comments = vec![early, outer, nested];
         app.state.head_content = Some(
             (1..=60)
@@ -4120,11 +4102,9 @@ mod tests {
         );
         app.state.head_content = Some("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n".to_string());
         let mut outer = stored_comment(1, "src/main.rs");
-        outer.line_start = 10;
-        outer.line_end = 14;
+        move_comment_head_range(&mut outer, 10, 14);
         let mut inner = stored_comment(2, "src/main.rs");
-        inner.line_start = 11;
-        inner.line_end = 11;
+        move_comment_head_range(&mut inner, 11, 11);
         app.state.comments = vec![outer, inner];
         app.state.diff_line_cursor = 10;
 

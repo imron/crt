@@ -133,9 +133,11 @@ pub fn build_side_by_side_diff(
         }
 
         if let Some((word_spans, em_style)) = emphasis {
-            let mut chars = prefix.chars().count();
-            if !prefix.is_empty() {
-                spans.push(Span::styled(prefix.to_string(), style));
+            let mut chars = 0usize;
+            if !prefix.is_empty() && chars < col_w {
+                let visible_prefix: String = prefix.chars().take(col_w - chars).collect();
+                chars += visible_prefix.chars().count();
+                spans.push(Span::styled(visible_prefix, style));
             }
             for ws in word_spans {
                 let (text, s) = match ws {
@@ -154,9 +156,19 @@ pub fn build_side_by_side_diff(
                 spans.push(Span::styled(" ".repeat(pad), style));
             }
         } else {
-            let truncated: String = content.chars().take(col_w).collect();
-            let text = format!("{prefix}{truncated}");
-            let pad = col_w.saturating_sub(text.chars().count());
+            let mut chars = 0usize;
+            let mut text = String::new();
+            if !prefix.is_empty() && chars < col_w {
+                let visible_prefix: String = prefix.chars().take(col_w - chars).collect();
+                chars += visible_prefix.chars().count();
+                text.push_str(&visible_prefix);
+            }
+            if chars < col_w {
+                let truncated: String = content.chars().take(col_w - chars).collect();
+                chars += truncated.chars().count();
+                text.push_str(&truncated);
+            }
+            let pad = col_w.saturating_sub(chars);
             spans.push(Span::styled(text, style));
             if pad > 0 {
                 spans.push(Span::styled(" ".repeat(pad), style));
@@ -484,5 +496,64 @@ mod tests {
         assert!(replacement_start.contains("● + new line one"));
         assert_eq!(replacement_tail.matches('●').count(), 1);
         assert!(replacement_tail.contains("● + new line two"));
+    }
+
+    #[test]
+    fn side_by_side_change_rows_do_not_overflow_inner_width() {
+        let hunk = review_types::DiffHunk {
+            header: "@@ -94 +97,2 @@".to_string(),
+            old_start: 94,
+            old_lines: 1,
+            new_start: 97,
+            new_lines: 2,
+            lines: vec![
+                review_types::DiffLine {
+                    kind: LineKind::Deletion,
+                    content: "pub fn navigate_to_comment_id(state: &mut AppState) {"
+                        .to_string(),
+                    old_lineno: Some(94),
+                    new_lineno: None,
+                },
+                review_types::DiffLine {
+                    kind: LineKind::Addition,
+                    content: "pub fn navigate_to_comment_id(state: &mut AppState, view: &impl AppViewport) {"
+                        .to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(97),
+                },
+                review_types::DiffLine {
+                    kind: LineKind::Addition,
+                    content: "    view: &impl AppViewport,".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(98),
+                },
+            ],
+        };
+        let model_hunk = model_hunk_from_review(&hunk);
+        let rows = side_by_side_diff_rows(&[hunk], None, None);
+        let inner_w = 50;
+
+        let built = build_side_by_side_diff(
+            &DiffStyle::default(),
+            Color::Black,
+            &[model_hunk],
+            &rows,
+            None,
+            &[],
+            &[],
+            &CommentMarkerSet::new(&[], None),
+            Color::Blue,
+            inner_w,
+        );
+
+        assert!(built.lines.len() >= 2);
+        for line in &built.lines {
+            let rendered_width: usize = line
+                .spans
+                .iter()
+                .map(|span| span.content.chars().count())
+                .sum();
+            assert!(rendered_width <= inner_w, "{rendered_width} > {inner_w}");
+        }
     }
 }

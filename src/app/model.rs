@@ -798,9 +798,7 @@ fn file_list_model(state: &AppState) -> FileList {
         std::collections::HashMap::new();
     for comment in &state.comments {
         if !comment.resolved {
-            *unresolved_counts
-                .entry(comment.file_path.as_str())
-                .or_default() += 1;
+            *unresolved_counts.entry(comment.file_path()).or_default() += 1;
         }
     }
 
@@ -914,12 +912,12 @@ fn unresolved_comment_rows(
         let mut comments: Vec<_> = state
             .comments
             .iter()
-            .filter(|comment| !comment.resolved && comment.file_path == entry.change.path)
+            .filter(|comment| !comment.resolved && comment.file_path() == entry.change.path)
             .collect();
         if comments.is_empty() {
             continue;
         }
-        comments.sort_by_key(|comment| (comment.line_start, comment.line_end, comment.id));
+        comments.sort_by_key(|comment| (comment.line_start(), comment.line_end(), comment.id));
         rows.push(file_row_model(
             index,
             state.selected_file,
@@ -948,9 +946,9 @@ fn unresolved_comment_rows(
         let mut comments: Vec<_> = state
             .comments
             .iter()
-            .filter(|comment| !comment.resolved && comment.file_path == path)
+            .filter(|comment| !comment.resolved && comment.file_path() == path)
             .collect();
-        comments.sort_by_key(|comment| (comment.line_start, comment.line_end, comment.id));
+        comments.sort_by_key(|comment| (comment.line_start(), comment.line_end(), comment.id));
         rows.push(external_file_row_model(path, state, unresolved_counts));
         for comment in comments {
             rows.push(external_comment_row_model(
@@ -1010,7 +1008,7 @@ fn comment_row_model(
             && state.selected_comment_id == Some(comment.id),
         unresolved_comment_count: count,
         comment_id: Some(comment.id),
-        comment_line_start: Some(comment.line_start),
+        comment_line_start: Some(comment.line_start()),
         comment_preview: Some(comment_preview(&comment.body)),
     }
 }
@@ -1034,7 +1032,7 @@ fn external_comment_row_model(
             && state.selected_comment_id == Some(comment.id),
         unresolved_comment_count: count,
         comment_id: Some(comment.id),
-        comment_line_start: Some(comment.line_start),
+        comment_line_start: Some(comment.line_start()),
         comment_preview: Some(comment_preview(&comment.body)),
     }
 }
@@ -1235,15 +1233,15 @@ fn comment_attachments_for_file_and_side(
 ) -> Vec<CommentAttachment> {
     comments
         .iter()
-        .filter(|comment| comment.file_path == file_path)
+        .filter(|comment| comment.file_path() == file_path)
         .filter_map(|comment| {
             let line_start = comment_anchor_line_start(comment, side)?;
             let line_end = comment_anchor_line_end(comment, side)?;
             let side_ranges = comment
-                .anchor
+                .anchor()
                 .segments
                 .iter()
-                .filter(|segment| segment.file_path == comment.file_path)
+                .filter(|segment| segment.file_path == comment.file_path())
                 .filter(|segment| side.is_none_or(|side| segment.side == side))
                 .map(|segment| CommentAttachmentRange {
                     side: segment.side,
@@ -1256,7 +1254,7 @@ fn comment_attachments_for_file_and_side(
                 line_start,
                 line_end,
                 resolved: comment.resolved,
-                anchor_status: comment.anchor_status,
+                anchor_status: comment.anchor_status(),
                 side_ranges,
             })
         })
@@ -1268,10 +1266,10 @@ fn comment_anchor_line_start(
     side: Option<review_types::CommentAnchorSide>,
 ) -> Option<i64> {
     comment
-        .anchor
+        .anchor()
         .segments
         .iter()
-        .filter(|segment| segment.file_path == comment.file_path)
+        .filter(|segment| segment.file_path == comment.file_path())
         .filter(|segment| side.is_none_or(|side| segment.side == side))
         .map(|segment| segment.line_start)
         .min()
@@ -1282,10 +1280,10 @@ fn comment_anchor_line_end(
     side: Option<review_types::CommentAnchorSide>,
 ) -> Option<i64> {
     comment
-        .anchor
+        .anchor()
         .segments
         .iter()
-        .filter(|segment| segment.file_path == comment.file_path)
+        .filter(|segment| segment.file_path == comment.file_path())
         .filter(|segment| side.is_none_or(|side| segment.side == side))
         .map(|segment| segment.line_end)
         .max()
@@ -1299,9 +1297,9 @@ fn comments_panel_model(state: &AppState) -> CommentsPanel {
     let mut file_comments: Vec<&review_types::Comment> = state
         .comments
         .iter()
-        .filter(|comment| selected_path.is_none_or(|path| comment.file_path == path))
+        .filter(|comment| selected_path.is_none_or(|path| comment.file_path() == path))
         .collect();
-    file_comments.sort_by_key(|comment| (comment.line_start, comment.line_end, comment.id));
+    file_comments.sort_by_key(|comment| (comment.line_start(), comment.line_end(), comment.id));
     let file_comment_ids: Vec<i64> = file_comments.iter().map(|comment| comment.id).collect();
     let detail_id = if state.pane_focus == PaneFocus::Comments {
         state.selected_comment_id
@@ -1316,33 +1314,33 @@ fn comments_panel_model(state: &AppState) -> CommentsPanel {
         state
             .comments
             .iter()
-            .find(|comment| Some(comment.file_path.as_str()) != selected_path && comment.id == id)
+            .find(|comment| Some(comment.file_path()) != selected_path && comment.id == id)
     });
     let comments = detail_id
         .and_then(|id| state.comments.iter().find(|comment| comment.id == id))
         .filter(|comment| {
-            selected_path.is_none_or(|path| comment.file_path == path)
+            selected_path.is_none_or(|path| comment.file_path() == path)
                 || Some(comment.id) == state.selected_comment_id
         })
         .or(selected_comment_out_of_range)
         .map(|comment| {
-            let current = selected_path.is_some_and(|path| comment.file_path == path)
+            let current = selected_path.is_some_and(|path| comment.file_path() == path)
                 && current_line
-                    .is_some_and(|line| comment.line_start <= line && comment.line_end >= line);
+                    .is_some_and(|line| comment.line_start() <= line && comment.line_end() >= line);
             let expanded =
                 !comment.resolved || current || state.expanded_comment_ids.contains(&comment.id);
             vec![CommentItem {
                 id: comment.id,
-                file_path: comment.file_path.clone(),
-                line_start: comment.line_start,
-                line_end: comment.line_end,
+                file_path: comment.file_path().to_string(),
+                line_start: comment.line_start(),
+                line_end: comment.line_end(),
                 body: comment.body.clone(),
                 preview: comment_preview(&comment.body),
                 resolved: comment.resolved,
                 expanded,
                 selected: Some(comment.id) == state.selected_comment_id,
                 current,
-                anchor_status: comment.anchor_status,
+                anchor_status: comment.anchor_status(),
             }]
         })
         .unwrap_or_default();
@@ -1369,21 +1367,26 @@ fn current_comment_id_for_line(
     let candidates: Vec<&review_types::Comment> = comments
         .iter()
         .filter(|comment| {
-            comment.file_path == path && comment.line_start <= line && comment.line_end >= line
+            comment.file_path() == path
+                && comment.line_start() <= line
+                && comment.line_end() >= line
         })
         .collect();
-    let max_start = candidates.iter().map(|comment| comment.line_start).max()?;
+    let max_start = candidates
+        .iter()
+        .map(|comment| comment.line_start())
+        .max()?;
     if let Some(selected) = selected_comment_id.and_then(|id| {
         candidates
             .iter()
             .copied()
-            .find(|comment| comment.id == id && comment.line_start == max_start)
+            .find(|comment| comment.id == id && comment.line_start() == max_start)
     }) {
         return Some(selected.id);
     }
     candidates
         .into_iter()
-        .filter(|comment| comment.line_start == max_start)
+        .filter(|comment| comment.line_start() == max_start)
         .max_by_key(|comment| comment.id)
         .map(|comment| comment.id)
 }
@@ -1639,26 +1642,19 @@ mod tests {
     }
 
     fn stored_comment(id: i64, file_path: &str, resolved: bool) -> review_types::Comment {
-        review_types::Comment {
+        review_types::Comment::new(review_types::CommentInit {
             id,
             merge_base: "abc123".to_string(),
             head_ref: "feature".to_string(),
             created_head_commit: "head-commit".to_string(),
             anchor: test_anchor(file_path, 2, 2, "anchor"),
-            file_path: file_path.to_string(),
-            line_start: 2,
-            line_end: 2,
-            char_start: None,
-            char_end: None,
-            anchor_text: "anchor".to_string(),
-            context_before: String::new(),
-            context_after: String::new(),
             body: "comment".to_string(),
             resolved,
             created_at: "2026-06-28T00:00:00+10:00".to_string(),
             updated_at: "2026-06-28T00:00:00+10:00".to_string(),
             anchor_status: AnchorStatus::Anchored,
-        }
+        })
+        .expect("test comment anchor should be valid")
     }
 
     fn test_anchor(
@@ -1687,19 +1683,10 @@ mod tests {
 
     fn compound_comment(
         id: i64,
-        file_path: &str,
+        _file_path: &str,
         segments: Vec<review_types::CommentAnchorSegment>,
     ) -> review_types::Comment {
-        let head = segments
-            .iter()
-            .find(|segment| segment.side == review_types::CommentAnchorSide::Head);
-        let projected = head.or_else(|| segments.first());
-        let projected_line_start = projected.map(|segment| segment.line_start).unwrap_or(1);
-        let projected_line_end = projected.map(|segment| segment.line_end).unwrap_or(1);
-        let projected_anchor_text = projected
-            .map(|segment| segment.anchor_text.clone())
-            .unwrap_or_default();
-        review_types::Comment {
+        review_types::Comment::new(review_types::CommentInit {
             id,
             merge_base: "abc123".to_string(),
             head_ref: "feature".to_string(),
@@ -1708,20 +1695,25 @@ mod tests {
                 segments,
                 aggregate_status: review_types::AnchorAggregateStatus::Anchored,
             },
-            file_path: file_path.to_string(),
-            line_start: projected_line_start,
-            line_end: projected_line_end,
-            char_start: None,
-            char_end: None,
-            anchor_text: projected_anchor_text,
-            context_before: String::new(),
-            context_after: String::new(),
             body: "compound".to_string(),
             resolved: false,
             created_at: "2026-06-28T00:00:00+10:00".to_string(),
             updated_at: "2026-06-28T00:00:00+10:00".to_string(),
             anchor_status: AnchorStatus::Anchored,
-        }
+        })
+        .expect("test comment anchor should be valid")
+    }
+
+    fn move_comment_head_range(
+        comment: &mut review_types::Comment,
+        line_start: i64,
+        line_end: i64,
+    ) {
+        let file_path = comment.file_path().to_string();
+        let anchor_text = comment.anchor_text().to_string();
+        comment
+            .replace_anchor(test_anchor(&file_path, line_start, line_end, &anchor_text))
+            .expect("test comment anchor should be valid");
     }
 
     fn anchor_segment(
@@ -2248,11 +2240,10 @@ mod tests {
             ],
         );
         let mut first = stored_comment(4, "a.rs", false);
-        first.line_start = 12;
-        first.line_end = 14;
+        move_comment_head_range(&mut first, 12, 14);
         first.body = "First line of the comment\nsecond line".to_string();
         let mut second = stored_comment(5, "a.rs", false);
-        second.line_start = 4;
+        move_comment_head_range(&mut second, 4, 4);
         second.body = "Earlier comment".to_string();
         app.state.comments = vec![first, stored_comment(6, "b.rs", true), second];
         app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
@@ -2288,7 +2279,7 @@ mod tests {
             )],
         );
         let mut comment = stored_comment(8, "mcp.rs", false);
-        comment.line_start = 22;
+        move_comment_head_range(&mut comment, 22, 22);
         comment.body = "Previous session feedback".to_string();
         app.state.comments = vec![comment];
         app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
@@ -2324,12 +2315,10 @@ mod tests {
         app.state.pane_focus = PaneFocus::Diff;
         app.state.show_comments_panel = true;
         let mut first = stored_comment(1, "a.rs", false);
-        first.line_start = 10;
-        first.line_end = 20;
+        move_comment_head_range(&mut first, 10, 20);
         first.body = "Selected same-start comment".to_string();
         let mut second = stored_comment(2, "a.rs", false);
-        second.line_start = 10;
-        second.line_end = 25;
+        move_comment_head_range(&mut second, 10, 25);
         second.body = "Other same-start comment".to_string();
         app.state.comments = vec![first, second];
         app.state.selected_comment_id = Some(1);
@@ -2453,25 +2442,24 @@ mod tests {
         app.state.head_content = Some("head one\nhead two\nhead three\n".to_string());
 
         let mut comment = stored_comment(7, "src/lib.rs", false);
-        comment.anchor = review_types::CommentAnchor {
-            segments: vec![review_types::CommentAnchorSegment {
-                side: review_types::CommentAnchorSide::Base,
-                file_path: "src/lib.rs".to_string(),
-                line_start: 2,
-                line_end: 2,
-                char_start: None,
-                char_end: None,
-                anchor_text: "base two".to_string(),
-                context_before: "base one".to_string(),
-                context_after: "base three".to_string(),
-                placement_status: review_types::AnchorPlacementStatus::Anchored,
-                match_method: review_types::AnchorMatchMethod::ExactAtLine,
-            }],
-            aggregate_status: review_types::AnchorAggregateStatus::Anchored,
-        };
-        comment.line_start = 2;
-        comment.line_end = 2;
-        comment.anchor_text = "base two".to_string();
+        comment
+            .replace_anchor(review_types::CommentAnchor {
+                segments: vec![review_types::CommentAnchorSegment {
+                    side: review_types::CommentAnchorSide::Base,
+                    file_path: "src/lib.rs".to_string(),
+                    line_start: 2,
+                    line_end: 2,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "base two".to_string(),
+                    context_before: "base one".to_string(),
+                    context_after: "base three".to_string(),
+                    placement_status: review_types::AnchorPlacementStatus::Anchored,
+                    match_method: review_types::AnchorMatchMethod::ExactAtLine,
+                }],
+                aggregate_status: review_types::AnchorAggregateStatus::Anchored,
+            })
+            .expect("test comment anchor should be valid");
         app.state.comments = vec![comment];
 
         let model = app.model();
@@ -2503,24 +2491,24 @@ mod tests {
         app.state.head_content = Some("head one\nhead two\n".to_string());
 
         let mut comment = stored_comment(7, "src/lib.rs", false);
-        comment.anchor = review_types::CommentAnchor {
-            segments: vec![review_types::CommentAnchorSegment {
-                side: review_types::CommentAnchorSide::Base,
-                file_path: "src/lib.rs".to_string(),
-                line_start: 2,
-                line_end: 2,
-                char_start: None,
-                char_end: None,
-                anchor_text: "base two".to_string(),
-                context_before: "base one".to_string(),
-                context_after: String::new(),
-                placement_status: review_types::AnchorPlacementStatus::Anchored,
-                match_method: review_types::AnchorMatchMethod::ExactAtLine,
-            }],
-            aggregate_status: review_types::AnchorAggregateStatus::Anchored,
-        };
-        comment.line_start = 2;
-        comment.line_end = 2;
+        comment
+            .replace_anchor(review_types::CommentAnchor {
+                segments: vec![review_types::CommentAnchorSegment {
+                    side: review_types::CommentAnchorSide::Base,
+                    file_path: "src/lib.rs".to_string(),
+                    line_start: 2,
+                    line_end: 2,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "base two".to_string(),
+                    context_before: "base one".to_string(),
+                    context_after: String::new(),
+                    placement_status: review_types::AnchorPlacementStatus::Anchored,
+                    match_method: review_types::AnchorMatchMethod::ExactAtLine,
+                }],
+                aggregate_status: review_types::AnchorAggregateStatus::Anchored,
+            })
+            .expect("test comment anchor should be valid");
         app.state.comments = vec![comment];
 
         let model = app.model();
@@ -2650,8 +2638,7 @@ mod tests {
         app.state.base_content = Some("base one\nbase two\n".to_string());
         app.state.head_content = Some("head one\nhead two\n".to_string());
         let mut comment = stored_comment(8, "src/lib.rs", false);
-        comment.line_start = 2;
-        comment.line_end = 2;
+        move_comment_head_range(&mut comment, 2, 2);
         app.state.comments = vec![comment];
 
         let model = app.model();
@@ -2661,7 +2648,7 @@ mod tests {
 
     #[test]
     fn paired_anchor_span_is_order_independent_when_head_precedes_base() {
-        let comment = review_types::Comment {
+        let comment = review_types::Comment::new(review_types::CommentInit {
             id: 43,
             merge_base: "abc123".to_string(),
             head_ref: "feature".to_string(),
@@ -2697,20 +2684,13 @@ mod tests {
                 ],
                 aggregate_status: review_types::AnchorAggregateStatus::Anchored,
             },
-            file_path: "src/lib.rs".to_string(),
-            line_start: 3,
-            line_end: 4,
-            char_start: None,
-            char_end: None,
-            anchor_text: "head".to_string(),
-            context_before: String::new(),
-            context_after: String::new(),
             body: "compound".to_string(),
             resolved: false,
             created_at: "2026-06-28T00:00:00+10:00".to_string(),
             updated_at: "2026-06-28T00:00:00+10:00".to_string(),
             anchor_status: AnchorStatus::Anchored,
-        };
+        })
+        .expect("test comment anchor should be valid");
 
         let attachments = comment_attachments_for_file(&[comment], "src/lib.rs");
 
