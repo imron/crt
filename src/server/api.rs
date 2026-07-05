@@ -1183,12 +1183,20 @@ async fn base_file_content(
     ctx: &ConnectionContext,
     file_path: &str,
 ) -> anyhow::Result<Option<(String, String)>> {
+    commit_file_content(ctx, &ctx.merge_base.to_string(), file_path).await
+}
+
+async fn commit_file_content(
+    ctx: &ConnectionContext,
+    refspec: &str,
+    file_path: &str,
+) -> anyhow::Result<Option<(String, String)>> {
     let worktree = ctx.worktree.clone();
-    let merge_base = ctx.merge_base.to_string();
+    let refspec = refspec.to_string();
     let file_path = file_path.to_string();
     let content = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<String>> {
         let repo = git::Repo::open(&worktree)?;
-        repo.file_content(&merge_base, &file_path)
+        repo.file_content(&refspec, &file_path)
     })
     .await??;
 
@@ -1227,9 +1235,10 @@ async fn reanchor_comments(
     db: &Arc<Mutex<Database>>,
     comments: Vec<StoredComment>,
 ) -> anyhow::Result<Vec<StoredComment>> {
+    let range = CommentReanchorRange::current_session(ctx);
     let mut reanchored = Vec::with_capacity(comments.len());
     for comment in comments {
-        reanchored.push(reanchor_comment(ctx, db, comment).await?);
+        reanchored.push(reanchor_comment_for_range(ctx, db, &range, comment).await?);
     }
     Ok(reanchored)
 }
@@ -1239,24 +1248,69 @@ async fn reanchor_comment(
     db: &Arc<Mutex<Database>>,
     comment: StoredComment,
 ) -> anyhow::Result<StoredComment> {
+    let range = CommentReanchorRange::current_session(ctx);
+    reanchor_comment_for_range(ctx, db, &range, comment).await
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommentReanchorRange {
+    base: ReanchorEndpoint,
+    head: ReanchorEndpoint,
+}
+
+impl CommentReanchorRange {
+    fn current_session(ctx: &ConnectionContext) -> Self {
+        Self {
+            base: ReanchorEndpoint::Commit {
+                refspec: ctx.merge_base.to_string(),
+            },
+            head: ReanchorEndpoint::Worktree {
+                compare_to: Some(ctx.head.resolved_commit().to_string()),
+            },
+        }
+    }
+
+    fn endpoint_for_side(&self, side: review_types::CommentAnchorSide) -> &ReanchorEndpoint {
+        match side {
+            review_types::CommentAnchorSide::Base => &self.base,
+            review_types::CommentAnchorSide::Head => &self.head,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReanchorEndpoint {
+    #[allow(dead_code)]
+    Root,
+    Commit {
+        refspec: String,
+    },
+    Worktree {
+        compare_to: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReanchorFileContent {
+    content: String,
+    file_blob_sha: String,
+}
+
+async fn reanchor_comment_for_range(
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    range: &CommentReanchorRange,
+    comment: StoredComment,
+) -> anyhow::Result<StoredComment> {
     if comment.resolved {
         return Ok(comment);
     }
 
-    let anchor = match current_file_content(ctx, &comment.file_path).await? {
-        Some((content, file_blob_sha)) => {
-            // Skip re-resolution when the file content is unchanged
-            // since the last anchor version.  The stored line_start and
-            // status are already correct for this content.
-            if file_blob_sha == comment.file_blob_sha {
-                return Ok(comment);
-            }
+    if range_preferred_blob_matches(ctx, range, &comment).await? {
+        return Ok(comment);
+    }
 
-            let adjusted_hint = compute_adjusted_hint(ctx, &comment.file_path, &comment).await;
-            resolve_anchor(&comment, &content, file_blob_sha, adjusted_hint)
-        }
-        None => orphaned_anchor(&comment, String::new()),
-    };
+    let anchor = resolve_anchor_for_range(ctx, range, &comment).await?;
 
     {
         let db_guard = db.lock().await;
@@ -1269,21 +1323,128 @@ async fn reanchor_comment(
     Ok(apply_anchor(comment, &anchor))
 }
 
-/// Compute the expected new position (0-indexed) for a comment by
-/// diffing the file at the head commit against the current workdir.
-/// Returns `None` if the diff cannot be computed (e.g. new file).
-async fn compute_adjusted_hint(
+async fn range_preferred_blob_matches(
+    ctx: &ConnectionContext,
+    range: &CommentReanchorRange,
+    comment: &StoredComment,
+) -> anyhow::Result<bool> {
+    if comment.file_blob_sha.is_empty() {
+        return Ok(false);
+    }
+
+    let Some(segment) = preferred_anchor_segment(comment) else {
+        return Ok(false);
+    };
+    let Some(content) = range_file_content(ctx, range, segment.side, &segment.file_path).await?
+    else {
+        return Ok(comment.file_blob_sha.is_empty());
+    };
+    Ok(content.file_blob_sha == comment.file_blob_sha)
+}
+
+fn preferred_anchor_segment(
+    comment: &StoredComment,
+) -> Option<&review_types::CommentAnchorSegment> {
+    comment
+        .anchor
+        .segments
+        .iter()
+        .find(|segment| segment.side == review_types::CommentAnchorSide::Head)
+        .or_else(|| comment.anchor.segments.first())
+}
+
+async fn resolve_anchor_for_range(
+    ctx: &ConnectionContext,
+    range: &CommentReanchorRange,
+    comment: &StoredComment,
+) -> anyhow::Result<NewCommentAnchor> {
+    let mut segments = Vec::with_capacity(comment.anchor.segments.len());
+    for segment in &comment.anchor.segments {
+        let content = range_file_content(ctx, range, segment.side, &segment.file_path).await?;
+        let resolved = match content {
+            Some(content) => {
+                let adjusted_hint = adjusted_hint_for_range_segment(ctx, range, segment).await;
+                resolve_anchor_segment(
+                    segment,
+                    &content.content,
+                    content.file_blob_sha,
+                    adjusted_hint,
+                )
+            }
+            None => orphaned_anchor_segment(segment, String::new()),
+        };
+        segments.push(resolved);
+    }
+
+    Ok(NewCommentAnchor {
+        aggregate_status: aggregate_status_for_new_segments(&segments),
+        segments,
+    })
+}
+
+async fn range_file_content(
+    ctx: &ConnectionContext,
+    range: &CommentReanchorRange,
+    side: review_types::CommentAnchorSide,
+    file_path: &str,
+) -> anyhow::Result<Option<ReanchorFileContent>> {
+    endpoint_file_content(ctx, range.endpoint_for_side(side), file_path).await
+}
+
+async fn endpoint_file_content(
+    ctx: &ConnectionContext,
+    endpoint: &ReanchorEndpoint,
+    file_path: &str,
+) -> anyhow::Result<Option<ReanchorFileContent>> {
+    match endpoint {
+        ReanchorEndpoint::Root => Ok(None),
+        ReanchorEndpoint::Worktree { .. } => {
+            Ok(current_file_content(ctx, file_path)
+                .await?
+                .map(|(content, file_blob_sha)| ReanchorFileContent {
+                    content,
+                    file_blob_sha,
+                }))
+        }
+        ReanchorEndpoint::Commit { refspec } => Ok(commit_file_content(ctx, refspec, file_path)
+            .await?
+            .map(|(content, file_blob_sha)| ReanchorFileContent {
+                content,
+                file_blob_sha,
+            })),
+    }
+}
+
+async fn adjusted_hint_for_range_segment(
+    ctx: &ConnectionContext,
+    range: &CommentReanchorRange,
+    segment: &review_types::CommentAnchorSegment,
+) -> Option<usize> {
+    match range.endpoint_for_side(segment.side) {
+        ReanchorEndpoint::Worktree {
+            compare_to: Some(compare_to),
+        } => {
+            compute_adjusted_hint_for_line(ctx, &segment.file_path, segment.line_start, compare_to)
+                .await
+        }
+        ReanchorEndpoint::Root
+        | ReanchorEndpoint::Worktree { compare_to: None }
+        | ReanchorEndpoint::Commit { .. } => None,
+    }
+}
+
+async fn compute_adjusted_hint_for_line(
     ctx: &ConnectionContext,
     file_path: &str,
-    comment: &StoredComment,
+    line_start: i64,
+    compare_to: &str,
 ) -> Option<usize> {
-    let stored_line = comment
-        .line_start
+    let stored_line = line_start
         .checked_sub(1)
         .and_then(|l| usize::try_from(l).ok())?;
 
     let worktree = ctx.worktree.clone();
-    let head_commit = ctx.head.resolved_commit().to_string();
+    let head_commit = compare_to.to_string();
     let fp = file_path.to_string();
 
     let diff = tokio::task::spawn_blocking(move || -> Option<_> {
@@ -1361,16 +1522,38 @@ fn translate_line_through_hunks(hunks: &[review_types::DiffHunk], old_line: usiz
     if adjusted < 0 { 0 } else { adjusted as usize }
 }
 
+#[cfg(test)]
 fn resolve_anchor(
     comment: &StoredComment,
     content: &str,
     file_blob_sha: String,
     adjusted_hint: Option<usize>,
 ) -> NewCommentAnchor {
+    let segments: Vec<NewCommentAnchorSegment> = comment
+        .anchor
+        .segments
+        .iter()
+        .map(|segment| {
+            resolve_anchor_segment(segment, content, file_blob_sha.clone(), adjusted_hint)
+        })
+        .collect();
+
+    NewCommentAnchor {
+        aggregate_status: aggregate_status_for_new_segments(&segments),
+        segments,
+    }
+}
+
+fn resolve_anchor_segment(
+    segment: &review_types::CommentAnchorSegment,
+    content: &str,
+    file_blob_sha: String,
+    adjusted_hint: Option<usize>,
+) -> NewCommentAnchorSegment {
     let lines = content_lines(content);
-    let anchor_lines = anchor_lines(&comment.anchor_text);
+    let anchor_lines = anchor_lines(&segment.anchor_text);
     let span = anchor_lines.len().max(1);
-    let stored_index = comment
+    let stored_index = segment
         .line_start
         .checked_sub(1)
         .and_then(|line| usize::try_from(line).ok());
@@ -1380,16 +1563,13 @@ fn resolve_anchor(
     let try_indices: [Option<usize>; 2] = [adjusted_hint, stored_index];
     for candidate in try_indices.into_iter().flatten() {
         if matches_sequence(&lines, candidate, &anchor_lines) {
-            return with_preserved_non_head_segments(
-                comment,
-                anchor_from_range(
-                    comment,
-                    &lines,
-                    candidate,
-                    span,
-                    file_blob_sha,
-                    review_types::AnchorStatus::Anchored,
-                ),
+            return anchor_segment_from_range(
+                segment,
+                &lines,
+                candidate,
+                span,
+                file_blob_sha,
+                review_types::AnchorStatus::Anchored,
             );
         }
     }
@@ -1397,76 +1577,44 @@ fn resolve_anchor(
     let hint = adjusted_hint.or(stored_index).unwrap_or(0);
 
     if let Some(index) = find_sequence_nearest(&lines, &anchor_lines, hint) {
-        return with_preserved_non_head_segments(
-            comment,
-            anchor_from_range(
-                comment,
-                &lines,
-                index,
-                span,
-                file_blob_sha,
-                review_types::AnchorStatus::Shifted,
-            ),
+        return anchor_segment_from_range(
+            segment,
+            &lines,
+            index,
+            span,
+            file_blob_sha,
+            review_types::AnchorStatus::Shifted,
         );
     }
 
     if let Some(index) = find_multiline_line_match_nearest(&lines, &anchor_lines, hint) {
-        return with_preserved_non_head_segments(
-            comment,
-            anchor_from_range(
-                comment,
-                &lines,
-                index,
-                span,
-                file_blob_sha,
-                review_types::AnchorStatus::Approximate,
-            ),
+        return anchor_segment_from_range(
+            segment,
+            &lines,
+            index,
+            span,
+            file_blob_sha,
+            review_types::AnchorStatus::Approximate,
         );
     }
 
-    if let Some((index, context_span)) = find_context_match(comment, &lines, span) {
-        return with_preserved_non_head_segments(
-            comment,
-            anchor_from_range(
-                comment,
-                &lines,
-                index,
-                context_span,
-                file_blob_sha,
-                review_types::AnchorStatus::Approximate,
-            ),
+    if let Some((index, context_span)) = find_context_match(
+        &segment.context_before,
+        &segment.context_after,
+        &lines,
+        span,
+    ) {
+        return anchor_segment_from_range(
+            segment,
+            &lines,
+            index,
+            context_span,
+            file_blob_sha,
+            review_types::AnchorStatus::Approximate,
         );
     }
 
-    with_preserved_non_head_segments(comment, orphaned_anchor(comment, file_blob_sha))
-}
-
-fn with_preserved_non_head_segments(
-    comment: &StoredComment,
-    mut anchor: NewCommentAnchor,
-) -> NewCommentAnchor {
-    for segment in &comment.anchor.segments {
-        if segment.side == review_types::CommentAnchorSide::Head {
-            continue;
-        }
-        anchor.segments.push(NewCommentAnchorSegment {
-            side: segment.side,
-            file_path: segment.file_path.clone(),
-            file_blob_sha: String::new(),
-            line_start: segment.line_start,
-            line_end: segment.line_end,
-            char_start: segment.char_start,
-            char_end: segment.char_end,
-            anchor_text: segment.anchor_text.clone(),
-            context_before: segment.context_before.clone(),
-            context_after: segment.context_after.clone(),
-            placement_status: segment.placement_status,
-            match_method: segment.match_method,
-        });
-    }
-
-    anchor.aggregate_status = aggregate_status_for_new_segments(&anchor.segments);
-    anchor
+    orphaned_anchor_segment(segment, file_blob_sha)
 }
 
 fn aggregate_status_for_new_segments(
@@ -1641,12 +1789,13 @@ fn count_line_occurrences(lines: &[&str], needle: &str) -> usize {
 }
 
 fn find_context_match(
-    comment: &StoredComment,
+    context_before: &str,
+    context_after: &str,
     lines: &[&str],
     span: usize,
 ) -> Option<(usize, usize)> {
-    let before = context_lines(&comment.context_before);
-    let after = context_lines(&comment.context_after);
+    let before = context_lines(context_before);
+    let after = context_lines(context_after);
 
     if !before.is_empty() && !after.is_empty() {
         let mut start = 0;
@@ -1700,25 +1849,26 @@ fn context_lines(context: &str) -> Vec<&str> {
     }
 }
 
-fn anchor_from_range(
-    comment: &StoredComment,
+fn anchor_segment_from_range(
+    segment: &review_types::CommentAnchorSegment,
     lines: &[&str],
     start: usize,
     span: usize,
     file_blob_sha: String,
     status: review_types::AnchorStatus,
-) -> NewCommentAnchor {
+) -> NewCommentAnchorSegment {
     let safe_start = start.min(lines.len());
     let end = safe_start.saturating_add(span).min(lines.len());
     let (context_before, context_after) = context_around(lines, safe_start, end);
 
-    single_head_anchor(
-        &comment.file_path,
+    segment_from_parts(
+        segment.side,
+        &segment.file_path,
         file_blob_sha,
         usize_to_i64_saturating(safe_start + 1),
         usize_to_i64_saturating(end.max(safe_start + 1)),
-        comment.char_start,
-        comment.char_end,
+        segment.char_start,
+        segment.char_end,
         lines[safe_start..end].join("\n"),
         context_before,
         context_after,
@@ -1742,23 +1892,28 @@ fn context_around(lines: &[&str], start: usize, end: usize) -> (String, String) 
     )
 }
 
-fn orphaned_anchor(comment: &StoredComment, file_blob_sha: String) -> NewCommentAnchor {
-    single_head_anchor(
-        &comment.file_path,
+fn orphaned_anchor_segment(
+    segment: &review_types::CommentAnchorSegment,
+    file_blob_sha: String,
+) -> NewCommentAnchorSegment {
+    segment_from_parts(
+        segment.side,
+        &segment.file_path,
         file_blob_sha,
-        comment.line_start,
-        comment.line_end,
-        comment.char_start,
-        comment.char_end,
-        comment.anchor_text.clone(),
-        comment.context_before.clone(),
-        comment.context_after.clone(),
+        segment.line_start,
+        segment.line_end,
+        segment.char_start,
+        segment.char_end,
+        segment.anchor_text.clone(),
+        segment.context_before.clone(),
+        segment.context_after.clone(),
         review_types::AnchorStatus::Orphaned,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn single_head_anchor(
+fn segment_from_parts(
+    side: review_types::CommentAnchorSide,
     file_path: &str,
     file_blob_sha: String,
     line_start: i64,
@@ -1769,46 +1924,39 @@ fn single_head_anchor(
     context_before: String,
     context_after: String,
     status: review_types::AnchorStatus,
-) -> NewCommentAnchor {
-    let (placement_status, match_method, aggregate_status) = match status {
+) -> NewCommentAnchorSegment {
+    let (placement_status, match_method) = match status {
         review_types::AnchorStatus::Anchored => (
             review_types::AnchorPlacementStatus::Anchored,
             review_types::AnchorMatchMethod::ExactAtLine,
-            review_types::AnchorAggregateStatus::Anchored,
         ),
         review_types::AnchorStatus::Shifted => (
             review_types::AnchorPlacementStatus::Anchored,
             review_types::AnchorMatchMethod::ExactElsewhere,
-            review_types::AnchorAggregateStatus::Anchored,
         ),
         review_types::AnchorStatus::Approximate => (
             review_types::AnchorPlacementStatus::Anchored,
             review_types::AnchorMatchMethod::Context,
-            review_types::AnchorAggregateStatus::Anchored,
         ),
         review_types::AnchorStatus::Orphaned => (
             review_types::AnchorPlacementStatus::Orphaned,
             review_types::AnchorMatchMethod::NotFound,
-            review_types::AnchorAggregateStatus::Orphaned,
         ),
     };
 
-    NewCommentAnchor {
-        segments: vec![NewCommentAnchorSegment {
-            side: review_types::CommentAnchorSide::Head,
-            file_path: file_path.to_string(),
-            file_blob_sha,
-            line_start,
-            line_end,
-            char_start,
-            char_end,
-            anchor_text,
-            context_before,
-            context_after,
-            placement_status,
-            match_method,
-        }],
-        aggregate_status,
+    NewCommentAnchorSegment {
+        side,
+        file_path: file_path.to_string(),
+        file_blob_sha,
+        line_start,
+        line_end,
+        char_start,
+        char_end,
+        anchor_text,
+        context_before,
+        context_after,
+        placement_status,
+        match_method,
     }
 }
 
@@ -1839,6 +1987,26 @@ fn apply_anchor(mut comment: StoredComment, anchor: &NewCommentAnchor) -> Stored
         },
         review_types::AnchorAggregateStatus::Partial => review_types::AnchorStatus::Approximate,
         review_types::AnchorAggregateStatus::Orphaned => review_types::AnchorStatus::Orphaned,
+    };
+    comment.anchor = review_types::CommentAnchor {
+        segments: anchor
+            .segments
+            .iter()
+            .map(|segment| review_types::CommentAnchorSegment {
+                side: segment.side,
+                file_path: segment.file_path.clone(),
+                line_start: segment.line_start,
+                line_end: segment.line_end,
+                char_start: segment.char_start,
+                char_end: segment.char_end,
+                anchor_text: segment.anchor_text.clone(),
+                context_before: segment.context_before.clone(),
+                context_after: segment.context_after.clone(),
+                placement_status: segment.placement_status,
+                match_method: segment.match_method,
+            })
+            .collect(),
+        aggregate_status: anchor.aggregate_status,
     };
     comment
 }
