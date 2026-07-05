@@ -18,8 +18,7 @@ use crate::core::search as core_search;
 use crate::core::{ConnectionState, InputEvent};
 use crate::protocol::NotificationKind;
 use crate::review_types::{
-    AnchorAggregateStatus, AnchorMatchMethod, AnchorPlacementStatus, CommentAnchor,
-    CommentAnchorSegment, CommentAnchorSide, ConnectionContext, ContentMode, CreateCommentParams,
+    CommentAnchor, CommentAnchorSegment, ConnectionContext, ContentMode, CreateCommentParams,
     DefinitionLocation, FileEntry, PaneFocus, RenderVariant, ReviewActionResult, ReviewStatus,
     SearchMatch,
 };
@@ -662,25 +661,9 @@ impl App {
         anchor: CommentAnchorCapture,
         body: String,
     ) -> Option<StatusUpdate> {
-        let file_path = anchor.file_path;
-        let params = CreateCommentParams {
-            anchor: CommentAnchor {
-                segments: vec![CommentAnchorSegment {
-                    side: CommentAnchorSide::Head,
-                    file_path,
-                    line_start: anchor.line_start,
-                    line_end: anchor.line_end,
-                    char_start: anchor.char_start,
-                    char_end: anchor.char_end,
-                    anchor_text: anchor.anchor_text,
-                    context_before: anchor.context_before,
-                    context_after: anchor.context_after,
-                    placement_status: AnchorPlacementStatus::Anchored,
-                    match_method: AnchorMatchMethod::ExactAtLine,
-                }],
-                aggregate_status: AnchorAggregateStatus::Anchored,
-            },
-            body,
+        let params = match create_comment_params_from_capture(anchor, body) {
+            Ok(params) => params,
+            Err(e) => return Some(StatusUpdate::Set(format!("Failed to create comment: {e}"))),
         };
 
         let client = match self.client() {
@@ -937,6 +920,14 @@ fn upsert_comment(
     } else {
         comments.push(comment);
     }
+}
+
+fn create_comment_params_from_capture(
+    anchor: CommentAnchorCapture,
+    body: String,
+) -> Result<CreateCommentParams> {
+    let anchor = CommentAnchor::try_new(anchor.segments)?;
+    Ok(CreateCommentParams { anchor, body })
 }
 
 /// Central application state for review data and domain interaction.
@@ -1381,7 +1372,8 @@ mod tests {
     };
     use crate::protocol::NotificationKind;
     use crate::review_types::{
-        ChangeKind, DiffContent, DiffHunk, DiffLine, FileChange, FileEntry, LineKind, ReviewStatus,
+        AnchorMatchMethod, AnchorPlacementStatus, ChangeKind, CommentAnchorSide, DiffContent,
+        DiffHunk, DiffLine, FileChange, FileEntry, LineKind, ReviewStatus,
     };
 
     struct EmptyViewport;
@@ -3049,6 +3041,62 @@ mod tests {
                 body: "  please fix".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn comment_create_params_preserve_compound_capture_segments() {
+        let anchor = CommentAnchorCapture {
+            segments: vec![
+                CommentAnchorSegment {
+                    side: CommentAnchorSide::Base,
+                    file_path: "src/main.rs".to_string(),
+                    line_start: 8,
+                    line_end: 8,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "old".to_string(),
+                    context_before: "before".to_string(),
+                    context_after: "after".to_string(),
+                    placement_status: AnchorPlacementStatus::Anchored,
+                    match_method: AnchorMatchMethod::ExactAtLine,
+                },
+                CommentAnchorSegment {
+                    side: CommentAnchorSide::Head,
+                    file_path: "src/main.rs".to_string(),
+                    line_start: 8,
+                    line_end: 9,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "new\nlines".to_string(),
+                    context_before: "before".to_string(),
+                    context_after: "after".to_string(),
+                    placement_status: AnchorPlacementStatus::Anchored,
+                    match_method: AnchorMatchMethod::ExactAtLine,
+                },
+            ],
+            file_path: "src/main.rs".to_string(),
+            line_start: 8,
+            line_end: 9,
+            char_start: None,
+            char_end: None,
+            anchor_text: "old\nnew\nlines".to_string(),
+            context_before: "before".to_string(),
+            context_after: "after".to_string(),
+        };
+
+        let params = create_comment_params_from_capture(anchor, "body".to_string())
+            .expect("compound capture should convert to create params");
+
+        assert_eq!(params.body, "body");
+        assert_eq!(
+            params.anchor.aggregate_status,
+            crate::review_types::AnchorAggregateStatus::Anchored
+        );
+        assert_eq!(params.anchor.segments.len(), 2);
+        assert_eq!(params.anchor.segments[0].side, CommentAnchorSide::Base);
+        assert_eq!(params.anchor.segments[0].anchor_text, "old");
+        assert_eq!(params.anchor.segments[1].side, CommentAnchorSide::Head);
+        assert_eq!(params.anchor.segments[1].anchor_text, "new\nlines");
     }
 
     #[test]

@@ -2499,6 +2499,86 @@ mod tests {
         }
     }
 
+    fn test_server_context() -> ConnectionContext {
+        ConnectionContext {
+            repo_root: PathBuf::from("/repo"),
+            worktree: PathBuf::from("/repo"),
+            base_ref: "main".to_string(),
+            review_base: git::ReviewBase::Named {
+                input: "main".to_string(),
+                resolved_commit: git::CommitId::new("base-commit"),
+                kind: git::NamedRefKind::Branch,
+            },
+            merge_base: git::CommitId::new("merge-base-commit"),
+            head: git::HeadIdentity::Branch {
+                name: "feature".to_string(),
+                resolved_commit: git::CommitId::new("head-commit"),
+            },
+            db_path: PathBuf::from("/repo/.crt/reviews.db"),
+        }
+    }
+
+    #[test]
+    fn current_session_reanchor_range_uses_merge_base_and_worktree_head() {
+        let ctx = test_server_context();
+
+        let range = CommentReanchorRange::current_session(&ctx);
+
+        assert_eq!(
+            range.endpoint_for_side(review_types::CommentAnchorSide::Base),
+            &ReanchorEndpoint::Commit {
+                refspec: "merge-base-commit".to_string()
+            }
+        );
+        assert_eq!(
+            range.endpoint_for_side(review_types::CommentAnchorSide::Head),
+            &ReanchorEndpoint::Worktree {
+                compare_to: Some("head-commit".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn explicit_root_base_range_orphans_base_segments_only() {
+        let comment = compound_comment_with_segments(vec![
+            anchor_segment(
+                review_types::CommentAnchorSide::Base,
+                2,
+                "base target",
+                "base before",
+                "base after",
+            ),
+            anchor_segment(
+                review_types::CommentAnchorSide::Head,
+                2,
+                "head target",
+                "head before",
+                "head after",
+            ),
+        ]);
+
+        let anchor = resolve_anchor_with_side_content(
+            &comment,
+            None,
+            Some("head before\nhead target\nhead after\n"),
+        );
+
+        let base = segment_for_side(&anchor, review_types::CommentAnchorSide::Base);
+        let head = segment_for_side(&anchor, review_types::CommentAnchorSide::Head);
+        assert_eq!(
+            anchor.aggregate_status,
+            review_types::AnchorAggregateStatus::Partial
+        );
+        assert_eq!(
+            base.placement_status,
+            review_types::AnchorPlacementStatus::Orphaned
+        );
+        assert_eq!(
+            head.placement_status,
+            review_types::AnchorPlacementStatus::Anchored
+        );
+    }
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum AnchorShape {
         BaseOnly,
