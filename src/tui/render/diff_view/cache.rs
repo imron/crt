@@ -88,6 +88,7 @@ mod tests {
             line_end: 2,
             resolved: false,
             anchor_status: AnchorStatus::Anchored,
+            side_ranges: Vec::new(),
         }];
         let current_line = match render_variant {
             RenderVariant::HeadVersion => Some(cursor_line.saturating_add(1) as u32),
@@ -110,6 +111,10 @@ mod tests {
             is_binary: false,
             diff_hash: Some("diff".to_string()),
             hunks: vec![],
+            inline_rows: Default::default(),
+            full_file_head_rows: Default::default(),
+            full_file_base_rows: Default::default(),
+            side_by_side_rows: Default::default(),
             head_content: Some("one\ntwo\nthree\n".to_string()),
             base_content: Some("one\ntwo\nthree\n".to_string()),
             head_blame: vec![],

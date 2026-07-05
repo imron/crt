@@ -2,10 +2,11 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
 use super::comment_markers::{
-    CommentMarker, CommentMarkerSet, marker_column_width, marker_for_line,
+    CommentMarker, CommentMarkerSet, marker_column_width, marker_for_side_line,
 };
 use super::content::BuiltContent;
 use super::line::{BLAME_COL_WIDTH, digit_width, format_blame};
+use crate::app::diff_rows::{SideBySideCell, SideBySideDiffRows};
 use crate::app::model::{BlameLine, DiffHunk};
 use crate::config::DiffStyle;
 use crate::review_types::LineKind;
@@ -18,6 +19,7 @@ pub fn build_side_by_side_diff(
     ds: &DiffStyle,
     default_bg: Color,
     hunks: &[DiffHunk],
+    side_by_side_rows: &SideBySideDiffRows,
     head_content: Option<&str>,
     head_blame: &[BlameLine],
     base_blame: &[BlameLine],
@@ -29,7 +31,7 @@ pub fn build_side_by_side_diff(
         .map(|c| c.lines().collect())
         .unwrap_or_default();
 
-    if hunks.is_empty() && head_lines.is_empty() {
+    if side_by_side_rows.rows.is_empty() && head_lines.is_empty() {
         return BuiltContent {
             lines: vec![Line::from("  No changes.")],
             hunk_starts: vec![],
@@ -89,12 +91,6 @@ pub fn build_side_by_side_diff(
     };
 
     let mut result: Vec<Line<'static>> = Vec::new();
-    let mut hunk_starts = Vec::new();
-    let mut hunk_ends = Vec::new();
-    let mut hunk_first_changes = Vec::new();
-    let mut old_cursor: u32 = 1;
-    let mut new_cursor: u32 = 1;
-
     // Helper: build one side of a row (blame + gutter + content), padded to col_w.
     let make_half = |lineno: Option<u32>,
                      content: &str,
@@ -198,235 +194,114 @@ pub fn build_side_by_side_diff(
         Line::from(spans)
     };
 
-    for hunk in hunks {
-        // Gap before hunk: context lines.
-        while new_cursor < hunk.new_start && (new_cursor as usize) <= head_lines.len() {
-            let content = head_lines.get((new_cursor - 1) as usize).unwrap_or(&"");
-            let left = make_half(
-                Some(old_cursor),
-                content,
-                "",
-                &marker_for_line(comment_markers, Some(old_cursor)),
-                context_style,
-                None,
-                bblame(Some(old_cursor)),
-            );
-            let right = make_half(
-                Some(new_cursor),
-                content,
-                "",
-                &marker_for_line(comment_markers, Some(new_cursor)),
-                context_style,
-                None,
-                hblame(Some(new_cursor)),
-            );
-            result.push(make_row(left, right));
-            old_cursor += 1;
-            new_cursor += 1;
-        }
-
-        hunk_starts.push(result.len());
-        let leading_context = hunk
-            .lines
-            .iter()
-            .take_while(|l| l.kind == LineKind::Context)
-            .count();
-        hunk_first_changes.push(result.len() + leading_context);
-
-        // Process hunk lines: collect deletion/addition blocks and pair them.
-        let hunk_lines = &hunk.lines;
-        let mut li = 0;
-        while li < hunk_lines.len() {
-            let dl = &hunk_lines[li];
-
-            if dl.kind == LineKind::Context {
-                let content = dl.content.trim_end_matches('\n');
-                let left = make_half(
-                    dl.old_lineno,
-                    content,
-                    "",
-                    &marker_for_line(comment_markers, dl.old_lineno),
-                    context_style,
-                    None,
-                    bblame(dl.old_lineno),
-                );
-                let right = make_half(
-                    dl.new_lineno,
-                    content,
-                    "",
-                    &marker_for_line(comment_markers, dl.new_lineno),
-                    context_style,
-                    None,
-                    hblame(dl.new_lineno),
-                );
-                result.push(make_row(left, right));
-                old_cursor += 1;
-                new_cursor += 1;
-                li += 1;
-                continue;
+    for row in &side_by_side_rows.rows {
+        let word_diff = match (&row.base, &row.head) {
+            (Some(base), Some(head))
+                if base.kind == LineKind::Deletion && head.kind == LineKind::Addition =>
+            {
+                super::super::word_diff::compute(&base.content, &head.content)
             }
-
-            // Collect consecutive deletions then additions.
-            let block_start = li;
-            let mut del_end = li;
-            while del_end < hunk_lines.len() && hunk_lines[del_end].kind == LineKind::Deletion {
-                del_end += 1;
+            _ => None,
+        };
+        let left = match &row.base {
+            Some(cell) => {
+                let marker =
+                    marker_for_side_line(comment_markers, cell.side, Some(cell.line_number));
+                let emphasis = word_diff
+                    .as_ref()
+                    .map(|(old_spans, _)| (old_spans.as_slice(), deletion_emphasis));
+                make_half(
+                    Some(cell.line_number),
+                    &cell.content,
+                    prefix_for_cell(cell),
+                    &marker,
+                    style_for_cell(cell, context_style, addition_style, deletion_style),
+                    emphasis,
+                    bblame(Some(cell.line_number)),
+                )
             }
-            let mut add_end = del_end;
-            while add_end < hunk_lines.len() && hunk_lines[add_end].kind == LineKind::Addition {
-                add_end += 1;
+            None => make_empty_half(),
+        };
+        let right = match &row.head {
+            Some(cell) => {
+                let marker =
+                    marker_for_side_line(comment_markers, cell.side, Some(cell.line_number));
+                let emphasis = word_diff
+                    .as_ref()
+                    .map(|(_, new_spans)| (new_spans.as_slice(), addition_emphasis));
+                make_half(
+                    Some(cell.line_number),
+                    &cell.content,
+                    prefix_for_cell(cell),
+                    &marker,
+                    style_for_cell(cell, context_style, addition_style, deletion_style),
+                    emphasis,
+                    hblame(Some(cell.line_number)),
+                )
             }
-
-            let dels = &hunk_lines[block_start..del_end];
-            let adds = &hunk_lines[del_end..add_end];
-            let pair_count = dels.len().min(adds.len());
-            let max_count = dels.len().max(adds.len());
-
-            // Pre-compute word diffs for paired lines.
-            let word_diffs: Vec<_> = (0..pair_count)
-                .map(|idx| {
-                    let dc = dels[idx].content.trim_end_matches('\n');
-                    let ac = adds[idx].content.trim_end_matches('\n');
-                    super::super::word_diff::compute(dc, ac)
-                })
-                .collect();
-
-            for idx in 0..max_count {
-                let left = if idx < dels.len() {
-                    let dc = dels[idx].content.trim_end_matches('\n');
-                    if idx < pair_count {
-                        if let Some((ref old_spans, _)) = word_diffs[idx] {
-                            make_half(
-                                dels[idx].old_lineno,
-                                dc,
-                                "- ",
-                                &marker_for_line(comment_markers, dels[idx].old_lineno),
-                                deletion_style,
-                                Some((old_spans, deletion_emphasis)),
-                                bblame(dels[idx].old_lineno),
-                            )
-                        } else {
-                            make_half(
-                                dels[idx].old_lineno,
-                                dc,
-                                "- ",
-                                &marker_for_line(comment_markers, dels[idx].old_lineno),
-                                deletion_style,
-                                None,
-                                bblame(dels[idx].old_lineno),
-                            )
-                        }
-                    } else {
-                        make_half(
-                            dels[idx].old_lineno,
-                            dc,
-                            "- ",
-                            &marker_for_line(comment_markers, dels[idx].old_lineno),
-                            deletion_style,
-                            None,
-                            bblame(dels[idx].old_lineno),
-                        )
-                    }
-                } else {
-                    make_empty_half()
-                };
-
-                let right = if idx < adds.len() {
-                    let ac = adds[idx].content.trim_end_matches('\n');
-                    if idx < pair_count {
-                        if let Some((_, ref new_spans)) = word_diffs[idx] {
-                            make_half(
-                                adds[idx].new_lineno,
-                                ac,
-                                "+ ",
-                                &marker_for_line(comment_markers, adds[idx].new_lineno),
-                                addition_style,
-                                Some((new_spans, addition_emphasis)),
-                                hblame(adds[idx].new_lineno),
-                            )
-                        } else {
-                            make_half(
-                                adds[idx].new_lineno,
-                                ac,
-                                "+ ",
-                                &marker_for_line(comment_markers, adds[idx].new_lineno),
-                                addition_style,
-                                None,
-                                hblame(adds[idx].new_lineno),
-                            )
-                        }
-                    } else {
-                        make_half(
-                            adds[idx].new_lineno,
-                            ac,
-                            "+ ",
-                            &marker_for_line(comment_markers, adds[idx].new_lineno),
-                            addition_style,
-                            None,
-                            hblame(adds[idx].new_lineno),
-                        )
-                    }
-                } else {
-                    make_empty_half()
-                };
-
-                result.push(make_row(left, right));
-                if idx < dels.len() {
-                    old_cursor += 1;
-                }
-                if idx < adds.len() {
-                    new_cursor += 1;
-                }
-            }
-
-            li = add_end;
-        }
-
-        hunk_ends.push(result.len());
-    }
-
-    // Gap after last hunk.
-    while (new_cursor as usize) <= head_lines.len() {
-        let content = head_lines.get((new_cursor - 1) as usize).unwrap_or(&"");
-        let left = make_half(
-            Some(old_cursor),
-            content,
-            "",
-            &marker_for_line(comment_markers, Some(old_cursor)),
-            context_style,
-            None,
-            bblame(Some(old_cursor)),
-        );
-        let right = make_half(
-            Some(new_cursor),
-            content,
-            "",
-            &marker_for_line(comment_markers, Some(new_cursor)),
-            context_style,
-            None,
-            hblame(Some(new_cursor)),
-        );
+            None => make_empty_half(),
+        };
         result.push(make_row(left, right));
-        old_cursor += 1;
-        new_cursor += 1;
     }
 
     BuiltContent {
         lines: result,
-        hunk_starts,
-        hunk_ends,
-        hunk_first_changes,
+        hunk_starts: side_by_side_rows.hunk_starts.clone(),
+        hunk_ends: side_by_side_rows.hunk_ends.clone(),
+        hunk_first_changes: side_by_side_rows.hunk_first_changes.clone(),
         gutter_w,
         comment_marker_w,
+    }
+}
+
+fn prefix_for_cell(cell: &SideBySideCell) -> &'static str {
+    match cell.kind {
+        LineKind::Addition => "+ ",
+        LineKind::Deletion => "- ",
+        LineKind::Context => "",
+    }
+}
+
+fn style_for_cell(
+    cell: &SideBySideCell,
+    context_style: Style,
+    addition_style: Style,
+    deletion_style: Style,
+) -> Style {
+    match cell.kind {
+        LineKind::Addition => addition_style,
+        LineKind::Deletion => deletion_style,
+        LineKind::Context => context_style,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::model::{CommentAttachment, DiffLine};
+    use crate::app::diff_rows::side_by_side_diff_rows;
+    use crate::app::model::{CommentAttachment, CommentAttachmentRange, DiffLine};
     use crate::config::DiffStyle;
-    use crate::review_types::{AnchorStatus, LineKind};
+    use crate::review_types::{self, AnchorStatus, CommentAnchorSide, LineKind};
+
+    fn model_hunk_from_review(hunk: &review_types::DiffHunk) -> DiffHunk {
+        DiffHunk {
+            header: hunk.header.clone(),
+            old_start: hunk.old_start,
+            old_lines: hunk.old_lines,
+            new_start: hunk.new_start,
+            new_lines: hunk.new_lines,
+            lines: hunk
+                .lines
+                .iter()
+                .map(|line| DiffLine {
+                    kind: line.kind,
+                    content: line.content.clone(),
+                    old_lineno: line.old_lineno,
+                    new_lineno: line.new_lineno,
+                })
+                .collect(),
+        }
+    }
 
     #[test]
     fn side_by_side_separates_comment_marker_and_source() {
@@ -436,13 +311,16 @@ mod tests {
             line_end: 1,
             resolved: false,
             anchor_status: AnchorStatus::Anchored,
+            side_ranges: Vec::new(),
         }];
         let markers = CommentMarkerSet::new(&comments, None);
+        let rows = side_by_side_diff_rows(&[], None, Some("source\n"));
 
         let built = build_side_by_side_diff(
             &DiffStyle::default(),
             Color::Black,
             &[],
+            &rows,
             Some("source\n"),
             &[],
             &[],
@@ -467,22 +345,23 @@ mod tests {
             line_end: 1,
             resolved: false,
             anchor_status: AnchorStatus::Anchored,
+            side_ranges: Vec::new(),
         }];
         let markers = CommentMarkerSet::new(&comments, None);
-        let hunk = DiffHunk {
+        let hunk = review_types::DiffHunk {
             header: "@@ -1 +1 @@".to_string(),
             old_start: 1,
             old_lines: 1,
             new_start: 1,
             new_lines: 1,
             lines: vec![
-                DiffLine {
+                review_types::DiffLine {
                     kind: LineKind::Deletion,
                     content: "old".to_string(),
                     old_lineno: Some(1),
                     new_lineno: None,
                 },
-                DiffLine {
+                review_types::DiffLine {
                     kind: LineKind::Addition,
                     content: "new".to_string(),
                     old_lineno: None,
@@ -490,11 +369,14 @@ mod tests {
                 },
             ],
         };
+        let model_hunk = model_hunk_from_review(&hunk);
+        let rows = side_by_side_diff_rows(&[hunk], None, None);
 
         let built = build_side_by_side_diff(
             &DiffStyle::default(),
             Color::Black,
-            &[hunk],
+            &[model_hunk],
+            &rows,
             None,
             &[],
             &[],
@@ -511,5 +393,96 @@ mod tests {
         assert_eq!(rendered.matches('●').count(), 2);
         assert!(rendered.contains("● - old"));
         assert!(rendered.contains("● + new"));
+    }
+
+    #[test]
+    fn side_by_side_replacement_uses_side_specific_comment_marker_ranges() {
+        let comments = [CommentAttachment {
+            id: 1,
+            line_start: 26,
+            line_end: 28,
+            resolved: false,
+            anchor_status: AnchorStatus::Anchored,
+            side_ranges: vec![
+                CommentAttachmentRange {
+                    side: CommentAnchorSide::Base,
+                    line_start: 26,
+                    line_end: 26,
+                },
+                CommentAttachmentRange {
+                    side: CommentAnchorSide::Head,
+                    line_start: 27,
+                    line_end: 28,
+                },
+            ],
+        }];
+        let markers = CommentMarkerSet::new(&comments, None);
+        let hunk = review_types::DiffHunk {
+            header: "@@ -26 +27,2 @@".to_string(),
+            old_start: 26,
+            old_lines: 1,
+            new_start: 27,
+            new_lines: 2,
+            lines: vec![
+                review_types::DiffLine {
+                    kind: LineKind::Deletion,
+                    content: "old line".to_string(),
+                    old_lineno: Some(26),
+                    new_lineno: None,
+                },
+                review_types::DiffLine {
+                    kind: LineKind::Addition,
+                    content: "new line one".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(27),
+                },
+                review_types::DiffLine {
+                    kind: LineKind::Addition,
+                    content: "new line two".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(28),
+                },
+            ],
+        };
+        let model_hunk = model_hunk_from_review(&hunk);
+
+        let base_content = (1..=32)
+            .map(|n| format!("base {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let head_content = (1..=34)
+            .map(|n| format!("head {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rows = side_by_side_diff_rows(&[hunk], Some(&base_content), Some(&head_content));
+
+        let built = build_side_by_side_diff(
+            &DiffStyle::default(),
+            Color::Black,
+            &[model_hunk],
+            &rows,
+            Some(&head_content),
+            &[],
+            &[],
+            &markers,
+            Color::Blue,
+            120,
+        );
+        let replacement_start: String = built.lines[26]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let replacement_tail: String = built.lines[27]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert_eq!(replacement_start.matches('●').count(), 2);
+        assert!(replacement_start.contains("● - old line"));
+        assert!(replacement_start.contains("● + new line one"));
+        assert_eq!(replacement_tail.matches('●').count(), 1);
+        assert!(replacement_tail.contains("● + new line two"));
     }
 }

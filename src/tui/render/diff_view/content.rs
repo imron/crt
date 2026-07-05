@@ -119,6 +119,7 @@ pub fn build_content(
             ds,
             default_bg,
             &diff.hunks,
+            &diff.side_by_side_rows,
             diff.head_content.as_deref(),
             head_blame,
             base_blame,
@@ -129,8 +130,7 @@ pub fn build_content(
         (ContentMode::Diff, _) => build_inline_diff(
             ds,
             default_bg,
-            &diff.hunks,
-            diff.head_content.as_deref(),
+            &diff.inline_rows,
             head_blame,
             base_blame,
             &diff.comment_markers,
@@ -140,7 +140,7 @@ pub fn build_content(
         (ContentMode::FullFile, RenderVariant::HeadVersion) => build_full_file_head(
             ds,
             default_bg,
-            &diff.hunks,
+            &diff.full_file_head_rows,
             diff.head_content.as_deref(),
             head_blame,
             &diff.comment_markers,
@@ -150,7 +150,7 @@ pub fn build_content(
         (ContentMode::FullFile, RenderVariant::BaseVersion) => build_full_file_base(
             ds,
             default_bg,
-            &diff.hunks,
+            &diff.full_file_base_rows,
             diff.base_content.as_deref(),
             base_blame,
             &diff.comment_markers,
@@ -193,6 +193,7 @@ mod tests {
             line_end: 2,
             resolved: false,
             anchor_status: AnchorStatus::Anchored,
+            side_ranges: Vec::new(),
         }];
         let current_line = match (content_mode, render_variant) {
             (ContentMode::FullFile, RenderVariant::HeadVersion) => Some(2),
@@ -219,6 +220,10 @@ mod tests {
             is_binary: false,
             diff_hash: Some("diff".to_string()),
             hunks: vec![],
+            inline_rows: Default::default(),
+            full_file_head_rows: Default::default(),
+            full_file_base_rows: Default::default(),
+            side_by_side_rows: Default::default(),
             head_content: Some("one\ntwo\nthree\n".to_string()),
             base_content: Some("one\ntwo\nthree\n".to_string()),
             head_blame: vec![],

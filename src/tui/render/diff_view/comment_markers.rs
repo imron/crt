@@ -1,5 +1,6 @@
 pub use crate::app::model::CommentMarkerSet;
 use crate::app::model::{CommentMarker as SemanticCommentMarker, CommentMarkerKind};
+use crate::review_types::CommentAnchorSide;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommentMarker {
@@ -30,6 +31,20 @@ pub fn marker_column_width(_markers: &CommentMarkerSet) -> usize {
 pub fn marker_for_line(markers: &CommentMarkerSet, line: Option<u32>) -> CommentMarker {
     let width = marker_column_width(markers);
     let marker = markers.marker_for_line(line);
+    comment_marker_from_semantic(width, marker)
+}
+
+pub fn marker_for_side_line(
+    markers: &CommentMarkerSet,
+    side: CommentAnchorSide,
+    line: Option<u32>,
+) -> CommentMarker {
+    let width = marker_column_width(markers);
+    let marker = markers.marker_for_side_line(side, line);
+    comment_marker_from_semantic(width, marker)
+}
+
+fn comment_marker_from_semantic(width: usize, marker: SemanticCommentMarker) -> CommentMarker {
     let mut text = marker_text(marker);
     let pad = width.saturating_sub(text.chars().count());
     text.push_str(&" ".repeat(pad));

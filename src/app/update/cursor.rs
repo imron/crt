@@ -143,10 +143,16 @@ pub fn apply_diff_cursor_effect(
 }
 
 fn clamp_diff_scroll(state: &mut AppState, view: &impl AppViewport) {
+    if view.diff_content_height() == 0 {
+        return;
+    }
     state.diff_scroll = state.diff_scroll.min(view.max_diff_scroll());
 }
 
 pub fn clamp_cursor_and_scroll(state: &mut AppState, view: &impl AppViewport) {
+    if view.diff_content_height() == 0 {
+        return;
+    }
     let max = view.max_diff_scroll();
     state.diff_line_cursor = state.diff_line_cursor.min(max);
     if state.diff_line_cursor < state.diff_scroll {

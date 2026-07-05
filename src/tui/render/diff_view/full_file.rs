@@ -1,12 +1,11 @@
-use std::collections::HashSet;
-
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
 use super::comment_markers::{CommentMarkerSet, marker_column_width, marker_for_line};
 use super::content::BuiltContent;
 use super::line::{digit_width, make_line};
-use crate::app::model::{BlameLine, DiffHunk};
+use crate::app::diff_rows::{LinearDiffRow, LinearDiffRows};
+use crate::app::model::BlameLine;
 use crate::config::DiffStyle;
 use crate::review_types::LineKind;
 
@@ -17,7 +16,7 @@ use crate::review_types::LineKind;
 pub fn build_full_file_head(
     ds: &DiffStyle,
     default_bg: Color,
-    hunks: &[DiffHunk],
+    rows: &LinearDiffRows,
     head_content: Option<&str>,
     blame: &[BlameLine],
     comment_markers: &CommentMarkerSet,
@@ -41,8 +40,7 @@ pub fn build_full_file_head(
         }
     };
 
-    let file_lines: Vec<&str> = content.lines().collect();
-    if file_lines.is_empty() {
+    if content.lines().next().is_none() {
         return BuiltContent {
             lines: vec![Line::from(Span::styled(
                 "  (empty file)",
@@ -56,92 +54,46 @@ pub fn build_full_file_head(
         };
     }
 
-    // Collect all new-file line numbers that are additions.
-    let addition_lines: HashSet<u32> = hunks
-        .iter()
-        .flat_map(|h| h.lines.iter())
-        .filter(|l| l.kind == LineKind::Addition)
-        .filter_map(|l| l.new_lineno)
-        .collect();
-
-    // Hunk boundaries in new-file line numbers.
-    let hunk_new_ranges: Vec<(u32, u32)> = hunks
-        .iter()
-        .map(|h| (h.new_start, h.new_start + h.new_lines))
-        .collect();
-
     let context_style = Style::default().fg(*ds.context_fg);
     let addition_style = Style::default().fg(*ds.addition_fg).bg(*ds.addition_bg);
     let gutter_fg = *ds.gutter_fg;
     let blame_fg = *ds.blame_fg;
-    let gutter_w = digit_width(file_lines.len() as u32);
-    let mut result = Vec::new();
-    let mut hunk_starts = Vec::new();
-    let mut hunk_ends = Vec::new();
-    let mut hunk_first_changes = Vec::new();
-    let mut current_hunk_first_change_recorded = false;
-
-    for (i, text) in file_lines.iter().enumerate() {
-        let lineno = (i + 1) as u32;
-
-        // Track hunk boundaries.
-        for &(start, end) in &hunk_new_ranges {
-            if lineno == start {
-                hunk_starts.push(result.len());
-                current_hunk_first_change_recorded = false;
-            }
-            if lineno == end {
-                hunk_ends.push(result.len());
-            }
-        }
-
-        let is_addition = addition_lines.contains(&lineno);
-
-        // Record first change row for the current hunk.
-        if is_addition && !current_hunk_first_change_recorded {
-            hunk_first_changes.push(result.len());
-            current_hunk_first_change_recorded = true;
-        }
-
-        let style = if is_addition {
-            addition_style
-        } else {
-            context_style
-        };
-        let prefix = if is_addition { "+" } else { " " };
-
-        let bl = blame.get((lineno as usize).wrapping_sub(1));
-        result.push(make_line(
-            None,
-            Some(lineno),
-            &marker_for_line(comment_markers, Some(lineno)),
-            prefix,
-            text,
-            style,
-            gutter_fg,
-            current_comment_fg,
-            blame_fg,
-            default_bg,
-            gutter_w,
-            inner_w,
-            bl,
-        ));
-    }
-
-    // Close any unclosed hunks (hunk extends to end of file).
-    while hunk_ends.len() < hunk_starts.len() {
-        hunk_ends.push(result.len());
-    }
-    // Ensure hunk_first_changes has an entry for every hunk.
-    while hunk_first_changes.len() < hunk_starts.len() {
-        hunk_first_changes.push(*hunk_starts.last().unwrap_or(&0));
-    }
+    let gutter_w = digit_width(max_lineno(rows));
+    let result = rows
+        .rows
+        .iter()
+        .map(|row| {
+            full_file_row(
+                row,
+                row.new_lineno,
+                comment_markers,
+                row.new_lineno
+                    .and_then(|lineno| blame.get((lineno as usize).wrapping_sub(1))),
+                if row.kind == LineKind::Addition {
+                    addition_style
+                } else {
+                    context_style
+                },
+                if row.kind == LineKind::Addition {
+                    "+"
+                } else {
+                    " "
+                },
+                gutter_fg,
+                current_comment_fg,
+                blame_fg,
+                default_bg,
+                gutter_w,
+                inner_w,
+            )
+        })
+        .collect();
 
     BuiltContent {
         lines: result,
-        hunk_starts,
-        hunk_ends,
-        hunk_first_changes,
+        hunk_starts: rows.hunk_starts.clone(),
+        hunk_ends: rows.hunk_ends.clone(),
+        hunk_first_changes: rows.hunk_first_changes.clone(),
         gutter_w,
         comment_marker_w: marker_column_width(comment_markers),
     }
@@ -154,7 +106,7 @@ pub fn build_full_file_head(
 pub fn build_full_file_base(
     ds: &DiffStyle,
     default_bg: Color,
-    hunks: &[DiffHunk],
+    rows: &LinearDiffRows,
     base_content: Option<&str>,
     blame: &[BlameLine],
     comment_markers: &CommentMarkerSet,
@@ -178,8 +130,7 @@ pub fn build_full_file_base(
         }
     };
 
-    let file_lines: Vec<&str> = content.lines().collect();
-    if file_lines.is_empty() {
+    if content.lines().next().is_none() {
         return BuiltContent {
             lines: vec![Line::from(Span::styled(
                 "  (empty file)",
@@ -193,89 +144,87 @@ pub fn build_full_file_base(
         };
     }
 
-    // Collect all old-file line numbers that are deletions.
-    let deletion_lines: HashSet<u32> = hunks
-        .iter()
-        .flat_map(|h| h.lines.iter())
-        .filter(|l| l.kind == LineKind::Deletion)
-        .filter_map(|l| l.old_lineno)
-        .collect();
-
-    // Hunk boundaries in old-file line numbers.
-    let hunk_old_ranges: Vec<(u32, u32)> = hunks
-        .iter()
-        .map(|h| (h.old_start, h.old_start + h.old_lines))
-        .collect();
-
     let context_style = Style::default().fg(*ds.context_fg);
     let deletion_style = Style::default().fg(*ds.deletion_fg).bg(*ds.deletion_bg);
     let gutter_fg = *ds.gutter_fg;
     let blame_fg = *ds.blame_fg;
-    let gutter_w = digit_width(file_lines.len() as u32);
-    let mut result = Vec::new();
-    let mut hunk_starts = Vec::new();
-    let mut hunk_ends = Vec::new();
-    let mut hunk_first_changes = Vec::new();
-    let mut current_hunk_first_change_recorded = false;
-
-    for (i, text) in file_lines.iter().enumerate() {
-        let lineno = (i + 1) as u32;
-
-        for &(start, end) in &hunk_old_ranges {
-            if lineno == start {
-                hunk_starts.push(result.len());
-                current_hunk_first_change_recorded = false;
-            }
-            if lineno == end {
-                hunk_ends.push(result.len());
-            }
-        }
-
-        let is_deletion = deletion_lines.contains(&lineno);
-
-        if is_deletion && !current_hunk_first_change_recorded {
-            hunk_first_changes.push(result.len());
-            current_hunk_first_change_recorded = true;
-        }
-
-        let style = if is_deletion {
-            deletion_style
-        } else {
-            context_style
-        };
-        let prefix = if is_deletion { "-" } else { " " };
-        let bl = blame.get((lineno as usize).wrapping_sub(1));
-
-        result.push(make_line(
-            Some(lineno),
-            None,
-            &marker_for_line(comment_markers, Some(lineno)),
-            prefix,
-            text,
-            style,
-            gutter_fg,
-            current_comment_fg,
-            blame_fg,
-            default_bg,
-            gutter_w,
-            inner_w,
-            bl,
-        ));
-    }
-
-    while hunk_ends.len() < hunk_starts.len() {
-        hunk_ends.push(result.len());
-    }
-    while hunk_first_changes.len() < hunk_starts.len() {
-        hunk_first_changes.push(*hunk_starts.last().unwrap_or(&0));
-    }
+    let gutter_w = digit_width(max_lineno(rows));
+    let result = rows
+        .rows
+        .iter()
+        .map(|row| {
+            full_file_row(
+                row,
+                row.old_lineno,
+                comment_markers,
+                row.old_lineno
+                    .and_then(|lineno| blame.get((lineno as usize).wrapping_sub(1))),
+                if row.kind == LineKind::Deletion {
+                    deletion_style
+                } else {
+                    context_style
+                },
+                if row.kind == LineKind::Deletion {
+                    "-"
+                } else {
+                    " "
+                },
+                gutter_fg,
+                current_comment_fg,
+                blame_fg,
+                default_bg,
+                gutter_w,
+                inner_w,
+            )
+        })
+        .collect();
 
     BuiltContent {
         lines: result,
-        hunk_starts,
-        hunk_ends,
-        hunk_first_changes,
+        hunk_starts: rows.hunk_starts.clone(),
+        hunk_ends: rows.hunk_ends.clone(),
+        hunk_first_changes: rows.hunk_first_changes.clone(),
         gutter_w,
         comment_marker_w: marker_column_width(comment_markers),
     }
+}
+
+fn max_lineno(rows: &LinearDiffRows) -> u32 {
+    rows.rows
+        .iter()
+        .filter_map(|row| row.old_lineno.or(row.new_lineno))
+        .max()
+        .unwrap_or(0)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn full_file_row(
+    row: &LinearDiffRow,
+    marker_line: Option<u32>,
+    comment_markers: &CommentMarkerSet,
+    blame: Option<&BlameLine>,
+    style: Style,
+    prefix: &str,
+    gutter_fg: Color,
+    current_comment_fg: Color,
+    blame_fg: Color,
+    default_bg: Color,
+    gutter_w: usize,
+    inner_w: usize,
+) -> Line<'static> {
+    make_line(
+        row.old_lineno,
+        row.new_lineno,
+        &marker_for_line(comment_markers, marker_line),
+        prefix,
+        &row.content,
+        style,
+        gutter_fg,
+        current_comment_fg,
+        blame_fg,
+        default_bg,
+        gutter_w,
+        inner_w,
+        blame,
+    )
 }

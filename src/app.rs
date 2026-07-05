@@ -1,5 +1,6 @@
 //! Application state and input dispatch.
 
+pub mod diff_rows;
 pub mod model;
 mod update;
 
@@ -1588,6 +1589,48 @@ mod tests {
         }
     }
 
+    fn test_file_with_offset_multiline_replacement_hunk(path: &str) -> FileEntry {
+        FileEntry {
+            change: FileChange {
+                path: path.to_string(),
+                old_path: None,
+                kind: ChangeKind::Modified,
+            },
+            status: ReviewStatus::Unreviewed,
+            diff: DiffContent {
+                hunks: vec![DiffHunk {
+                    old_start: 26,
+                    old_lines: 1,
+                    new_start: 27,
+                    new_lines: 2,
+                    header: "@@ -26 +27,2 @@".to_string(),
+                    lines: vec![
+                        DiffLine {
+                            kind: LineKind::Deletion,
+                            content: "old line".to_string(),
+                            old_lineno: Some(26),
+                            new_lineno: None,
+                        },
+                        DiffLine {
+                            kind: LineKind::Addition,
+                            content: "new line one".to_string(),
+                            old_lineno: None,
+                            new_lineno: Some(27),
+                        },
+                        DiffLine {
+                            kind: LineKind::Addition,
+                            content: "new line two".to_string(),
+                            old_lineno: None,
+                            new_lineno: Some(28),
+                        },
+                    ],
+                }],
+                is_binary: false,
+                diff_hash: format!("hash-{path}"),
+            },
+        }
+    }
+
     fn test_file_with_leading_deletion_hunk(path: &str) -> FileEntry {
         FileEntry {
             change: FileChange {
@@ -2637,6 +2680,57 @@ mod tests {
         assert_eq!(head.line_start, 16);
         assert_eq!(head.line_end, 16);
         assert_eq!(head.anchor_text, "new");
+    }
+
+    #[test]
+    fn side_by_side_visual_selection_uses_render_row_mapping_for_offset_replacement() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_offset_multiline_replacement_hunk(
+                "src/main.rs",
+            )],
+        );
+        app.state.render_variant = RenderVariant::SideBySide;
+        let mut base_lines: Vec<String> = (1..=32).map(|n| format!("base {n}")).collect();
+        let mut head_lines: Vec<String> = (1..=34).map(|n| format!("head {n}")).collect();
+        base_lines[25] = "old line".to_string();
+        head_lines[26] = "new line one".to_string();
+        head_lines[27] = "new line two".to_string();
+        app.state.base_content = Some(format!("{}\n", base_lines.join("\n")));
+        app.state.head_content = Some(format!("{}\n", head_lines.join("\n")));
+        app.state.pane_focus = PaneFocus::Diff;
+        app.state.diff_line_cursor = 26;
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartLine),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Move(
+                    DiffCursorEffect::LineDown,
+                )),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+            ],
+        );
+
+        let capture = app
+            .state
+            .pending_comment_anchor
+            .as_ref()
+            .expect("side-by-side offset replacement should capture anchor data");
+        assert_eq!(capture.segments.len(), 2);
+        let base = segment_for_side(capture, CommentAnchorSide::Base)
+            .expect("side-by-side selection should capture a base segment");
+        let head = segment_for_side(capture, CommentAnchorSide::Head)
+            .expect("side-by-side selection should capture a head segment");
+        assert_eq!(base.line_start, 26);
+        assert_eq!(base.line_end, 26);
+        assert_eq!(base.anchor_text, "old line");
+        assert_eq!(head.line_start, 27);
+        assert_eq!(head.line_end, 28);
+        assert_eq!(head.anchor_text, "new line one\nnew line two");
+        assert_eq!(capture.line_start, 26);
+        assert_eq!(capture.line_end, 28);
     }
 
     #[test]
