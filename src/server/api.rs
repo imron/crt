@@ -1380,13 +1380,16 @@ fn resolve_anchor(
     let try_indices: [Option<usize>; 2] = [adjusted_hint, stored_index];
     for candidate in try_indices.into_iter().flatten() {
         if matches_sequence(&lines, candidate, &anchor_lines) {
-            return anchor_from_range(
+            return with_preserved_non_head_segments(
                 comment,
-                &lines,
-                candidate,
-                span,
-                file_blob_sha,
-                review_types::AnchorStatus::Anchored,
+                anchor_from_range(
+                    comment,
+                    &lines,
+                    candidate,
+                    span,
+                    file_blob_sha,
+                    review_types::AnchorStatus::Anchored,
+                ),
             );
         }
     }
@@ -1394,39 +1397,92 @@ fn resolve_anchor(
     let hint = adjusted_hint.or(stored_index).unwrap_or(0);
 
     if let Some(index) = find_sequence_nearest(&lines, &anchor_lines, hint) {
-        return anchor_from_range(
+        return with_preserved_non_head_segments(
             comment,
-            &lines,
-            index,
-            span,
-            file_blob_sha,
-            review_types::AnchorStatus::Shifted,
+            anchor_from_range(
+                comment,
+                &lines,
+                index,
+                span,
+                file_blob_sha,
+                review_types::AnchorStatus::Shifted,
+            ),
         );
     }
 
     if let Some(index) = find_multiline_line_match_nearest(&lines, &anchor_lines, hint) {
-        return anchor_from_range(
+        return with_preserved_non_head_segments(
             comment,
-            &lines,
-            index,
-            span,
-            file_blob_sha,
-            review_types::AnchorStatus::Approximate,
+            anchor_from_range(
+                comment,
+                &lines,
+                index,
+                span,
+                file_blob_sha,
+                review_types::AnchorStatus::Approximate,
+            ),
         );
     }
 
     if let Some((index, context_span)) = find_context_match(comment, &lines, span) {
-        return anchor_from_range(
+        return with_preserved_non_head_segments(
             comment,
-            &lines,
-            index,
-            context_span,
-            file_blob_sha,
-            review_types::AnchorStatus::Approximate,
+            anchor_from_range(
+                comment,
+                &lines,
+                index,
+                context_span,
+                file_blob_sha,
+                review_types::AnchorStatus::Approximate,
+            ),
         );
     }
 
-    orphaned_anchor(comment, file_blob_sha)
+    with_preserved_non_head_segments(comment, orphaned_anchor(comment, file_blob_sha))
+}
+
+fn with_preserved_non_head_segments(
+    comment: &StoredComment,
+    mut anchor: NewCommentAnchor,
+) -> NewCommentAnchor {
+    for segment in &comment.anchor.segments {
+        if segment.side == review_types::CommentAnchorSide::Head {
+            continue;
+        }
+        anchor.segments.push(NewCommentAnchorSegment {
+            side: segment.side,
+            file_path: segment.file_path.clone(),
+            file_blob_sha: String::new(),
+            line_start: segment.line_start,
+            line_end: segment.line_end,
+            char_start: segment.char_start,
+            char_end: segment.char_end,
+            anchor_text: segment.anchor_text.clone(),
+            context_before: segment.context_before.clone(),
+            context_after: segment.context_after.clone(),
+            placement_status: segment.placement_status,
+            match_method: segment.match_method,
+        });
+    }
+
+    anchor.aggregate_status = aggregate_status_for_new_segments(&anchor.segments);
+    anchor
+}
+
+fn aggregate_status_for_new_segments(
+    segments: &[NewCommentAnchorSegment],
+) -> review_types::AnchorAggregateStatus {
+    let anchored = segments
+        .iter()
+        .filter(|segment| segment.placement_status == review_types::AnchorPlacementStatus::Anchored)
+        .count();
+    if anchored == segments.len() {
+        review_types::AnchorAggregateStatus::Anchored
+    } else if anchored == 0 {
+        review_types::AnchorAggregateStatus::Orphaned
+    } else {
+        review_types::AnchorAggregateStatus::Partial
+    }
 }
 
 fn content_lines(content: &str) -> Vec<&str> {
@@ -1935,6 +1991,7 @@ fn comment_resolution_event(
         resolved_commit: ctx.head.resolved_commit().to_string(),
         resolved_head_ref: ctx.head_scope_key(),
         resolved_merge_base: ctx.merge_base.to_string(),
+        anchor: stored.anchor.clone(),
         file_path: stored.file_path.clone(),
         line_start: stored.line_start,
         line_end: stored.line_end,
