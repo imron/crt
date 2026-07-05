@@ -1174,22 +1174,53 @@ mod tests {
         match_method: AnchorMatchMethod,
     ) -> NewCommentAnchor {
         NewCommentAnchor {
-            segments: vec![NewCommentAnchorSegment {
-                side: CommentAnchorSide::Head,
-                file_path: file.to_string(),
-                file_blob_sha: "blob-1".to_string(),
+            segments: vec![new_anchor_segment(
+                CommentAnchorSide::Head,
+                file,
+                "blob-1",
                 line_start,
                 line_end,
-                char_start: None,
-                char_end: None,
-                anchor_text: anchor_text.to_string(),
-                context_before: String::new(),
-                context_after: String::new(),
-                placement_status: AnchorPlacementStatus::Anchored,
+                anchor_text,
+                AnchorPlacementStatus::Anchored,
                 match_method,
-            }],
+            )],
             aggregate_status: AnchorAggregateStatus::Anchored,
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_anchor_segment(
+        side: CommentAnchorSide,
+        file: &str,
+        file_blob_sha: &str,
+        line_start: i64,
+        line_end: i64,
+        anchor_text: &str,
+        placement_status: AnchorPlacementStatus,
+        match_method: AnchorMatchMethod,
+    ) -> NewCommentAnchorSegment {
+        NewCommentAnchorSegment {
+            side,
+            file_path: file.to_string(),
+            file_blob_sha: file_blob_sha.to_string(),
+            line_start,
+            line_end,
+            char_start: None,
+            char_end: None,
+            anchor_text: anchor_text.to_string(),
+            context_before: format!("before {anchor_text}"),
+            context_after: format!("after {anchor_text}"),
+            placement_status,
+            match_method,
+        }
+    }
+
+    fn segment_for_side(anchor: &CommentAnchor, side: CommentAnchorSide) -> &CommentAnchorSegment {
+        anchor
+            .segments
+            .iter()
+            .find(|segment| segment.side == side)
+            .unwrap()
     }
 
     fn resolution_event(comment: &StoredComment) -> NewCommentResolutionEvent {
@@ -1503,6 +1534,265 @@ mod tests {
         let fetched = db.get_comment(comment.id).unwrap().unwrap();
         assert_eq!(fetched.char_start, Some(10));
         assert_eq!(fetched.char_end, Some(20));
+    }
+
+    #[test]
+    fn test_comment_create_and_get_base_only_anchor() {
+        let (_dir, db) = test_db();
+
+        let comment = db
+            .create_comment(&NewComment {
+                merge_base: "main".to_string(),
+                head_ref: "feat".to_string(),
+                created_head_commit: "head-commit".to_string(),
+                file_path: "src/lib.rs".to_string(),
+                body: "deleted line feedback".to_string(),
+                anchor: NewCommentAnchor {
+                    segments: vec![new_anchor_segment(
+                        CommentAnchorSide::Base,
+                        "src/lib.rs",
+                        "base-blob",
+                        4,
+                        4,
+                        "deleted line",
+                        AnchorPlacementStatus::Anchored,
+                        AnchorMatchMethod::ExactAtLine,
+                    )],
+                    aggregate_status: AnchorAggregateStatus::Anchored,
+                },
+            })
+            .unwrap();
+
+        assert_eq!(comment.anchor.segments.len(), 1);
+        assert!(
+            comment
+                .anchor
+                .segments
+                .iter()
+                .all(|segment| segment.side != CommentAnchorSide::Head)
+        );
+        let base = segment_for_side(&comment.anchor, CommentAnchorSide::Base);
+        assert_eq!(base.file_path, "src/lib.rs");
+        assert_eq!(base.line_start, 4);
+        assert_eq!(base.line_end, 4);
+        assert_eq!(base.anchor_text, "deleted line");
+        assert_eq!(comment.line_start, 4);
+        assert_eq!(comment.line_end, 4);
+        assert_eq!(comment.file_blob_sha, "base-blob");
+    }
+
+    #[test]
+    fn test_comment_create_and_get_paired_anchor() {
+        let (_dir, db) = test_db();
+
+        let comment = db
+            .create_comment(&NewComment {
+                merge_base: "main".to_string(),
+                head_ref: "feat".to_string(),
+                created_head_commit: "head-commit".to_string(),
+                file_path: "src/lib.rs".to_string(),
+                body: "replacement feedback".to_string(),
+                anchor: NewCommentAnchor {
+                    segments: vec![
+                        new_anchor_segment(
+                            CommentAnchorSide::Base,
+                            "src/lib.rs",
+                            "base-blob",
+                            8,
+                            9,
+                            "old one\nold two",
+                            AnchorPlacementStatus::Anchored,
+                            AnchorMatchMethod::ExactAtLine,
+                        ),
+                        new_anchor_segment(
+                            CommentAnchorSide::Head,
+                            "src/lib.rs",
+                            "head-blob",
+                            8,
+                            10,
+                            "new one\nnew two\nnew three",
+                            AnchorPlacementStatus::Anchored,
+                            AnchorMatchMethod::ExactAtLine,
+                        ),
+                    ],
+                    aggregate_status: AnchorAggregateStatus::Anchored,
+                },
+            })
+            .unwrap();
+
+        assert_eq!(comment.anchor.segments.len(), 2);
+        let base = segment_for_side(&comment.anchor, CommentAnchorSide::Base);
+        let head = segment_for_side(&comment.anchor, CommentAnchorSide::Head);
+        assert_eq!(base.line_start, 8);
+        assert_eq!(base.line_end, 9);
+        assert_eq!(base.anchor_text, "old one\nold two");
+        assert_eq!(head.line_start, 8);
+        assert_eq!(head.line_end, 10);
+        assert_eq!(head.anchor_text, "new one\nnew two\nnew three");
+        assert_eq!(comment.line_start, 8);
+        assert_eq!(comment.line_end, 10);
+        assert_eq!(comment.file_blob_sha, "head-blob");
+        assert_eq!(
+            comment.anchor.aggregate_status,
+            AnchorAggregateStatus::Anchored
+        );
+    }
+
+    #[test]
+    fn test_anchor_versions_are_append_only_for_compound_anchors() {
+        let (_dir, db) = test_db();
+
+        let mut comment = simple_comment("a.rs", 1, "head one", "fix this");
+        comment.anchor = NewCommentAnchor {
+            segments: vec![
+                new_anchor_segment(
+                    CommentAnchorSide::Base,
+                    "a.rs",
+                    "base-v1",
+                    1,
+                    1,
+                    "base one",
+                    AnchorPlacementStatus::Anchored,
+                    AnchorMatchMethod::ExactAtLine,
+                ),
+                new_anchor_segment(
+                    CommentAnchorSide::Head,
+                    "a.rs",
+                    "head-v1",
+                    2,
+                    2,
+                    "head one",
+                    AnchorPlacementStatus::Anchored,
+                    AnchorMatchMethod::ExactAtLine,
+                ),
+            ],
+            aggregate_status: AnchorAggregateStatus::Anchored,
+        };
+        let comment = db.create_comment(&comment).unwrap();
+
+        db.insert_anchor_version(&NewAnchorVersion {
+            comment_id: comment.id,
+            anchor: NewCommentAnchor {
+                segments: vec![
+                    new_anchor_segment(
+                        CommentAnchorSide::Base,
+                        "a.rs",
+                        "base-v2",
+                        3,
+                        3,
+                        "base one",
+                        AnchorPlacementStatus::Anchored,
+                        AnchorMatchMethod::ExactElsewhere,
+                    ),
+                    new_anchor_segment(
+                        CommentAnchorSide::Head,
+                        "a.rs",
+                        "head-v2",
+                        4,
+                        4,
+                        "head one",
+                        AnchorPlacementStatus::Anchored,
+                        AnchorMatchMethod::ExactElsewhere,
+                    ),
+                ],
+                aggregate_status: AnchorAggregateStatus::Anchored,
+            },
+        })
+        .unwrap();
+
+        let version_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM anchor_versions WHERE comment_id = ?1",
+                [comment.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let segment_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM anchor_segments segment
+                 JOIN anchor_versions version
+                   ON version.id = segment.anchor_version_id
+                 WHERE version.comment_id = ?1",
+                [comment.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let fetched = db.get_comment(comment.id).unwrap().unwrap();
+
+        assert_eq!(version_count, 2);
+        assert_eq!(segment_count, 4);
+        assert_eq!(
+            segment_for_side(&fetched.anchor, CommentAnchorSide::Base).line_start,
+            3
+        );
+        assert_eq!(
+            segment_for_side(&fetched.anchor, CommentAnchorSide::Head).line_start,
+            4
+        );
+    }
+
+    #[test]
+    fn test_compound_anchor_aggregate_status_persists() {
+        let (_dir, db) = test_db();
+
+        let mut partial = simple_comment("a.rs", 1, "head", "partial");
+        partial.anchor = NewCommentAnchor {
+            segments: vec![
+                new_anchor_segment(
+                    CommentAnchorSide::Base,
+                    "a.rs",
+                    "base-blob",
+                    1,
+                    1,
+                    "base",
+                    AnchorPlacementStatus::Orphaned,
+                    AnchorMatchMethod::NotFound,
+                ),
+                new_anchor_segment(
+                    CommentAnchorSide::Head,
+                    "a.rs",
+                    "head-blob",
+                    2,
+                    2,
+                    "head",
+                    AnchorPlacementStatus::Anchored,
+                    AnchorMatchMethod::ExactAtLine,
+                ),
+            ],
+            aggregate_status: AnchorAggregateStatus::Partial,
+        };
+
+        let mut orphaned = simple_comment("b.rs", 1, "gone", "orphaned");
+        orphaned.anchor = NewCommentAnchor {
+            segments: vec![new_anchor_segment(
+                CommentAnchorSide::Head,
+                "b.rs",
+                "head-blob",
+                7,
+                7,
+                "gone",
+                AnchorPlacementStatus::Orphaned,
+                AnchorMatchMethod::NotFound,
+            )],
+            aggregate_status: AnchorAggregateStatus::Orphaned,
+        };
+
+        let partial = db.create_comment(&partial).unwrap();
+        let orphaned = db.create_comment(&orphaned).unwrap();
+
+        assert_eq!(
+            partial.anchor.aggregate_status,
+            AnchorAggregateStatus::Partial
+        );
+        assert_eq!(partial.anchor_status, AnchorStatus::Approximate);
+        assert_eq!(
+            orphaned.anchor.aggregate_status,
+            AnchorAggregateStatus::Orphaned
+        );
+        assert_eq!(orphaned.anchor_status, AnchorStatus::Orphaned);
     }
 
     #[test]
