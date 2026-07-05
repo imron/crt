@@ -61,10 +61,11 @@ fn opens_comments_panel_for_navigation(app: &App, effects: &[CoreEffect]) -> boo
         && effects.iter().any(|effect| {
             matches!(
                 effect,
-                CoreEffect::CommentsPanel(
-                    CommentsPanelEffect::NavigateNextComment
-                        | CommentsPanelEffect::NavigatePreviousComment
-                )
+                CoreEffect::NavigateUnresolvedComment(_)
+                    | CoreEffect::CommentsPanel(
+                        CommentsPanelEffect::NavigateNextComment
+                            | CommentsPanelEffect::NavigatePreviousComment
+                    )
             )
         })
 }
@@ -73,6 +74,7 @@ fn opens_comments_panel_for_navigation(app: &App, effects: &[CoreEffect]) -> boo
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::core::navigation::Direction;
     use crate::review_types::{
         AnchorAggregateStatus, AnchorMatchMethod, AnchorPlacementStatus, AnchorStatus, ChangeKind,
         Comment, CommentAnchor, CommentAnchorSegment, CommentAnchorSide, ConnectionContext,
@@ -110,6 +112,42 @@ mod tests {
             vec![CoreEffect::CommentsPanel(
                 CommentsPanelEffect::NavigateNextComment,
             )],
+        );
+
+        assert!(app.state.show_comments_panel);
+        assert_eq!(app.state.selected_comment_id, Some(7));
+        assert_eq!(app.state.diff_line_cursor, 15);
+        assert_eq!(app.state.diff_scroll, 7);
+    }
+
+    #[test]
+    fn unresolved_comment_jump_uses_projected_diff_height_when_panel_opens() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        let mut comment = stored_comment(7, "src/main.rs");
+        move_comment_head_range(&mut comment, 16, 24);
+        app.state.comments = vec![comment];
+        app.state.head_content = Some(
+            (1..=60)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.state.show_comments_panel = false;
+
+        let mut tui_state = TuiState::default();
+        tui_state.diff_area = Rect::new(0, 0, 100, 30);
+        tui_state.diff_content_height = 60;
+        tui_state.diff_view_height = 28;
+        tui_state.diff_rendered_text = (1..=60).map(|n| n.to_string()).collect();
+
+        apply_core_effects(
+            &mut app,
+            &mut tui_state,
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
         );
 
         assert!(app.state.show_comments_panel);
