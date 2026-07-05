@@ -18,8 +18,10 @@ use crate::core::search as core_search;
 use crate::core::{ConnectionState, InputEvent};
 use crate::protocol::NotificationKind;
 use crate::review_types::{
-    ConnectionContext, ContentMode, CreateCommentParams, DefinitionLocation, FileEntry, PaneFocus,
-    RenderVariant, ReviewActionResult, ReviewStatus, SearchMatch,
+    AnchorAggregateStatus, AnchorMatchMethod, AnchorPlacementStatus, CommentAnchor,
+    CommentAnchorSegment, CommentAnchorSide, ConnectionContext, ContentMode, CreateCommentParams,
+    DefinitionLocation, FileEntry, PaneFocus, RenderVariant, ReviewActionResult, ReviewStatus,
+    SearchMatch,
 };
 use anyhow::{Context, Result};
 
@@ -659,15 +661,24 @@ impl App {
         anchor: CommentAnchorCapture,
         body: String,
     ) -> Option<StatusUpdate> {
+        let file_path = anchor.file_path;
         let params = CreateCommentParams {
-            file_path: anchor.file_path,
-            line_start: anchor.line_start,
-            line_end: anchor.line_end,
-            char_start: anchor.char_start,
-            char_end: anchor.char_end,
-            anchor_text: anchor.anchor_text,
-            context_before: anchor.context_before,
-            context_after: anchor.context_after,
+            anchor: CommentAnchor {
+                segments: vec![CommentAnchorSegment {
+                    side: CommentAnchorSide::Head,
+                    file_path,
+                    line_start: anchor.line_start,
+                    line_end: anchor.line_end,
+                    char_start: anchor.char_start,
+                    char_end: anchor.char_end,
+                    anchor_text: anchor.anchor_text,
+                    context_before: anchor.context_before,
+                    context_after: anchor.context_after,
+                    placement_status: AnchorPlacementStatus::Anchored,
+                    match_method: AnchorMatchMethod::ExactAtLine,
+                }],
+                aggregate_status: AnchorAggregateStatus::Anchored,
+            },
             body,
         };
 
@@ -1640,6 +1651,8 @@ mod tests {
             id,
             merge_base: "abc123".to_string(),
             head_ref: "feature".to_string(),
+            created_head_commit: "head-commit".to_string(),
+            anchor: test_anchor(file_path, 2, 2, "anchor"),
             file_path: file_path.to_string(),
             line_start: 2,
             line_end: 2,
@@ -1653,6 +1666,30 @@ mod tests {
             created_at: "2026-06-28T00:00:00+10:00".to_string(),
             updated_at: "2026-06-28T00:00:00+10:00".to_string(),
             anchor_status: crate::review_types::AnchorStatus::Anchored,
+        }
+    }
+
+    fn test_anchor(
+        file_path: &str,
+        line_start: i64,
+        line_end: i64,
+        anchor_text: &str,
+    ) -> crate::review_types::CommentAnchor {
+        crate::review_types::CommentAnchor {
+            segments: vec![crate::review_types::CommentAnchorSegment {
+                side: crate::review_types::CommentAnchorSide::Head,
+                file_path: file_path.to_string(),
+                line_start,
+                line_end,
+                char_start: None,
+                char_end: None,
+                anchor_text: anchor_text.to_string(),
+                context_before: String::new(),
+                context_after: String::new(),
+                placement_status: crate::review_types::AnchorPlacementStatus::Anchored,
+                match_method: crate::review_types::AnchorMatchMethod::ExactAtLine,
+            }],
+            aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
         }
     }
 

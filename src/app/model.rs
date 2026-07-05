@@ -1273,6 +1273,8 @@ mod tests {
             id,
             merge_base: "abc123".to_string(),
             head_ref: "feature".to_string(),
+            created_head_commit: "head-commit".to_string(),
+            anchor: test_anchor(file_path, 2, 2, "anchor"),
             file_path: file_path.to_string(),
             line_start: 2,
             line_end: 2,
@@ -1286,6 +1288,30 @@ mod tests {
             created_at: "2026-06-28T00:00:00+10:00".to_string(),
             updated_at: "2026-06-28T00:00:00+10:00".to_string(),
             anchor_status: AnchorStatus::Anchored,
+        }
+    }
+
+    fn test_anchor(
+        file_path: &str,
+        line_start: i64,
+        line_end: i64,
+        anchor_text: &str,
+    ) -> review_types::CommentAnchor {
+        review_types::CommentAnchor {
+            segments: vec![review_types::CommentAnchorSegment {
+                side: review_types::CommentAnchorSide::Head,
+                file_path: file_path.to_string(),
+                line_start,
+                line_end,
+                char_start: None,
+                char_end: None,
+                anchor_text: anchor_text.to_string(),
+                context_before: String::new(),
+                context_after: String::new(),
+                placement_status: review_types::AnchorPlacementStatus::Anchored,
+                match_method: review_types::AnchorMatchMethod::ExactAtLine,
+            }],
+            aggregate_status: review_types::AnchorAggregateStatus::Anchored,
         }
     }
 

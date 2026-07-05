@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 
 use crt::client::{Client, CommentScope};
 use crt::protocol::{JsonRpcCall, NotificationKind, RpcMethod};
+use crt::review_types;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UnixStream};
 use tokio::task::JoinHandle;
@@ -105,13 +106,7 @@ impl TestServer {
     async fn connect_and_init(&self) -> ClientConn {
         let mut conn = self.connect().await;
         let resp = conn
-            .request(
-                RpcMethod::Init,
-                serde_json::json!({
-                    "worktree": self.repo_dir.to_string_lossy(),
-                    "base_ref": "HEAD",
-                }),
-            )
+            .request(RpcMethod::Init, init_params(&self.repo_dir, "HEAD"))
             .await;
         assert!(resp["error"].is_null(), "init failed: {resp}");
         conn
@@ -148,15 +143,23 @@ impl ClientConn {
         method: &str,
         params: serde_json::Value,
     ) -> serde_json::Value {
+        #[derive(serde::Serialize)]
+        struct UnknownJsonRpcCall<'a> {
+            jsonrpc: &'static str,
+            method: &'a str,
+            params: serde_json::Value,
+            id: u64,
+        }
+
         let id = self.next_id;
         self.next_id += 1;
 
-        let request = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-            "id": id,
-        });
+        let request = UnknownJsonRpcCall {
+            jsonrpc: "2.0",
+            method,
+            params,
+            id,
+        };
         self.request_value(&request).await
     }
 
@@ -210,6 +213,80 @@ fn git_output(path: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+fn params<T: serde::Serialize>(value: T) -> serde_json::Value {
+    serde_json::to_value(value).unwrap()
+}
+
+fn empty_params() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
+fn init_params(worktree: &Path, base_ref: &str) -> serde_json::Value {
+    params(review_types::InitParams {
+        worktree: worktree.to_string_lossy().into_owned(),
+        base_ref: base_ref.to_string(),
+    })
+}
+
+fn list_comments_params(file_path: &str, include_resolved: bool) -> serde_json::Value {
+    params(review_types::ListCommentsParams {
+        file_path: Some(file_path.to_string()),
+        include_resolved,
+        include_previous_bases: false,
+    })
+}
+
+fn create_comment_params(
+    file_path: &str,
+    line: i64,
+    anchor_text: &str,
+    context_before: &str,
+    body: &str,
+) -> serde_json::Value {
+    params(review_types::CreateCommentParams {
+        anchor: review_types::CommentAnchor {
+            segments: vec![review_types::CommentAnchorSegment {
+                side: review_types::CommentAnchorSide::Head,
+                file_path: file_path.to_string(),
+                line_start: line,
+                line_end: line,
+                char_start: None,
+                char_end: None,
+                anchor_text: anchor_text.to_string(),
+                context_before: context_before.to_string(),
+                context_after: String::new(),
+                placement_status: review_types::AnchorPlacementStatus::Anchored,
+                match_method: review_types::AnchorMatchMethod::ExactAtLine,
+            }],
+            aggregate_status: review_types::AnchorAggregateStatus::Anchored,
+        },
+        body: body.to_string(),
+    })
+}
+
+fn update_comment_params(id: i64, body: &str) -> serde_json::Value {
+    params(review_types::UpdateCommentParams {
+        id,
+        body: body.to_string(),
+    })
+}
+
+fn get_comment_params(id: i64) -> serde_json::Value {
+    params(review_types::GetCommentParams { id })
+}
+
+fn resolve_comment_params(id: i64) -> serde_json::Value {
+    params(review_types::ResolveCommentParams { id })
+}
+
+fn unresolve_comment_params(id: i64) -> serde_json::Value {
+    params(review_types::UnresolveCommentParams { id })
+}
+
+fn delete_comment_params(id: i64) -> serde_json::Value {
+    params(review_types::DeleteCommentParams { id })
+}
+
 fn unused_local_port() -> u16 {
     let seed = NEXT_HTTP_TEST_PORT.fetch_add(1, Ordering::Relaxed);
     let start = 20_000 + ((std::process::id() as u16).wrapping_add(seed) % 20_000);
@@ -258,13 +335,7 @@ async fn test_init_resolves_context() {
     let mut conn = server.connect().await;
 
     let resp = conn
-        .request(
-            RpcMethod::Init,
-            serde_json::json!({
-                "worktree": server.repo_dir.to_string_lossy(),
-                "base_ref": "HEAD",
-            }),
-        )
+        .request(RpcMethod::Init, init_params(&server.repo_dir, "HEAD"))
         .await;
 
     assert!(resp["error"].is_null(), "init should succeed: {resp}");
@@ -289,10 +360,7 @@ async fn test_init_bad_base_ref() {
     let resp = conn
         .request(
             RpcMethod::Init,
-            serde_json::json!({
-                "worktree": server.repo_dir.to_string_lossy(),
-                "base_ref": "nonexistent-xyz",
-            }),
+            init_params(&server.repo_dir, "nonexistent-xyz"),
         )
         .await;
 
@@ -310,7 +378,7 @@ async fn test_request_before_init() {
     let mut conn = server.connect().await;
 
     let resp = conn
-        .request(RpcMethod::ListChangedFiles, serde_json::json!({}))
+        .request(RpcMethod::ListChangedFiles, empty_params())
         .await;
 
     assert_eq!(resp["error"]["code"], -32000);
@@ -327,9 +395,7 @@ async fn test_unknown_method() {
     let server = TestServer::start().await;
     let mut conn = server.connect_and_init().await;
 
-    let resp = conn
-        .request_unknown("bogus_method", serde_json::json!({}))
-        .await;
+    let resp = conn.request_unknown("bogus_method", empty_params()).await;
 
     assert_eq!(resp["error"]["code"], -32601);
 }
@@ -343,7 +409,10 @@ async fn test_stub_method() {
     let resp = conn
         .request(
             RpcMethod::GetFileContent,
-            serde_json::json!({"file_path": "test.rs", "version": "HEAD"}),
+            params(review_types::GetFileContentParams {
+                file_path: "test.rs".to_string(),
+                version: review_types::FileVersion::Head,
+            }),
         )
         .await;
 
@@ -366,10 +435,10 @@ async fn test_multiple_clients() {
     // Both should be able to send requests independently.
     // list_changed_files is now implemented and returns a result.
     let resp1 = conn1
-        .request(RpcMethod::ListChangedFiles, serde_json::json!({}))
+        .request(RpcMethod::ListChangedFiles, empty_params())
         .await;
     let resp2 = conn2
-        .request(RpcMethod::ListChangedFiles, serde_json::json!({}))
+        .request(RpcMethod::ListChangedFiles, empty_params())
         .await;
 
     // Both should succeed (result is present, no error).
@@ -392,7 +461,7 @@ async fn test_list_file_statuses_returns_compact_review_state() {
     let mut conn = server.connect_and_init().await;
 
     let resp = conn
-        .request(RpcMethod::ListFileStatuses, serde_json::json!({}))
+        .request(RpcMethod::ListFileStatuses, empty_params())
         .await;
 
     assert!(resp["error"].is_null(), "list failed: {resp}");
@@ -634,17 +703,7 @@ async fn test_comment_lifecycle() {
     let create = conn
         .request(
             RpcMethod::CreateComment,
-            serde_json::json!({
-                "file_path": "file.txt",
-                "line_start": 1,
-                "line_end": 1,
-                "char_start": null,
-                "char_end": null,
-                "anchor_text": "hello",
-                "context_before": "",
-                "context_after": "",
-                "body": "check this",
-            }),
+            create_comment_params("file.txt", 1, "hello", "", "check this"),
         )
         .await;
     assert!(create["error"].is_null(), "create failed: {create}");
@@ -658,10 +717,7 @@ async fn test_comment_lifecycle() {
     let list = conn
         .request(
             RpcMethod::ListComments,
-            serde_json::json!({
-                "file_path": "file.txt",
-                "include_resolved": false,
-            }),
+            list_comments_params("file.txt", false),
         )
         .await;
     assert!(list["error"].is_null(), "list failed: {list}");
@@ -672,24 +728,21 @@ async fn test_comment_lifecycle() {
     let update = conn
         .request(
             RpcMethod::UpdateComment,
-            serde_json::json!({
-                "id": id,
-                "body": "updated body",
-            }),
+            update_comment_params(id, "updated body"),
         )
         .await;
     assert!(update["error"].is_null(), "update failed: {update}");
     assert_eq!(update["result"]["comment"]["body"], "updated body");
 
     let detail = conn
-        .request(RpcMethod::GetComment, serde_json::json!({ "id": id }))
+        .request(RpcMethod::GetComment, get_comment_params(id))
         .await;
     assert!(detail["error"].is_null(), "get failed: {detail}");
     assert_eq!(detail["result"]["comment"]["context_before"], "");
     assert_eq!(detail["result"]["comment"]["context_after"], "");
 
     let resolved = conn
-        .request(RpcMethod::ResolveComment, serde_json::json!({ "id": id }))
+        .request(RpcMethod::ResolveComment, resolve_comment_params(id))
         .await;
     assert!(resolved["error"].is_null(), "resolve failed: {resolved}");
     assert_eq!(resolved["result"]["comment"]["resolved"], true);
@@ -713,10 +766,7 @@ async fn test_comment_lifecycle() {
     let unresolved_only = conn
         .request(
             RpcMethod::ListComments,
-            serde_json::json!({
-                "file_path": "file.txt",
-                "include_resolved": false,
-            }),
+            list_comments_params("file.txt", false),
         )
         .await;
     assert!(
@@ -734,17 +784,14 @@ async fn test_comment_lifecycle() {
     let all = conn
         .request(
             RpcMethod::ListComments,
-            serde_json::json!({
-                "file_path": "file.txt",
-                "include_resolved": true,
-            }),
+            list_comments_params("file.txt", true),
         )
         .await;
     assert!(all["error"].is_null(), "list all failed: {all}");
     assert_eq!(all["result"]["comments"].as_array().unwrap().len(), 1);
 
     let unresolved = conn
-        .request(RpcMethod::UnresolveComment, serde_json::json!({ "id": id }))
+        .request(RpcMethod::UnresolveComment, unresolve_comment_params(id))
         .await;
     assert!(
         unresolved["error"].is_null(),
@@ -753,7 +800,7 @@ async fn test_comment_lifecycle() {
     assert_eq!(unresolved["result"]["comment"]["resolved"], false);
 
     let deleted = conn
-        .request(RpcMethod::DeleteComment, serde_json::json!({ "id": id }))
+        .request(RpcMethod::DeleteComment, delete_comment_params(id))
         .await;
     assert!(deleted["error"].is_null(), "delete failed: {deleted}");
     assert_eq!(deleted["result"]["deleted"], true);
@@ -761,10 +808,7 @@ async fn test_comment_lifecycle() {
     let after_delete = conn
         .request(
             RpcMethod::ListComments,
-            serde_json::json!({
-                "file_path": "file.txt",
-                "include_resolved": true,
-            }),
+            list_comments_params("file.txt", true),
         )
         .await;
     assert!(
@@ -785,17 +829,7 @@ async fn test_carry_over_comment_can_be_unresolved_after_resolve() {
     let create = conn
         .request(
             RpcMethod::CreateComment,
-            serde_json::json!({
-                "file_path": "file.txt",
-                "line_start": 1,
-                "line_end": 1,
-                "char_start": null,
-                "char_end": null,
-                "anchor_text": "hello",
-                "context_before": "",
-                "context_after": "",
-                "body": "carry-over feedback",
-            }),
+            create_comment_params("file.txt", 1, "hello", "", "carry-over feedback"),
         )
         .await;
     assert!(create["error"].is_null(), "create failed: {create}");
@@ -811,13 +845,13 @@ async fn test_carry_over_comment_can_be_unresolved_after_resolve() {
     drop(db);
 
     let resolved = conn
-        .request(RpcMethod::ResolveComment, serde_json::json!({ "id": id }))
+        .request(RpcMethod::ResolveComment, resolve_comment_params(id))
         .await;
     assert!(resolved["error"].is_null(), "resolve failed: {resolved}");
     assert_eq!(resolved["result"]["comment"]["resolved"], true);
 
     let unresolved = conn
-        .request(RpcMethod::UnresolveComment, serde_json::json!({ "id": id }))
+        .request(RpcMethod::UnresolveComment, unresolve_comment_params(id))
         .await;
     assert!(
         unresolved["error"].is_null(),
@@ -837,14 +871,22 @@ async fn test_client_visible_comments_include_previous_base_unresolved_comments(
 
     let created = client
         .create_comment(crt::review_types::CreateCommentParams {
-            file_path: "file.txt".to_string(),
-            line_start: 1,
-            line_end: 1,
-            char_start: None,
-            char_end: None,
-            anchor_text: "hello".to_string(),
-            context_before: String::new(),
-            context_after: String::new(),
+            anchor: crt::review_types::CommentAnchor {
+                segments: vec![crt::review_types::CommentAnchorSegment {
+                    side: crt::review_types::CommentAnchorSide::Head,
+                    file_path: "file.txt".to_string(),
+                    line_start: 1,
+                    line_end: 1,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "hello".to_string(),
+                    context_before: String::new(),
+                    context_after: String::new(),
+                    placement_status: crt::review_types::AnchorPlacementStatus::Anchored,
+                    match_method: crt::review_types::AnchorMatchMethod::ExactAtLine,
+                }],
+                aggregate_status: crt::review_types::AnchorAggregateStatus::Anchored,
+            },
             body: "previous base feedback".to_string(),
         })
         .await
@@ -883,17 +925,7 @@ async fn test_comment_reanchors_unresolved_only() {
     let create = conn
         .request(
             RpcMethod::CreateComment,
-            serde_json::json!({
-                "file_path": "file.txt",
-                "line_start": 2,
-                "line_end": 2,
-                "char_start": null,
-                "char_end": null,
-                "anchor_text": "world",
-                "context_before": "hello",
-                "context_after": "",
-                "body": "check this",
-            }),
+            create_comment_params("file.txt", 2, "world", "hello", "check this"),
         )
         .await;
     assert!(create["error"].is_null(), "create failed: {create}");
@@ -904,10 +936,7 @@ async fn test_comment_reanchors_unresolved_only() {
     let list = conn
         .request(
             RpcMethod::ListComments,
-            serde_json::json!({
-                "file_path": "file.txt",
-                "include_resolved": false,
-            }),
+            list_comments_params("file.txt", false),
         )
         .await;
     assert!(list["error"].is_null(), "list failed: {list}");
@@ -922,14 +951,14 @@ async fn test_comment_reanchors_unresolved_only() {
     .unwrap();
 
     let detail = conn
-        .request(RpcMethod::GetComment, serde_json::json!({ "id": id }))
+        .request(RpcMethod::GetComment, get_comment_params(id))
         .await;
     assert!(detail["error"].is_null(), "get failed: {detail}");
     assert_eq!(detail["result"]["comment"]["anchor_status"], "shifted");
     assert_eq!(detail["result"]["comment"]["line_start"], 4);
 
     let resolved = conn
-        .request(RpcMethod::ResolveComment, serde_json::json!({ "id": id }))
+        .request(RpcMethod::ResolveComment, resolve_comment_params(id))
         .await;
     assert!(resolved["error"].is_null(), "resolve failed: {resolved}");
 
@@ -940,7 +969,7 @@ async fn test_comment_reanchors_unresolved_only() {
     .unwrap();
 
     let detail = conn
-        .request(RpcMethod::GetComment, serde_json::json!({ "id": id }))
+        .request(RpcMethod::GetComment, get_comment_params(id))
         .await;
     assert!(detail["error"].is_null(), "get resolved failed: {detail}");
     assert_eq!(detail["result"]["comment"]["resolved"], true);
@@ -979,16 +1008,13 @@ async fn test_explicit_commit_base_does_not_migrate_reviews() {
     let resp = conn
         .request(
             RpcMethod::Init,
-            serde_json::json!({
-                "worktree": server.repo_dir.to_string_lossy(),
-                "base_ref": explicit_base,
-            }),
+            init_params(&server.repo_dir, &explicit_base),
         )
         .await;
     assert!(resp["error"].is_null(), "init failed: {resp}");
 
     let resp = conn
-        .request(RpcMethod::ListChangedFiles, serde_json::json!({}))
+        .request(RpcMethod::ListChangedFiles, empty_params())
         .await;
     assert!(resp["error"].is_null(), "list failed: {resp}");
 
@@ -1048,18 +1074,12 @@ async fn test_migrated_changed_review_stays_changed() {
 
     let mut conn = server.connect().await;
     let resp = conn
-        .request(
-            RpcMethod::Init,
-            serde_json::json!({
-                "worktree": server.repo_dir.to_string_lossy(),
-                "base_ref": "newbase",
-            }),
-        )
+        .request(RpcMethod::Init, init_params(&server.repo_dir, "newbase"))
         .await;
     assert!(resp["error"].is_null(), "init failed: {resp}");
 
     let resp = conn
-        .request(RpcMethod::ListChangedFiles, serde_json::json!({}))
+        .request(RpcMethod::ListChangedFiles, empty_params())
         .await;
     assert!(resp["error"].is_null(), "list failed: {resp}");
 
@@ -1077,7 +1097,7 @@ async fn test_list_repos_reports_active_initialized_sessions() {
     let mut discovery = server.connect().await;
 
     let resp = discovery
-        .request(RpcMethod::ListRepos, serde_json::json!({}))
+        .request(RpcMethod::ListRepos, empty_params())
         .await;
     assert!(
         resp["error"].is_null(),
@@ -1088,7 +1108,7 @@ async fn test_list_repos_reports_active_initialized_sessions() {
     let initialized = server.connect_and_init().await;
 
     let resp = discovery
-        .request(RpcMethod::ListRepos, serde_json::json!({}))
+        .request(RpcMethod::ListRepos, empty_params())
         .await;
     assert!(
         resp["error"].is_null(),
@@ -1107,7 +1127,7 @@ async fn test_list_repos_reports_active_initialized_sessions() {
     for _ in 0..20 {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         let resp = discovery
-            .request(RpcMethod::ListRepos, serde_json::json!({}))
+            .request(RpcMethod::ListRepos, empty_params())
             .await;
         let sessions = resp["result"]["sessions"].as_array().unwrap();
         if sessions.is_empty() {
