@@ -423,7 +423,7 @@ fn render_side_line(
     show_blame: bool,
     is_cursor: bool,
 ) -> Line<'static> {
-    match line {
+    let rendered = match line {
         Some(RenderLine::Content(content)) => render_content_line(
             content,
             styles,
@@ -437,7 +437,8 @@ fn render_side_line(
             render_spacer_line(marker_text(marker), width, styles)
         }
         None => render_spacer_line(String::new(), width, styles),
-    }
+    };
+    clip_line(rendered, width)
 }
 
 fn render_content_line(
@@ -501,6 +502,34 @@ fn render_content_line(
     let pad = width.saturating_sub(fixed_width + content_width);
     spans.push(Span::styled(" ".repeat(pad), base_style));
     Line::from(spans)
+}
+
+fn clip_line(line: Line<'static>, width: usize) -> Line<'static> {
+    if width == 0 {
+        return Line::from(Vec::<Span<'static>>::new());
+    }
+
+    let mut remaining = width;
+    let mut clipped = Vec::new();
+    for span in line.spans {
+        if remaining == 0 {
+            break;
+        }
+
+        let text = span.content.as_ref();
+        let char_count = text.chars().count();
+        if char_count <= remaining {
+            remaining -= char_count;
+            clipped.push(span);
+            continue;
+        }
+
+        let truncated: String = text.chars().take(remaining).collect();
+        clipped.push(Span::styled(truncated, span.style));
+        break;
+    }
+
+    Line::from(clipped)
 }
 
 fn push_unified_gutter(
@@ -706,6 +735,7 @@ mod tests {
 
     use crate::app::document::{RenderContent, SourceLocation, TextRun};
     use crate::app::model::CommentMarker;
+    use crate::review_types::CommentAnchorSide;
 
     use super::*;
 
@@ -784,6 +814,58 @@ mod tests {
         assert_eq!(line.spans[2].style.fg, Some(Color::Black));
         assert_eq!(line.spans[2].style.bg, Some(Color::White));
         assert_eq!(line.spans[3].content.as_ref(), "   ");
+    }
+
+    #[test]
+    fn side_by_side_line_clips_each_side_before_joining() {
+        let styles = StyleConfig::default();
+        let inner_w = 41;
+        let side_w = side_width(inner_w);
+        let layout = DocumentLayout {
+            gutter_w: 3,
+            base_gutter_w: 3,
+            head_gutter_w: 3,
+            gutter_cols: 0,
+            content_start_col: 0,
+        };
+        let base = plain_content(
+            SourceLocation::single(CommentAnchorSide::Base, 420),
+            "420",
+            LineKind::Context,
+            "left content that is far too long for the left side",
+        );
+        let head = plain_content(
+            SourceLocation::single(CommentAnchorSide::Head, 424),
+            "424",
+            LineKind::Context,
+            "right",
+        );
+
+        let line = render_side_by_side_line(
+            Some(base),
+            Some(head),
+            &styles,
+            &layout,
+            inner_w,
+            false,
+            false,
+        );
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        let divider_w = SIDE_BY_SIDE_DIVIDER.chars().count();
+        assert_eq!(text.chars().count(), side_w * 2 + divider_w);
+        assert_eq!(
+            text.chars()
+                .skip(side_w)
+                .take(divider_w)
+                .collect::<String>(),
+            SIDE_BY_SIDE_DIVIDER
+        );
+        assert!(text.ends_with("right      "));
     }
 }
 
