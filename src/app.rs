@@ -460,6 +460,10 @@ impl App {
                 &self.state.comments,
                 self.state.selected_comment_id,
                 Some(document::RowIndex(self.state.diff_line_cursor)),
+                Some(document::DocumentPosition {
+                    row: document::RowIndex(self.state.diff_line_cursor),
+                    column: document::ColumnIndex(self.state.diff_col_cursor),
+                }),
                 self.state.diff_search_query.as_deref(),
             );
         }

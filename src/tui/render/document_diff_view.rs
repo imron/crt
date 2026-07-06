@@ -7,7 +7,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use super::super::state::TuiState;
-use super::diff_view::apply_col_cursor;
 use crate::app::document::{
     BlameInfo, DiffDocument, Document, DocumentRow, RenderContent, RenderLine, SourceLocation,
     TextRunKind,
@@ -299,6 +298,7 @@ fn visible_lines(
                                 diff.show_blame,
                                 is_cursor,
                             ),
+                            styles,
                             layout.content_start_col,
                             diff.cursor.column,
                             is_cursor,
@@ -317,6 +317,7 @@ fn visible_lines(
                                 diff.show_blame,
                                 is_cursor,
                             ),
+                            styles,
                             layout.content_start_col,
                             diff.cursor.column,
                             is_cursor,
@@ -335,6 +336,7 @@ fn visible_lines(
                                 diff.show_blame,
                                 is_cursor,
                             ),
+                            styles,
                             layout.content_start_col,
                             diff.cursor.column,
                             is_cursor,
@@ -354,6 +356,7 @@ fn visible_lines(
                             diff.show_blame,
                             is_cursor,
                         ),
+                        styles,
                         layout.content_start_col,
                         diff.cursor.column,
                         is_cursor,
@@ -366,15 +369,78 @@ fn visible_lines(
 
 fn with_column_cursor(
     line: Line<'static>,
+    styles: &StyleConfig,
     content_start_col: usize,
     cursor_col: usize,
     is_cursor: bool,
 ) -> Line<'static> {
     if is_cursor {
-        apply_col_cursor(&line, content_start_col, cursor_col)
+        apply_document_col_cursor(&line, styles, content_start_col, cursor_col)
     } else {
         line
     }
+}
+
+fn apply_document_col_cursor(
+    line: &Line<'_>,
+    styles: &StyleConfig,
+    content_start_col: usize,
+    cursor_col: usize,
+) -> Line<'static> {
+    let target_char = content_start_col + cursor_col;
+    let mut result = Vec::new();
+    let mut char_pos = 0;
+    let mut applied = false;
+
+    for span in &line.spans {
+        let text = span.content.as_ref();
+        let span_char_len = text.chars().count();
+        let span_char_start = char_pos;
+        let span_char_end = char_pos + span_char_len;
+
+        if !applied && target_char >= span_char_start && target_char < span_char_end {
+            let local_char_idx = target_char - span_char_start;
+            if local_char_idx > 0 {
+                let before: String = text.chars().take(local_char_idx).collect();
+                result.push(Span::styled(before, span.style));
+            }
+
+            let cursor_char: String = text.chars().skip(local_char_idx).take(1).collect();
+            let cursor_style = if is_search_highlight_style(span.style, styles) {
+                span.style
+            } else {
+                Style::default()
+                    .fg(span.style.bg.unwrap_or(Color::Black))
+                    .bg(span.style.fg.unwrap_or(Color::White))
+            };
+            result.push(Span::styled(cursor_char, cursor_style));
+
+            if local_char_idx + 1 < span_char_len {
+                let after: String = text.chars().skip(local_char_idx + 1).collect();
+                result.push(Span::styled(after, span.style));
+            }
+
+            applied = true;
+        } else {
+            result.push(Span::styled(text.to_string(), span.style));
+        }
+
+        char_pos = span_char_end;
+    }
+
+    if !applied {
+        result.push(Span::styled(
+            " ",
+            Style::default().fg(Color::Black).bg(Color::White),
+        ));
+    }
+
+    Line::from(result)
+}
+
+fn is_search_highlight_style(style: Style, styles: &StyleConfig) -> bool {
+    style.bg == Some(*styles.diff.search_match_bg)
+        || style.bg == Some(*styles.diff.search_current_match_bg)
 }
 
 fn render_single_line(
@@ -544,6 +610,9 @@ fn render_content_line(
             TextRunKind::SearchMatch => {
                 base_style.bg(*styles.diff.search_match_bg).fg(Color::Black)
             }
+            TextRunKind::CurrentSearchMatch => base_style
+                .bg(*styles.diff.search_current_match_bg)
+                .fg(Color::Black),
         };
         content_width += run.text.chars().count();
         spans.push(Span::styled(run.text.to_string(), run_style));
@@ -936,6 +1005,7 @@ mod tests {
         kind: LineKind,
         plain: &'static str,
         search: &'static str,
+        search_kind: TextRunKind,
     ) -> RenderLine<'static> {
         RenderLine::Content(RenderContent {
             gutter: Cow::Borrowed(gutter),
@@ -950,7 +1020,7 @@ mod tests {
                 },
                 TextRun {
                     text: Cow::Borrowed(search),
-                    kind: TextRunKind::SearchMatch,
+                    kind: search_kind,
                 },
             ],
         })
@@ -1016,6 +1086,7 @@ mod tests {
             LineKind::Addition,
             "hello ",
             "earth",
+            TextRunKind::SearchMatch,
         ) else {
             panic!("expected content line");
         };
@@ -1028,6 +1099,31 @@ mod tests {
             .expect("search span");
 
         assert_eq!(search.style.bg, Some(*styles.diff.search_match_bg));
+        assert_eq!(search.style.fg, Some(Color::Black));
+    }
+
+    #[test]
+    fn current_search_runs_use_current_search_background() {
+        let styles = StyleConfig::default();
+        let RenderLine::Content(content) = search_content(
+            SourceLocation::paired(None, Some(441)),
+            "441",
+            LineKind::Addition,
+            "hello ",
+            "earth",
+            TextRunKind::CurrentSearchMatch,
+        ) else {
+            panic!("expected content line");
+        };
+
+        let line = render_content_line(content, &styles, 3, GutterMode::Unified, 80, false, false);
+        let search = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "earth")
+            .expect("search span");
+
+        assert_eq!(search.style.bg, Some(*styles.diff.search_current_match_bg));
         assert_eq!(search.style.fg, Some(Color::Black));
     }
 
@@ -1111,7 +1207,8 @@ mod tests {
             Style::default().fg(Color::Red).bg(Color::Blue),
         )]);
 
-        let line = with_column_cursor(line, 2, 1, true);
+        let styles = StyleConfig::default();
+        let line = with_column_cursor(line, &styles, 2, 1, true);
 
         assert_eq!(line.spans[0].content.as_ref(), "012");
         assert_eq!(line.spans[1].content.as_ref(), "3");
@@ -1125,7 +1222,7 @@ mod tests {
         let styles = StyleConfig::default();
         let line = render_spacer_line(" ".to_string(), 8, &styles, true);
 
-        let line = with_column_cursor(line, 4, 0, true);
+        let line = with_column_cursor(line, &styles, 4, 0, true);
 
         assert_eq!(line.spans[0].content.as_ref(), " ");
         assert_eq!(line.spans[0].style.bg, Some(*styles.diff.cursor_line_bg));
@@ -1136,6 +1233,26 @@ mod tests {
         assert_eq!(line.spans[2].style.bg, Some(Color::White));
         assert_eq!(line.spans[3].content.as_ref(), "   ");
         assert_eq!(line.spans[3].style.bg, Some(*styles.diff.cursor_line_bg));
+    }
+
+    #[test]
+    fn cursor_overlay_preserves_current_search_background() {
+        let styles = StyleConfig::default();
+        let line = Line::from(vec![Span::styled(
+            "needle",
+            Style::default()
+                .fg(Color::Black)
+                .bg(*styles.diff.search_current_match_bg),
+        )]);
+
+        let line = with_column_cursor(line, &styles, 0, 2, true);
+
+        assert_eq!(line.spans[1].content.as_ref(), "e");
+        assert_eq!(
+            line.spans[1].style.bg,
+            Some(*styles.diff.search_current_match_bg)
+        );
+        assert_eq!(line.spans[1].style.fg, Some(Color::Black));
     }
 
     #[test]
