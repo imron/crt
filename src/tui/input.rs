@@ -169,6 +169,15 @@ pub fn handle_key_event(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> Key
         return dispatch_core_input(key);
     }
 
+    if key.kind == CrosstermKeyEventKind::Press
+        && key.code == KeyCode::Char('*')
+        && key.modifiers.is_empty()
+    {
+        tui_state.use_document_diff_view = !tui_state.use_document_diff_view;
+        tui_state.diff_cache = None;
+        return KeyInputResult::Local;
+    }
+
     dispatch_core_input(key)
 }
 
@@ -717,6 +726,27 @@ mod tests {
             )))
         );
         assert_eq!(tui_state.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn star_toggles_document_diff_renderer_locally() {
+        let mut tui_state = TuiState::default();
+
+        let result = handle_key_event(
+            &mut tui_state,
+            CrosstermKeyEvent::new(KeyCode::Char('*'), KeyModifiers::NONE),
+        );
+
+        assert_eq!(result, KeyInputResult::Local);
+        assert!(tui_state.use_document_diff_view);
+
+        let result = handle_key_event(
+            &mut tui_state,
+            CrosstermKeyEvent::new(KeyCode::Char('*'), KeyModifiers::NONE),
+        );
+
+        assert_eq!(result, KeyInputResult::Local);
+        assert!(!tui_state.use_document_diff_view);
     }
 
     #[test]

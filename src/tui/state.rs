@@ -3,6 +3,7 @@
 use std::time::{Duration, Instant};
 
 use super::render::diff_view::DiffCache;
+use crate::app::document::DocumentKey;
 use crate::app::model::AppModel;
 use crate::app::{AppOutput, AppState, AppViewport, FileListSectionFocus, StatusUpdate};
 use crate::core::{AppTarget, ConnectionState, PaneId, PointerSemanticHit, PromptId, TextAnchor};
@@ -63,6 +64,8 @@ pub struct LastPointerClick {
 pub struct TuiState {
     /// Whether inline comments are visible in the diff pane.
     pub show_comments: bool,
+    /// TUI-local Stage 29 renderer toggle.
+    pub use_document_diff_view: bool,
     pub diff_cache: Option<DiffCache>,
     /// Display row indices where each hunk starts in the rendered TUI diff.
     pub hunk_start_rows: Vec<usize>,
@@ -80,6 +83,8 @@ pub struct TuiState {
     pub diff_view_height: usize,
     /// Plain text of rendered diff lines, used for search and clipboard.
     pub diff_rendered_text: Vec<String>,
+    /// Document key for plain text produced by the document renderer.
+    pub document_diff_rendered_text_key: Option<DocumentKey>,
     /// Plain text of rendered file-list lines, used for clipboard.
     pub file_list_rendered_text: Vec<String>,
     /// Mapping from rendered file-list rows to file indices.
@@ -143,6 +148,7 @@ impl Default for TuiState {
     fn default() -> Self {
         Self {
             show_comments: false,
+            use_document_diff_view: false,
             diff_cache: None,
             hunk_start_rows: Vec::new(),
             hunk_end_rows: Vec::new(),
@@ -152,6 +158,7 @@ impl Default for TuiState {
             diff_content_height: 0,
             diff_view_height: 0,
             diff_rendered_text: Vec::new(),
+            document_diff_rendered_text_key: None,
             file_list_rendered_text: Vec::new(),
             file_list_row_to_file: Vec::new(),
             file_list_row_to_comment: Vec::new(),

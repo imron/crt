@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use crate::app::model::{BlameLine, CommentMarker, CommentMarkerKind};
 use crate::config::DiffAlgorithm;
@@ -12,6 +13,25 @@ use crate::review_types::{
 pub struct ActiveDocument {
     pub key: DocumentKey,
     pub diff: DiffDocument,
+}
+
+impl ActiveDocument {
+    pub fn refresh_overlays(
+        &mut self,
+        file_path: &str,
+        comments: &[Comment],
+        selected_comment_id: Option<i64>,
+        cursor: Option<RowIndex>,
+        search_query: Option<&str>,
+    ) {
+        self.diff.refresh_overlays(
+            file_path,
+            comments,
+            selected_comment_id,
+            cursor,
+            search_query,
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +83,57 @@ impl DiffDocument {
                 document.current_comment_id()
             }
             Self::SideBySide(document) => document.current_comment_id(),
+        }
+    }
+
+    pub fn hunk_spans(&self) -> &[HunkSpan] {
+        match self {
+            Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
+                document.hunk_spans()
+            }
+            Self::SideBySide(document) => document.hunk_spans(),
+        }
+    }
+
+    pub fn search(&mut self, query: impl Into<String>) {
+        let query = query.into();
+        match self {
+            Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
+                document.search(query)
+            }
+            Self::SideBySide(document) => document.search(query),
+        }
+    }
+
+    fn refresh_overlays(
+        &mut self,
+        file_path: &str,
+        comments: &[Comment],
+        selected_comment_id: Option<i64>,
+        cursor: Option<RowIndex>,
+        search_query: Option<&str>,
+    ) {
+        match self {
+            Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
+                refresh_document_overlays(
+                    document,
+                    None,
+                    file_path,
+                    comments,
+                    selected_comment_id,
+                    cursor,
+                    search_query,
+                );
+            }
+            Self::SideBySide(document) => {
+                document.refresh_overlays(
+                    file_path,
+                    comments,
+                    selected_comment_id,
+                    cursor,
+                    search_query,
+                );
+            }
         }
     }
 }
@@ -149,12 +220,51 @@ impl SideBySideDocument {
             .next_hunk(row, direction)
             .or_else(|| self.base.next_hunk(row, direction))
     }
+
+    pub fn hunk_spans(&self) -> &[HunkSpan] {
+        self.head.hunk_spans()
+    }
+
+    pub fn search(&mut self, query: impl Into<String>) {
+        let query = query.into();
+        self.base.search(query.clone());
+        self.head.search(query);
+    }
+
+    fn refresh_overlays(
+        &mut self,
+        file_path: &str,
+        comments: &[Comment],
+        selected_comment_id: Option<i64>,
+        cursor: Option<RowIndex>,
+        search_query: Option<&str>,
+    ) {
+        let marker_source_rows = SourceRowIndex::aligned(self.base.rows(), self.head.rows());
+        refresh_document_overlays(
+            &mut self.base,
+            Some(&marker_source_rows),
+            file_path,
+            comments,
+            selected_comment_id,
+            cursor,
+            search_query,
+        );
+        refresh_document_overlays(
+            &mut self.head,
+            Some(&marker_source_rows),
+            file_path,
+            comments,
+            selected_comment_id,
+            cursor,
+            search_query,
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Document {
-    rows: Vec<DocumentRow>,
-    hunk_spans: Vec<HunkSpan>,
+    rows: Arc<Vec<DocumentRow>>,
+    hunk_spans: Arc<Vec<HunkSpan>>,
     overlays: DocumentOverlays,
 }
 
@@ -162,8 +272,8 @@ impl Document {
     pub fn new(rows: Vec<DocumentRow>, hunk_spans: Vec<HunkSpan>) -> Self {
         let overlays = DocumentOverlays::default();
         Self {
-            rows,
-            hunk_spans,
+            rows: Arc::new(rows),
+            hunk_spans: Arc::new(hunk_spans),
             overlays,
         }
     }
@@ -186,7 +296,7 @@ impl Document {
     }
 
     pub fn rows(&self) -> &[DocumentRow] {
-        &self.rows
+        self.rows.as_slice()
     }
 
     pub fn content_row(&self, row: RowIndex) -> Option<&ContentRow> {
@@ -220,7 +330,7 @@ impl Document {
     }
 
     pub fn hunk_spans(&self) -> &[HunkSpan] {
-        &self.hunk_spans
+        self.hunk_spans.as_slice()
     }
 
     pub fn current_comment_id(&self) -> Option<i64> {
@@ -941,13 +1051,14 @@ impl DiffDocumentBuilder {
 
 pub fn build_unified_document(input: &DiffDocumentInput<'_>) -> Document {
     let mut document = build_unified_structural_document(input);
-    document.overlays.comments = project_comments(
-        document.rows(),
+    refresh_document_overlays(
+        &mut document,
         None,
         input.file_path,
         input.comments,
         input.selected_comment_id,
         input.cursor,
+        None,
     );
     document
 }
@@ -959,13 +1070,14 @@ pub fn build_head_document(input: &DiffDocumentInput<'_>) -> Document {
         CommentAnchorSide::Head,
         input.head_blame,
     );
-    document.overlays.comments = project_comments(
-        document.rows(),
+    refresh_document_overlays(
+        &mut document,
         None,
         input.file_path,
         input.comments,
         input.selected_comment_id,
         input.cursor,
+        None,
     );
     document
 }
@@ -977,13 +1089,14 @@ pub fn build_base_document(input: &DiffDocumentInput<'_>) -> Document {
         CommentAnchorSide::Base,
         input.base_blame,
     );
-    document.overlays.comments = project_comments(
-        document.rows(),
+    refresh_document_overlays(
+        &mut document,
         None,
         input.file_path,
         input.comments,
         input.selected_comment_id,
         input.cursor,
+        None,
     );
     document
 }
@@ -993,23 +1106,49 @@ pub fn build_side_by_side_document(
 ) -> Result<SideBySideDocument, SideBySideDocumentError> {
     let (mut base, mut head) = build_side_by_side_structural_documents(input);
     let marker_source_rows = SourceRowIndex::aligned(base.rows(), head.rows());
-    base.overlays.comments = project_comments(
-        base.rows(),
+    refresh_document_overlays(
+        &mut base,
         Some(&marker_source_rows),
         input.file_path,
         input.comments,
         input.selected_comment_id,
         input.cursor,
+        None,
     );
-    head.overlays.comments = project_comments(
-        head.rows(),
+    refresh_document_overlays(
+        &mut head,
         Some(&marker_source_rows),
         input.file_path,
         input.comments,
         input.selected_comment_id,
         input.cursor,
+        None,
     );
     SideBySideDocument::new(base, head)
+}
+
+fn refresh_document_overlays(
+    document: &mut Document,
+    marker_source_rows: Option<&SourceRowIndex>,
+    file_path: &str,
+    comments: &[Comment],
+    selected_comment_id: Option<i64>,
+    cursor: Option<RowIndex>,
+    search_query: Option<&str>,
+) {
+    document.overlays.comments = project_comments(
+        document.rows(),
+        marker_source_rows,
+        file_path,
+        comments,
+        selected_comment_id,
+        cursor,
+    );
+    if let Some(query) = search_query {
+        document.search(query.to_string());
+    } else {
+        document.clear_search();
+    }
 }
 
 fn build_unified_structural_document(input: &DiffDocumentInput<'_>) -> Document {
@@ -1467,11 +1606,21 @@ fn project_comments(
     selected_comment_id: Option<i64>,
     cursor: Option<RowIndex>,
 ) -> DocumentComments {
-    let source_rows = SourceRowIndex::new(rows);
-    let marker_source_rows = marker_source_rows.unwrap_or(&source_rows);
-    let projected = comments
+    if comments.is_empty() {
+        return DocumentComments::default();
+    }
+    let file_comments: Vec<&Comment> = comments
         .iter()
         .filter(|comment| comment.file_path() == file_path)
+        .collect();
+    if file_comments.is_empty() {
+        return DocumentComments::default();
+    }
+
+    let source_rows = SourceRowIndex::new(rows);
+    let marker_source_rows = marker_source_rows.unwrap_or(&source_rows);
+    let projected = file_comments
+        .into_iter()
         .filter_map(|comment| project_comment(&source_rows, marker_source_rows, comment))
         .collect();
     DocumentComments::with_selection(projected, selected_comment_id, cursor)
