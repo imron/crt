@@ -195,10 +195,6 @@ impl Document {
         }
     }
 
-    pub fn text_at(&self, row: RowIndex) -> Option<&str> {
-        Some(&self.content_row(row)?.text)
-    }
-
     pub fn line(&self, row: RowIndex) -> Option<RenderLine<'_>> {
         match self.row(row)? {
             DocumentRow::Content(content) => Some(RenderLine::Content(RenderContent {
