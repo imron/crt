@@ -541,7 +541,9 @@ fn render_content_line(
                 LineKind::Deletion => base_style.bg(*styles.diff.deletion_emphasis_bg),
                 LineKind::Context => base_style,
             },
-            TextRunKind::SearchMatch => base_style.bg(*styles.diff.search_match_bg),
+            TextRunKind::SearchMatch => {
+                base_style.bg(*styles.diff.search_match_bg).fg(Color::Black)
+            }
         };
         content_width += run.text.chars().count();
         spans.push(Span::styled(run.text.to_string(), run_style));
@@ -928,6 +930,32 @@ mod tests {
         })
     }
 
+    fn search_content(
+        source: SourceLocation,
+        gutter: &'static str,
+        kind: LineKind,
+        plain: &'static str,
+        search: &'static str,
+    ) -> RenderLine<'static> {
+        RenderLine::Content(RenderContent {
+            gutter: Cow::Borrowed(gutter),
+            source,
+            marker: CommentMarker::none(),
+            kind,
+            blame: None,
+            runs: vec![
+                TextRun {
+                    text: Cow::Borrowed(plain),
+                    kind: TextRunKind::Plain,
+                },
+                TextRun {
+                    text: Cow::Borrowed(search),
+                    kind: TextRunKind::SearchMatch,
+                },
+            ],
+        })
+    }
+
     #[test]
     fn unified_render_text_keeps_deletion_numbers_in_base_column() {
         let line = plain_content(
@@ -977,6 +1005,30 @@ mod tests {
             .expect("changed span");
 
         assert_eq!(changed.style.bg, Some(*styles.diff.addition_emphasis_bg));
+    }
+
+    #[test]
+    fn search_runs_use_search_background_and_readable_foreground() {
+        let styles = StyleConfig::default();
+        let RenderLine::Content(content) = search_content(
+            SourceLocation::paired(None, Some(441)),
+            "441",
+            LineKind::Addition,
+            "hello ",
+            "earth",
+        ) else {
+            panic!("expected content line");
+        };
+
+        let line = render_content_line(content, &styles, 3, GutterMode::Unified, 80, false, false);
+        let search = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "earth")
+            .expect("search span");
+
+        assert_eq!(search.style.bg, Some(*styles.diff.search_match_bg));
+        assert_eq!(search.style.fg, Some(Color::Black));
     }
 
     #[test]
