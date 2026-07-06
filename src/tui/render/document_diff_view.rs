@@ -466,8 +466,8 @@ fn render_single_line(
             show_blame,
             is_cursor,
         ),
-        RenderLine::Spacer { marker } => {
-            render_spacer_line(marker_text(marker), inner_w, styles, is_cursor)
+        RenderLine::Spacer { marker, selected } => {
+            render_spacer_line(marker_text(marker), inner_w, styles, is_cursor, selected)
         }
     }
 }
@@ -525,10 +525,10 @@ fn render_side_line(
             show_blame,
             is_cursor,
         ),
-        Some(RenderLine::Spacer { marker }) => {
-            render_spacer_line(marker_text(marker), width, styles, is_cursor)
+        Some(RenderLine::Spacer { marker, selected }) => {
+            render_spacer_line(marker_text(marker), width, styles, is_cursor, selected)
         }
-        None => render_spacer_line(String::new(), width, styles, is_cursor),
+        None => render_spacer_line(String::new(), width, styles, is_cursor, false),
     };
     clip_line(rendered, width)
 }
@@ -760,15 +760,25 @@ fn render_spacer_line(
     width: usize,
     styles: &StyleConfig,
     is_cursor: bool,
+    selected: bool,
 ) -> Line<'static> {
     let base_style = spacer_style(styles, is_cursor);
-    let gutter_style = base_style.fg(*styles.diff.gutter_fg);
+    let fill_style = if selected {
+        base_style.fg(*styles.selection.fg).bg(*styles.selection.bg)
+    } else {
+        base_style
+    };
+    let gutter_style = if selected {
+        fill_style
+    } else {
+        base_style.fg(*styles.diff.gutter_fg)
+    };
     let marker_width = marker.chars().count();
     let mut spans = Vec::new();
     spans.push(Span::styled(marker, gutter_style));
     spans.push(Span::styled(
         " ".repeat(width.saturating_sub(marker_width)),
-        base_style,
+        fill_style,
     ));
     Line::from(spans)
 }
@@ -951,7 +961,7 @@ fn render_line_text(
             }
             text
         }
-        RenderLine::Spacer { marker } => marker_text(marker),
+        RenderLine::Spacer { marker, .. } => marker_text(marker),
     }
 }
 
@@ -1278,7 +1288,7 @@ mod tests {
     #[test]
     fn cursor_overlay_renders_on_padded_spacer_rows() {
         let styles = StyleConfig::default();
-        let line = render_spacer_line(" ".to_string(), 8, &styles, true);
+        let line = render_spacer_line(" ".to_string(), 8, &styles, true, false);
 
         let line = with_column_cursor(line, &styles, 4, 0, true);
 
@@ -1291,6 +1301,19 @@ mod tests {
         assert_eq!(line.spans[2].style.bg, Some(Color::White));
         assert_eq!(line.spans[3].content.as_ref(), "   ");
         assert_eq!(line.spans[3].style.bg, Some(*styles.diff.cursor_line_bg));
+    }
+
+    #[test]
+    fn selected_spacer_rows_use_selection_colour() {
+        let styles = StyleConfig::default();
+        let line = render_spacer_line(" ".to_string(), 8, &styles, false, true);
+
+        assert_eq!(line.spans[0].content.as_ref(), " ");
+        assert_eq!(line.spans[0].style.bg, Some(*styles.selection.bg));
+        assert_eq!(line.spans[0].style.fg, Some(*styles.selection.fg));
+        assert_eq!(line.spans[1].content.as_ref(), "       ");
+        assert_eq!(line.spans[1].style.bg, Some(*styles.selection.bg));
+        assert_eq!(line.spans[1].style.fg, Some(*styles.selection.fg));
     }
 
     #[test]
@@ -1371,6 +1394,7 @@ mod tests {
         let line = render_side_by_side_line(
             Some(RenderLine::Spacer {
                 marker: CommentMarker::none(),
+                selected: false,
             }),
             Some(head),
             &styles,
