@@ -226,6 +226,22 @@ pub enum CommentMarkerKind {
 }
 
 impl CommentMarker {
+    pub fn none() -> Self {
+        Self {
+            kind: None,
+            resolved: false,
+            current: false,
+        }
+    }
+
+    pub fn new(kind: CommentMarkerKind, resolved: bool, current: bool) -> Self {
+        Self {
+            kind: Some(kind),
+            resolved,
+            current,
+        }
+    }
+
     pub fn is_current(&self) -> bool {
         self.current
     }

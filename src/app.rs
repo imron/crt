@@ -1,6 +1,7 @@
 //! Application state and input dispatch.
 
 pub mod diff_rows;
+pub mod document;
 pub mod model;
 mod update;
 
