@@ -91,6 +91,46 @@ impl DiffDocument {
         }
     }
 
+    pub fn comment_at(&self, row: RowIndex) -> Option<&DocumentComment> {
+        match self {
+            Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
+                document.comment_at(row)
+            }
+            Self::SideBySide(document) => document.comment_at(row),
+        }
+    }
+
+    pub fn comment_span(&self, id: i64) -> Option<RowSpan> {
+        match self {
+            Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
+                document.comment_span(id)
+            }
+            Self::SideBySide(document) => document.comment_span(id),
+        }
+    }
+
+    pub fn next_comment(&self, row: RowIndex, direction: Direction) -> Option<&DocumentComment> {
+        match self {
+            Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
+                document.next_comment(row, direction)
+            }
+            Self::SideBySide(document) => document.next_comment(row, direction),
+        }
+    }
+
+    pub fn next_unresolved_comment(
+        &self,
+        row: RowIndex,
+        direction: Direction,
+    ) -> Option<&DocumentComment> {
+        match self {
+            Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
+                document.next_unresolved_comment(row, direction)
+            }
+            Self::SideBySide(document) => document.next_unresolved_comment(row, direction),
+        }
+    }
+
     pub fn hunk_spans(&self) -> &[HunkSpan] {
         match self {
             Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
@@ -234,6 +274,43 @@ impl SideBySideDocument {
             .or_else(|| self.base.current_comment_id())
     }
 
+    pub fn comment_at(&self, row: RowIndex) -> Option<&DocumentComment> {
+        self.head
+            .comment_at(row)
+            .or_else(|| self.base.comment_at(row))
+    }
+
+    pub fn comment_span(&self, id: i64) -> Option<RowSpan> {
+        match (self.base.comment_span(id), self.head.comment_span(id)) {
+            (Some(base), Some(head)) => Some(RowSpan {
+                start: base.start.min(head.start),
+                end: base.end.max(head.end),
+            }),
+            (Some(span), None) | (None, Some(span)) => Some(span),
+            (None, None) => None,
+        }
+    }
+
+    pub fn next_comment(&self, row: RowIndex, direction: Direction) -> Option<&DocumentComment> {
+        preferred_navigation_comment(
+            self.base.next_comment(row, direction),
+            self.head.next_comment(row, direction),
+            direction,
+        )
+    }
+
+    pub fn next_unresolved_comment(
+        &self,
+        row: RowIndex,
+        direction: Direction,
+    ) -> Option<&DocumentComment> {
+        preferred_navigation_comment(
+            self.base.next_unresolved_comment(row, direction),
+            self.head.next_unresolved_comment(row, direction),
+            direction,
+        )
+    }
+
     pub fn next_hunk(&self, row: RowIndex, direction: Direction) -> Option<RowIndex> {
         self.head
             .next_hunk(row, direction)
@@ -291,6 +368,34 @@ impl SideBySideDocument {
             search_current,
             search_query,
         );
+    }
+}
+
+fn preferred_navigation_comment<'a>(
+    base: Option<&'a DocumentComment>,
+    head: Option<&'a DocumentComment>,
+    direction: Direction,
+) -> Option<&'a DocumentComment> {
+    match (base, head) {
+        (Some(base), Some(head)) if base.id == head.id => Some(head),
+        (Some(base), Some(head)) => match direction {
+            Direction::Next => {
+                if (base.span.start, base.id) <= (head.span.start, head.id) {
+                    Some(base)
+                } else {
+                    Some(head)
+                }
+            }
+            Direction::Prev => {
+                if (base.span.start, base.id) >= (head.span.start, head.id) {
+                    Some(base)
+                } else {
+                    Some(head)
+                }
+            }
+        },
+        (Some(comment), None) | (None, Some(comment)) => Some(comment),
+        (None, None) => None,
     }
 }
 
@@ -854,8 +959,7 @@ impl DocumentComments {
 
     pub fn next_comment(&self, row: RowIndex, direction: Direction) -> Option<&DocumentComment> {
         let selected_position = self
-            .current_comment_id
-            .or(self.selected_comment_id)
+            .selected_comment_id
             .and_then(|id| self.comments_by_id.get(&id).copied());
         self.next_in_comment_order(row, direction, None, selected_position)
     }
@@ -866,8 +970,7 @@ impl DocumentComments {
         direction: Direction,
     ) -> Option<&DocumentComment> {
         let selected_position = self
-            .current_comment_id
-            .or(self.selected_comment_id)
+            .selected_comment_id
             .and_then(|id| self.unresolved_comment_positions_by_id.get(&id).copied());
         self.next_in_comment_order(
             row,
@@ -890,13 +993,12 @@ impl DocumentComments {
         }
 
         match (direction, selected_position) {
-            (Direction::Next, Some(position)) => self
-                .comment_at_order_position(indices, position.saturating_add(1))
-                .or_else(|| self.first_comment_starting_after(indices, row)),
+            (Direction::Next, Some(position)) => {
+                self.comment_at_order_position(indices, position.saturating_add(1))
+            }
             (Direction::Prev, Some(position)) => position
                 .checked_sub(1)
-                .and_then(|previous| self.comment_at_order_position(indices, previous))
-                .or_else(|| self.last_comment_starting_before_or_containing(indices, row)),
+                .and_then(|previous| self.comment_at_order_position(indices, previous)),
             (Direction::Next, None) => self.first_comment_starting_after(indices, row),
             (Direction::Prev, None) => self.last_comment_starting_before(indices, row),
         }
@@ -930,19 +1032,6 @@ impl DocumentComments {
         row: RowIndex,
     ) -> Option<&DocumentComment> {
         let position = self.partition_comment_order(indices, |comment| comment.span.start < row);
-        position
-            .checked_sub(1)
-            .and_then(|position| self.comment_at_order_position(indices, position))
-    }
-
-    fn last_comment_starting_before_or_containing(
-        &self,
-        indices: Option<&[usize]>,
-        row: RowIndex,
-    ) -> Option<&DocumentComment> {
-        let position = self.partition_comment_order(indices, |comment| {
-            comment.span.start < row || comment.span.contains(row)
-        });
         position
             .checked_sub(1)
             .and_then(|position| self.comment_at_order_position(indices, position))

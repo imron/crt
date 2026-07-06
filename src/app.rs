@@ -587,6 +587,7 @@ impl App {
                     .state
                     .selected_comment_id
                     .filter(|id| self.state.comments.iter().any(|comment| comment.id == *id));
+                self.state.refresh_document_overlays();
                 self.state.mark_model_changed();
                 None
             }
@@ -678,6 +679,7 @@ impl App {
                 self.state.pending_comment_anchor = None;
                 self.state.visual_selection = None;
                 upsert_comment(&mut self.state.comments, result.comment.clone());
+                self.state.refresh_document_overlays();
                 self.state.mark_model_changed();
                 Some(StatusUpdate::Set(format!(
                     "Created comment #{}",
@@ -701,6 +703,7 @@ impl App {
         match client.update_comment(id, &body).await {
             Ok(result) => {
                 upsert_comment(&mut self.state.comments, result.comment.clone());
+                self.state.refresh_document_overlays();
                 self.state.mark_model_changed();
                 Some(StatusUpdate::Set(format!(
                     "Updated comment #{}",
@@ -723,6 +726,7 @@ impl App {
                 self.last_undo_action = Some(UndoAction::UnresolveComment {
                     id: result.comment.id,
                 });
+                self.state.refresh_document_overlays();
                 self.state.mark_model_changed();
                 Some(StatusUpdate::Set(format!(
                     "Resolved comment #{}",
@@ -746,6 +750,7 @@ impl App {
         match client.unresolve_comment(id).await {
             Ok(result) => {
                 upsert_comment(&mut self.state.comments, result.comment.clone());
+                self.state.refresh_document_overlays();
                 self.state.mark_model_changed();
                 Some(StatusUpdate::Set(format!(
                     "Unresolved comment #{}",
@@ -773,6 +778,7 @@ impl App {
                         self.state.selected_comment_id = None;
                     }
                     self.state.pending_delete_comment_id = None;
+                    self.state.refresh_document_overlays();
                     self.state.mark_model_changed();
                     Some(StatusUpdate::Set(format!("Deleted comment #{id}")))
                 } else {
@@ -1426,6 +1432,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::document::DocumentRow;
     use crate::core::navigation::Direction;
     use crate::core::{
         CommentEffect, CommentsPanelEffect, CoreEffect, DefinitionResultsEffect, DiffCursorEffect,
@@ -1508,6 +1515,16 @@ mod tests {
 
         fn diff_rendered_text(&self) -> &[String] {
             &self.lines
+        }
+    }
+
+    fn row_has_head_line(row: &DocumentRow, line: u32) -> bool {
+        match row {
+            DocumentRow::Content(content) => content
+                .source
+                .line_for_side(CommentAnchorSide::Head)
+                .is_some_and(|source_line| source_line == line),
+            DocumentRow::Spacer => false,
         }
     }
 
@@ -2692,6 +2709,47 @@ mod tests {
 
         assert_eq!(app.state.selected_comment_id, Some(2));
         assert_eq!(app.state.diff_line_cursor, 2);
+    }
+
+    #[test]
+    fn unresolved_comment_shortcut_uses_document_row_order_before_crossing_files() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![
+                test_file_with_offset_multiline_replacement_hunk("a.rs"),
+                test_file("b.rs"),
+            ],
+        );
+        let mut current = stored_comment(1, "a.rs");
+        move_comment_to_base_head_ranges(&mut current, 26, 26, 27, 28);
+        let mut next_same_file = stored_comment(2, "a.rs");
+        move_comment_head_range(&mut next_same_file, 29, 29);
+        let mut next_file = stored_comment(3, "b.rs");
+        move_comment_head_range(&mut next_file, 2, 2);
+        app.state.comments = vec![current, next_file, next_same_file];
+        app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
+        app.state.content_mode = ContentMode::Diff;
+        app.state.render_variant = RenderVariant::Inline;
+        app.state.diff_line_cursor = 0;
+        app.state.selected_comment_id = Some(1);
+        app.state.ensure_active_document();
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 12]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "a.rs");
+        assert_eq!(app.state.selected_comment_id, Some(2));
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 12]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "b.rs");
+        assert_eq!(app.state.selected_comment_id, Some(3));
     }
 
     #[test]
@@ -4219,6 +4277,51 @@ mod tests {
         assert!(model.comments_panel.comments.is_empty());
         assert_eq!(model.comments_panel.selected_index, None);
         assert_eq!(model.comments_panel.total, 2);
+    }
+
+    #[test]
+    fn comments_panel_current_lookup_uses_active_document_overlay() {
+        let path = "src/main.rs";
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_deletion_to_later_head_context_hunk(path)],
+        );
+        app.state.content_mode = ContentMode::Diff;
+        app.state.render_variant = RenderVariant::Inline;
+        app.state.head_content = Some(
+            (1..=188)
+                .map(|n| format!("head {n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let mut broad = stored_comment(33, path);
+        move_comment_to_base_head_ranges(&mut broad, 154, 167, 172, 188);
+        let mut nested = stored_comment(34, path);
+        move_comment_head_range(&mut nested, 172, 175);
+        app.state.comments = vec![broad, nested];
+        app.state.ensure_active_document();
+        let head_172_row = app
+            .state
+            .active_document
+            .as_ref()
+            .and_then(|active| match &active.diff {
+                document::DiffDocument::Unified(document) => document
+                    .rows()
+                    .iter()
+                    .position(|row| row_has_head_line(row, 172)),
+                _ => None,
+            })
+            .expect("head 172 should render");
+        app.state.diff_line_cursor = head_172_row;
+        app.state.selected_comment_id = Some(33);
+        app.state.refresh_document_overlays();
+
+        let model = app.model();
+
+        assert_eq!(model.comments_panel.comments.len(), 1);
+        assert_eq!(model.comments_panel.comments[0].id, 33);
+        assert!(model.comments_panel.comments[0].current);
     }
 
     #[test]

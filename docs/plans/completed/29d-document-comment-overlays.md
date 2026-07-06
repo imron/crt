@@ -2,7 +2,7 @@
 
 ## Status
 
-Backlog.
+Complete.
 
 ## Overview
 
@@ -105,13 +105,28 @@ Document-level marker, precedence, span, and navigation behavior is covered in
 - TUI rendering receives markers through `RenderContent.marker` or
   `RenderLine::Spacer.marker` and does not compute marker precedence.
 
+## Implementation Notes
+
+- Added `DiffDocument` and `SideBySideDocument` comment accessors so app code
+  can ask the active document for current comment, comment span, next comment,
+  and next unresolved comment.
+- Updated comments panel lookup, current-comment context, direct comment
+  navigation, and same-file unresolved navigation to use active document
+  comment APIs first.
+- Kept narrow compatibility fallbacks for pure model/update snapshots that are
+  created before an active document exists.
+- Comment create, edit, resolve, unresolve, delete, and reload paths now
+  refresh document overlays after changing `AppState.comments`.
+- Adjusted document navigation so explicit selected comments drive ordered
+  movement, while ordinary cursor-based navigation starts from the document row.
+
 ## Acceptance Criteria
 
-- [ ] `RenderContent.marker` and `RenderLine::Spacer.marker` come from
+- [x] `RenderContent.marker` and `RenderLine::Spacer.marker` come from
       `DocumentComments`.
-- [ ] Current-comment commands use document APIs.
-- [ ] Comments panel current lookup uses document APIs.
-- [ ] `{` and `}` use document comment navigation for current-file movement.
-- [ ] TUI code does not compute comment marker precedence.
-- [ ] Transitional comment projection APIs are no longer used for active
+- [x] Current-comment commands use document APIs.
+- [x] Comments panel current lookup uses document APIs.
+- [x] `{` and `}` use document comment navigation for current-file movement.
+- [x] TUI code does not compute comment marker precedence.
+- [x] Transitional comment projection APIs are no longer used for active
       document rendering.
