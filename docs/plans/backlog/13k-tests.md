@@ -81,11 +81,15 @@ Cover:
 - full-file base/head selections,
 - hidden-comment navigation without render-mode changes.
 
-### TUI Render-Model Tests
+### Document / Render-Model Tests
 
 Owns:
 
-- marker spans and visible rows from an already-built render model.
+- marker spans and visible rows from an already-built document model.
+
+Stage 29 owns the generic document model and should test these behaviors at
+the document layer first. Stage 13k should keep only the compound-anchor data
+and app/server behavior tests that are unique to anchor semantics.
 
 Cover:
 

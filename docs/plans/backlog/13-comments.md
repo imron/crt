@@ -63,7 +63,11 @@ Remaining sub-plans:
 - 13j-check-comments-command.md
 - 13k-base-head-comment-anchors.md
 - 13l-comment-projection.md
-- 13m-comment-projection-contract.md
+
+Superseded sub-plans:
+
+- 13m-comment-projection-contract.md, replaced by the Stage 29 diff document
+  model.
 
 Abandoned sub-plans:
 
