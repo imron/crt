@@ -67,14 +67,73 @@ impl DiffDocument {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SideBySideDocument {
-    pub base: Document,
-    pub head: Document,
+pub enum DiffDocumentBuildError {
+    InvalidSideBySideDocument(SideBySideDocumentError),
 }
 
+impl std::fmt::Display for DiffDocumentBuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidSideBySideDocument(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for DiffDocumentBuildError {}
+
+impl From<SideBySideDocumentError> for DiffDocumentBuildError {
+    fn from(value: SideBySideDocumentError) -> Self {
+        Self::InvalidSideBySideDocument(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SideBySideDocument {
+    base: Document,
+    head: Document,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SideBySideDocumentError {
+    pub base_len: usize,
+    pub head_len: usize,
+}
+
+impl std::fmt::Display for SideBySideDocumentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "side-by-side documents must have equal row counts: base={}, head={}",
+            self.base_len, self.head_len
+        )
+    }
+}
+
+impl std::error::Error for SideBySideDocumentError {}
+
 impl SideBySideDocument {
+    pub fn new(base: Document, head: Document) -> Result<Self, SideBySideDocumentError> {
+        let base_len = base.len();
+        let head_len = head.len();
+        if base_len != head_len {
+            return Err(SideBySideDocumentError { base_len, head_len });
+        }
+        Ok(Self { base, head })
+    }
+
+    pub fn base(&self) -> &Document {
+        &self.base
+    }
+
+    pub fn head(&self) -> &Document {
+        &self.head
+    }
+
+    pub fn into_parts(self) -> (Document, Document) {
+        (self.base, self.head)
+    }
+
     pub fn len(&self) -> usize {
-        debug_assert_eq!(self.base.len(), self.head.len());
         self.base.len()
     }
 
@@ -676,10 +735,10 @@ pub struct DiffDocumentInput<'a> {
 pub struct DiffDocumentBuilder;
 
 impl DiffDocumentBuilder {
-    pub fn build(input: DiffDocumentInput<'_>) -> ActiveDocument {
+    pub fn build(input: DiffDocumentInput<'_>) -> Result<ActiveDocument, DiffDocumentBuildError> {
         let diff = match (input.key.content_mode, input.key.render_variant) {
             (ContentMode::Diff, RenderVariant::SideBySide) => {
-                DiffDocument::SideBySide(build_side_by_side_document(&input))
+                DiffDocument::SideBySide(build_side_by_side_document(&input)?)
             }
             (ContentMode::FullFile, RenderVariant::BaseVersion) => {
                 DiffDocument::Base(build_base_document(&input))
@@ -689,10 +748,10 @@ impl DiffDocumentBuilder {
             }
             _ => DiffDocument::Unified(build_unified_document(&input)),
         };
-        ActiveDocument {
+        Ok(ActiveDocument {
             key: input.key,
             diff,
-        }
+        })
     }
 }
 
@@ -742,7 +801,9 @@ pub fn build_base_document(input: &DiffDocumentInput<'_>) -> Document {
     document
 }
 
-pub fn build_side_by_side_document(input: &DiffDocumentInput<'_>) -> SideBySideDocument {
+pub fn build_side_by_side_document(
+    input: &DiffDocumentInput<'_>,
+) -> Result<SideBySideDocument, SideBySideDocumentError> {
     let (mut base, mut head) = build_side_by_side_structural_documents(input);
     base.overlays.comments = project_comments(
         base.rows(),
@@ -758,7 +819,7 @@ pub fn build_side_by_side_document(input: &DiffDocumentInput<'_>) -> SideBySideD
         input.selected_comment_id,
         input.cursor,
     );
-    SideBySideDocument { base, head }
+    SideBySideDocument::new(base, head)
 }
 
 fn build_unified_structural_document(input: &DiffDocumentInput<'_>) -> Document {
@@ -1640,17 +1701,18 @@ mod tests {
             Some("one\nold\nfour\n"),
             Some("one\nnew one\nnew two\nfour\n"),
             &[],
-        ));
+        ))
+        .expect("valid side-by-side document");
 
-        assert_eq!(document.base.len(), document.head.len());
-        assert_eq!(content(&document.base, 1).text, "old");
-        assert_eq!(content(&document.head, 1).text, "new one");
+        assert_eq!(document.base().len(), document.head().len());
+        assert_eq!(content(document.base(), 1).text, "old");
+        assert_eq!(content(document.head(), 1).text, "new one");
         assert!(matches!(
-            document.base.row(RowIndex(2)),
+            document.base().row(RowIndex(2)),
             Some(DocumentRow::Spacer)
         ));
-        assert_eq!(content(&document.head, 2).text, "new two");
-        assert_eq!(document.base.content_row(RowIndex(2)), None);
+        assert_eq!(content(document.head(), 2).text, "new two");
+        assert_eq!(document.base().content_row(RowIndex(2)), None);
     }
 
     #[test]
@@ -1698,24 +1760,25 @@ mod tests {
             Some(&base_content),
             Some(&head_content),
             &[],
-        ));
+        ))
+        .expect("valid side-by-side document");
         let row = (0..document.len())
             .find(|row| {
                 document
-                    .base
+                    .base()
                     .content_row(RowIndex(*row))
                     .and_then(|content| content.source.line_for_side(CommentAnchorSide::Base))
                     == Some(27)
                     && document
-                        .head
+                        .head()
                         .content_row(RowIndex(*row))
                         .and_then(|content| content.source.line_for_side(CommentAnchorSide::Head))
                         == Some(30)
             })
             .expect("shared tail row");
 
-        assert_eq!(content(&document.base, row).text, "shared 27/30");
-        assert_eq!(content(&document.head, row).text, "shared 27/30");
+        assert_eq!(content(document.base(), row).text, "shared 27/30");
+        assert_eq!(content(document.head(), row).text, "shared 27/30");
     }
 
     #[test]
@@ -1843,7 +1906,8 @@ mod tests {
             Some("one\nold\nfour\n"),
             Some("one\nnew one\nnew two\nfour\n"),
             &comments,
-        ));
+        ))
+        .expect("valid side-by-side document");
 
         assert_eq!(
             unified.comment_span(7),
@@ -1867,17 +1931,40 @@ mod tests {
             })
         );
         assert_eq!(
-            side_by_side.base.comment_span(7),
+            side_by_side.base().comment_span(7),
             Some(RowSpan {
                 start: RowIndex(1),
                 end: RowIndex(1)
             })
         );
         assert_eq!(
-            side_by_side.head.comment_span(7),
+            side_by_side.head().comment_span(7),
             Some(RowSpan {
                 start: RowIndex(1),
                 end: RowIndex(2)
+            })
+        );
+    }
+
+    #[test]
+    fn side_by_side_document_rejects_mismatched_row_counts() {
+        let base = Document::new(Vec::new(), Vec::new());
+        let head = Document::new(
+            vec![DocumentRow::Content(side_content_row(
+                CommentAnchorSide::Head,
+                1,
+                "head",
+                LineKind::Context,
+                &[],
+            ))],
+            Vec::new(),
+        );
+
+        assert_eq!(
+            SideBySideDocument::new(base, head),
+            Err(SideBySideDocumentError {
+                base_len: 0,
+                head_len: 1
             })
         );
     }
