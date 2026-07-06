@@ -7,8 +7,7 @@
 use std::collections::BTreeMap;
 
 use crate::app::diff_rows::{
-    LinearDiffRow, LinearDiffRows, SideBySideDiffRows, full_file_base_rows, full_file_head_rows,
-    inline_diff_rows, side_by_side_diff_rows,
+    LinearDiffRow, LinearDiffRows, SideBySideDiffRows, inline_diff_rows, side_by_side_diff_rows,
 };
 use crate::app::{AppState, CommentAnchorCapture, FileListSectionFocus, VisualSelectionMode};
 use crate::config::DiffAlgorithm;
@@ -1267,24 +1266,37 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
                 .collect()
         })
         .unwrap_or_default();
-    let side_by_side_rows = selected
-        .map(|entry| {
-            side_by_side_diff_rows(
-                &entry.diff.hunks,
-                state.base_content.as_deref(),
-                state.head_content.as_deref(),
-            )
-        })
-        .unwrap_or_default();
-    let inline_rows = selected
-        .map(|entry| inline_diff_rows(&entry.diff.hunks, state.head_content.as_deref()))
-        .unwrap_or_default();
-    let full_file_head_rows = selected
-        .map(|entry| full_file_head_rows(&entry.diff.hunks, state.head_content.as_deref()))
-        .unwrap_or_default();
-    let full_file_base_rows = selected
-        .map(|entry| full_file_base_rows(&entry.diff.hunks, state.base_content.as_deref()))
-        .unwrap_or_default();
+    let mut side_by_side_rows = SideBySideDiffRows::default();
+    let mut inline_rows = LinearDiffRows::default();
+    let mut full_file_head_rows = LinearDiffRows::default();
+    let mut full_file_base_rows = LinearDiffRows::default();
+    if let Some(entry) = selected {
+        match (state.content_mode, state.render_variant) {
+            (ContentMode::Diff, RenderVariant::SideBySide) => {
+                side_by_side_rows = side_by_side_diff_rows(
+                    &entry.diff.hunks,
+                    state.base_content.as_deref(),
+                    state.head_content.as_deref(),
+                );
+            }
+            (ContentMode::Diff, _) => {
+                inline_rows = inline_diff_rows(&entry.diff.hunks, state.head_content.as_deref());
+            }
+            (ContentMode::FullFile, RenderVariant::HeadVersion) => {
+                full_file_head_rows = crate::app::diff_rows::full_file_head_rows(
+                    &entry.diff.hunks,
+                    state.head_content.as_deref(),
+                );
+            }
+            (ContentMode::FullFile, RenderVariant::BaseVersion) => {
+                full_file_base_rows = crate::app::diff_rows::full_file_base_rows(
+                    &entry.diff.hunks,
+                    state.base_content.as_deref(),
+                );
+            }
+            _ => {}
+        }
+    }
     let comments = selected
         .map(|entry| comment_attachments_for_current_view(state, &entry.change.path))
         .unwrap_or_default();
@@ -1354,7 +1366,8 @@ fn comment_marker_set_for_current_view(
     inline_rows: &LinearDiffRows,
     side_by_side_rows: &SideBySideDiffRows,
 ) -> CommentMarkerSet {
-    let current_line = current_visible_line(state);
+    let current_line =
+        current_visible_line_for_projected_rows(state, inline_rows, side_by_side_rows);
     match state.content_mode {
         ContentMode::FullFile => match state.render_variant {
             RenderVariant::HeadVersion | RenderVariant::BaseVersion => {
@@ -1398,6 +1411,34 @@ fn comment_marker_set_for_current_view(
             current_line,
             state.selected_comment_id,
         ),
+    }
+}
+
+fn current_visible_line_for_projected_rows(
+    state: &AppState,
+    inline_rows: &LinearDiffRows,
+    side_by_side_rows: &SideBySideDiffRows,
+) -> Option<u32> {
+    match state.content_mode {
+        ContentMode::FullFile => match state.render_variant {
+            RenderVariant::HeadVersion | RenderVariant::BaseVersion => {
+                Some(state.diff_line_cursor.saturating_add(1) as u32)
+            }
+            _ => None,
+        },
+        ContentMode::Diff if state.render_variant == RenderVariant::SideBySide => side_by_side_rows
+            .rows
+            .get(state.diff_line_cursor)
+            .and_then(|row| {
+                row.head
+                    .as_ref()
+                    .map(|cell| cell.line_number)
+                    .or_else(|| row.base.as_ref().map(|cell| cell.line_number))
+            }),
+        ContentMode::Diff => inline_rows
+            .rows
+            .get(state.diff_line_cursor)
+            .and_then(|row| row.new_lineno.or(row.old_lineno)),
     }
 }
 
@@ -1571,13 +1612,7 @@ fn current_comment_id_for_line(
     line: i64,
     selected_comment_id: Option<i64>,
 ) -> Option<i64> {
-    CommentProjection::current_comment_id_for_line(
-        comments,
-        path,
-        line,
-        None,
-        selected_comment_id,
-    )
+    CommentProjection::current_comment_id_for_line(comments, path, line, None, selected_comment_id)
 }
 
 fn logical_comment_line_range(comment: &review_types::Comment) -> Option<(i64, i64)> {
@@ -1782,10 +1817,7 @@ fn display_rows_for_comment(
     Some((start, end.max(start)))
 }
 
-fn diff_display_rows_for_comment(
-    state: &AppState,
-    comment: &review_types::Comment,
-) -> Vec<usize> {
+fn diff_display_rows_for_comment(state: &AppState, comment: &review_types::Comment) -> Vec<usize> {
     let mut rows = Vec::new();
     for segment in comment
         .anchor()
@@ -3153,6 +3185,44 @@ mod tests {
             ]
         );
         assert_eq!(model.diff.current_search_highlight, Some(1));
+    }
+
+    #[test]
+    fn model_projects_only_active_render_rows() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![file(
+                "src/main.rs",
+                review_types::ReviewStatus::Unreviewed,
+                vec![hunk()],
+            )],
+        );
+        app.state.base_content = Some("fn main() {\n}\n".to_string());
+        app.state.head_content = Some("fn main() {\n    run();\n}\n".to_string());
+
+        app.state.content_mode = ContentMode::Diff;
+        app.state.render_variant = RenderVariant::Inline;
+        let inline = app.model().diff;
+        assert!(!inline.inline_rows.rows.is_empty());
+        assert!(inline.side_by_side_rows.rows.is_empty());
+        assert!(inline.full_file_head_rows.rows.is_empty());
+        assert!(inline.full_file_base_rows.rows.is_empty());
+
+        app.state.render_variant = RenderVariant::SideBySide;
+        let side_by_side = app.model().diff;
+        assert!(side_by_side.inline_rows.rows.is_empty());
+        assert!(!side_by_side.side_by_side_rows.rows.is_empty());
+        assert!(side_by_side.full_file_head_rows.rows.is_empty());
+        assert!(side_by_side.full_file_base_rows.rows.is_empty());
+
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::HeadVersion;
+        let full_file_head = app.model().diff;
+        assert!(full_file_head.inline_rows.rows.is_empty());
+        assert!(full_file_head.side_by_side_rows.rows.is_empty());
+        assert!(!full_file_head.full_file_head_rows.rows.is_empty());
+        assert!(full_file_head.full_file_base_rows.rows.is_empty());
     }
 
     #[test]
