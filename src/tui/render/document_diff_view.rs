@@ -617,6 +617,7 @@ fn render_content_line(
             TextRunKind::CurrentSearchMatch => base_style
                 .bg(*styles.diff.search_current_match_bg)
                 .fg(Color::Black),
+            TextRunKind::Selection => base_style.fg(*styles.selection.fg).bg(*styles.selection.bg),
         };
         content_width += run.text.chars().count();
         spans.push(Span::styled(run.text.to_string(), run_style));
@@ -1129,6 +1130,31 @@ mod tests {
 
         assert_eq!(search.style.bg, Some(*styles.diff.search_current_match_bg));
         assert_eq!(search.style.fg, Some(Color::Black));
+    }
+
+    #[test]
+    fn selection_runs_use_selection_colours() {
+        let styles = StyleConfig::default();
+        let RenderLine::Content(content) = search_content(
+            SourceLocation::paired(None, Some(441)),
+            "441",
+            LineKind::Addition,
+            "hello ",
+            "earth",
+            TextRunKind::Selection,
+        ) else {
+            panic!("expected content line");
+        };
+
+        let line = render_content_line(content, &styles, 3, GutterMode::Unified, 80, false, false);
+        let selection = line
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "earth")
+            .expect("selection span");
+
+        assert_eq!(selection.style.bg, Some(*styles.selection.bg));
+        assert_eq!(selection.style.fg, Some(*styles.selection.fg));
     }
 
     #[test]

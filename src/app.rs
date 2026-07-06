@@ -460,6 +460,7 @@ impl App {
                 &self.state.comments,
                 self.state.selected_comment_id,
                 Some(document::RowIndex(self.state.diff_line_cursor)),
+                model::document_visible_selection(self.state.visual_selection.as_ref()),
                 Some(document::DocumentPosition {
                     row: document::RowIndex(self.state.diff_line_cursor),
                     column: document::ColumnIndex(self.state.diff_col_cursor),

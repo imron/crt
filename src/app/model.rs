@@ -11,9 +11,13 @@ use crate::app::diff_rows::{
 };
 use crate::app::document::{
     ActiveDocument, ColumnIndex, ContentId as DocumentContentId, DiffDocumentBuilder,
-    DiffDocumentInput, DocumentKey, DocumentPosition, RowIndex,
+    DiffDocumentInput, DocumentKey, DocumentPosition, RowIndex, RowSpan,
+    VisibleSelection as DocumentVisibleSelection,
 };
-use crate::app::{AppState, CommentAnchorCapture, FileListSectionFocus, VisualSelectionMode};
+use crate::app::{
+    AppState, CommentAnchorCapture, FileListSectionFocus, VisualSelection as StateVisualSelection,
+    VisualSelectionMode,
+};
 use crate::config::DiffAlgorithm;
 use crate::core::TextAnchor;
 use crate::review_types::{
@@ -1008,16 +1012,42 @@ pub fn build_active_document(state: &AppState, key: DocumentKey) -> Option<Activ
         cursor: Some(RowIndex(state.diff_line_cursor)),
     })
     .ok()?;
-    if let Some(query) = state.diff_search_query.as_ref() {
-        active_document.diff.search_with_current(
-            query.clone(),
-            Some(DocumentPosition {
-                row: RowIndex(state.diff_line_cursor),
-                column: ColumnIndex(state.diff_col_cursor),
-            }),
-        );
-    }
+    active_document.refresh_overlays(
+        &entry.change.path,
+        &state.comments,
+        state.selected_comment_id,
+        Some(RowIndex(state.diff_line_cursor)),
+        document_visible_selection(state.visual_selection.as_ref()),
+        Some(DocumentPosition {
+            row: RowIndex(state.diff_line_cursor),
+            column: ColumnIndex(state.diff_col_cursor),
+        }),
+        state.diff_search_query.as_deref(),
+    );
     Some(active_document)
+}
+
+pub(crate) fn document_visible_selection(
+    selection: Option<&StateVisualSelection>,
+) -> Option<DocumentVisibleSelection> {
+    let selection = selection?;
+    match selection.mode {
+        VisualSelectionMode::Line => {
+            let start = RowIndex(selection.start.line.min(selection.end.line));
+            let end = RowIndex(selection.start.line.max(selection.end.line));
+            Some(DocumentVisibleSelection::Line(RowSpan { start, end }))
+        }
+        VisualSelectionMode::Text => Some(DocumentVisibleSelection::Text {
+            start: DocumentPosition {
+                row: RowIndex(selection.start.line),
+                column: ColumnIndex(selection.start.column),
+            },
+            end: DocumentPosition {
+                row: RowIndex(selection.end.line),
+                column: ColumnIndex(selection.end.column),
+            },
+        }),
+    }
 }
 
 fn content_id(content: Option<&String>) -> Option<DocumentContentId> {
@@ -1997,6 +2027,7 @@ impl From<&crate::git::BlameLine> for BlameLine {
 mod tests {
     use super::*;
     use crate::app::App;
+    use crate::app::document::DiffDocument;
     use crate::config::Config;
     use crate::review_types::{
         self, AnchorStatus, ChangeKind, DiffContent, FileChange, FileEntry, LineKind,
@@ -3238,6 +3269,11 @@ mod tests {
         app.state.diff_search_query = Some("run".to_string());
         app.state.diff_search_matches = vec![(3, 10, 13), (8, 2, 5)];
         app.state.diff_search_current = 1;
+        app.state.visual_selection = Some(crate::app::VisualSelection {
+            mode: VisualSelectionMode::Text,
+            start: TextAnchor { line: 1, column: 2 },
+            end: TextAnchor { line: 3, column: 4 },
+        });
 
         let model = app.model();
 
@@ -3264,6 +3300,23 @@ mod tests {
             Some("hash-src/main.rs")
         );
         assert_eq!(model.diff.search_query, Some("run".to_string()));
+        let active_document = model.active_document.as_ref().expect("active document");
+        let DiffDocument::Unified(document) = &active_document.diff else {
+            panic!("expected unified active document");
+        };
+        assert_eq!(
+            document.overlays().selection,
+            Some(DocumentVisibleSelection::Text {
+                start: DocumentPosition {
+                    row: RowIndex(1),
+                    column: ColumnIndex(2)
+                },
+                end: DocumentPosition {
+                    row: RowIndex(3),
+                    column: ColumnIndex(4)
+                }
+            })
+        );
         assert_eq!(
             model.diff.search_highlights,
             vec![
