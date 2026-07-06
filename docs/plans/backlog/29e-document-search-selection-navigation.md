@@ -67,6 +67,13 @@ pub struct DocumentPosition {
 }
 ```
 
+`TextAnchor` should remain an input-boundary type used by core interaction and
+TUI hit-testing to report row/column intent. Once input reaches the app's diff
+document behavior, selection state should be stored as document coordinates.
+Do not keep duplicate `TextAnchor`-based app selection state and
+`DocumentPosition`-based document selection state long term; convert at the app
+boundary and store `AppState.visual_selection` as the document selection type.
+
 Comment anchor capture should ask the active document for selected content
 rows and source metadata. The TUI should only report row/column input.
 
@@ -99,6 +106,8 @@ migration and glue:
   `AppViewport::diff_rendered_text`.
 - search navigation updates app cursor/scroll from document match rows.
 - visual selection update code stores document positions from app input.
+- `TextAnchor` is used only at the input boundary for visual selection; app
+  state stores document-typed selection coordinates.
 - comment anchor capture asks the active document for selected source rows.
 - current-line comment creation asks the active document for source metadata.
 - hunk navigation update code calls `Document::next_hunk`.
@@ -112,6 +121,8 @@ migration and glue:
 
 - [ ] Diff search no longer depends on `AppViewport::diff_rendered_text`.
 - [ ] Hunk navigation no longer depends on TUI hunk rows.
+- [ ] `AppState.visual_selection` is document-typed, with `TextAnchor`
+      converted only at the app input boundary.
 - [ ] Selection capture uses document source metadata.
 - [ ] Comment creation uses document source metadata.
 - [ ] Mode switching uses app-owned document source metadata.
