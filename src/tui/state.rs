@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use super::render::diff_view::DiffCache;
 use crate::app::document::DocumentKey;
-use crate::app::model::AppModel;
+use crate::app::model::{AppModel, FileList};
 use crate::app::{AppOutput, AppState, AppViewport, FileListSectionFocus, StatusUpdate};
 use crate::core::{AppTarget, ConnectionState, PaneId, PointerSemanticHit, PromptId, TextAnchor};
 use crate::review_types::PaneFocus;
@@ -419,9 +419,8 @@ impl TuiState {
             PaneFocus::FileList => match self.file_list_row_to_comment.get(anchor.line) {
                 Some(Some(comment_id)) => Some(format!("comment:{comment_id}")),
                 _ => match self.file_list_row_to_file.get(anchor.line) {
-                    Some(Some(file_idx)) => {
-                        model_file_path(model, *file_idx).map(|path| format!("file:{path}"))
-                    }
+                    Some(Some(file_idx)) => model_file_path(&model.file_list, *file_idx)
+                        .map(|path| format!("file:{path}")),
                     _ => Some(format!("file-list-row:{}", anchor.line)),
                 },
             },
@@ -584,9 +583,8 @@ impl AppViewport for TuiState {
     }
 }
 
-fn model_file_path<'a>(model: &'a AppModel<'_>, file_index: usize) -> Option<&'a str> {
-    model
-        .file_list
+fn model_file_path(file_list: &FileList, file_index: usize) -> Option<&str> {
+    file_list
         .sections
         .iter()
         .flat_map(|section| section.rows.iter())
