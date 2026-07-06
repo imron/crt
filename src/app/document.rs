@@ -310,42 +310,46 @@ impl From<&BlameLine> for BlameInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceLocation {
-    pub lines: Vec<SourceLine>,
+    pub base: Option<u32>,
+    pub head: Option<u32>,
 }
 
 impl SourceLocation {
     pub fn none() -> Self {
-        Self { lines: Vec::new() }
-    }
-
-    pub fn single(side: CommentAnchorSide, line: u32) -> Self {
         Self {
-            lines: vec![SourceLine { side, line }],
+            base: None,
+            head: None,
         }
     }
 
-    pub fn from_lines(lines: Vec<SourceLine>) -> Self {
-        Self { lines }
+    pub fn single(side: CommentAnchorSide, line: u32) -> Self {
+        match side {
+            CommentAnchorSide::Base => Self {
+                base: Some(line),
+                head: None,
+            },
+            CommentAnchorSide::Head => Self {
+                base: None,
+                head: Some(line),
+            },
+        }
     }
 
-    pub fn contains(&self, side: CommentAnchorSide, start: u32, end: u32) -> bool {
-        self.lines
-            .iter()
-            .any(|line| line.side == side && line.line >= start && line.line <= end)
+    pub fn paired(base: Option<u32>, head: Option<u32>) -> Self {
+        Self { base, head }
+    }
+
+    pub fn has_line_in_range(&self, side: CommentAnchorSide, start: u32, end: u32) -> bool {
+        self.line_for_side(side)
+            .is_some_and(|line| line >= start && line <= end)
     }
 
     pub fn line_for_side(&self, side: CommentAnchorSide) -> Option<u32> {
-        self.lines
-            .iter()
-            .find(|line| line.side == side)
-            .map(|line| line.line)
+        match side {
+            CommentAnchorSide::Base => self.base,
+            CommentAnchorSide::Head => self.head,
+        }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SourceLine {
-    pub side: CommentAnchorSide,
-    pub line: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1257,20 +1261,7 @@ fn format_gutter(old_lineno: Option<u32>, new_lineno: Option<u32>) -> String {
 }
 
 fn source_from_lines(old_lineno: Option<u32>, new_lineno: Option<u32>) -> SourceLocation {
-    let mut lines = Vec::new();
-    if let Some(line) = old_lineno {
-        lines.push(SourceLine {
-            side: CommentAnchorSide::Base,
-            line,
-        });
-    }
-    if let Some(line) = new_lineno {
-        lines.push(SourceLine {
-            side: CommentAnchorSide::Head,
-            line,
-        });
-    }
-    SourceLocation::from_lines(lines)
+    SourceLocation::paired(old_lineno, new_lineno)
 }
 
 fn blame_for_line(blame: &[BlameLine], line: u32) -> Option<BlameInfo> {
@@ -1310,7 +1301,7 @@ fn project_comment(rows: &[DocumentRow], comment: &Comment) -> Option<DocumentCo
             };
             content
                 .source
-                .contains(segment.side, start, end)
+                .has_line_in_range(segment.side, start, end)
                 .then_some(RowIndex(idx))
         }));
     }
@@ -1621,22 +1612,24 @@ mod tests {
         assert!(
             content(&document, 0)
                 .source
-                .contains(CommentAnchorSide::Base, 1, 1)
+                .has_line_in_range(CommentAnchorSide::Base, 1, 1)
         );
         assert!(
             content(&document, 0)
                 .source
-                .contains(CommentAnchorSide::Head, 1, 1)
+                .has_line_in_range(CommentAnchorSide::Head, 1, 1)
         );
+        assert_eq!(content(&document, 0).source.base, Some(1));
+        assert_eq!(content(&document, 0).source.head, Some(1));
         assert!(
             content(&document, 1)
                 .source
-                .contains(CommentAnchorSide::Base, 2, 2)
+                .has_line_in_range(CommentAnchorSide::Base, 2, 2)
         );
         assert!(
             content(&document, 2)
                 .source
-                .contains(CommentAnchorSide::Head, 2, 2)
+                .has_line_in_range(CommentAnchorSide::Head, 2, 2)
         );
     }
 
@@ -2165,17 +2158,17 @@ mod tests {
         assert!(
             content(&document, 1)
                 .source
-                .contains(CommentAnchorSide::Base, 2, 2)
+                .has_line_in_range(CommentAnchorSide::Base, 2, 2)
         );
         assert!(
             content(&document, 2)
                 .source
-                .contains(CommentAnchorSide::Head, 2, 2)
+                .has_line_in_range(CommentAnchorSide::Head, 2, 2)
         );
         assert!(
             content(&document, 3)
                 .source
-                .contains(CommentAnchorSide::Head, 3, 3)
+                .has_line_in_range(CommentAnchorSide::Head, 3, 3)
         );
         assert!(matches!(
             document.overlays().selection,
