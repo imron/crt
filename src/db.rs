@@ -177,6 +177,12 @@ const MIGRATIONS: &[Migration] = &[
         up: include_str!("../migrations/0007_comment_resolution_anchor_segments.up.sql"),
         down: include_str!("../migrations/0007_comment_resolution_anchor_segments.down.sql"),
     },
+    Migration {
+        version: 8,
+        name: "ensure_resolution_patch_id",
+        up: include_str!("../migrations/0008_ensure_resolution_patch_id.up.sql"),
+        down: include_str!("../migrations/0008_ensure_resolution_patch_id.down.sql"),
+    },
 ];
 
 impl Database {
@@ -208,6 +214,7 @@ impl Database {
                 .with_context(|| format!("Failed to apply migration {}", migration.name))?;
             self.record_migration(migration)?;
         }
+        self.repair_comment_resolution_patch_id_column()?;
         Ok(())
     }
 
@@ -315,6 +322,24 @@ impl Database {
     fn column_exists(&self, table: &str, column: &str) -> Result<bool> {
         let sql = format!("SELECT {column} FROM {table} LIMIT 0");
         Ok(self.conn.prepare(&sql).is_ok())
+    }
+
+    fn repair_comment_resolution_patch_id_column(&self) -> Result<()> {
+        if !self.table_exists("comment_resolution_events")?
+            || self.column_exists("comment_resolution_events", "resolved_patch_id")?
+        {
+            return Ok(());
+        }
+
+        self.conn
+            .execute_batch(
+                "
+                ALTER TABLE comment_resolution_events
+                    ADD COLUMN resolved_patch_id TEXT NOT NULL DEFAULT '';
+                ",
+            )
+            .context("Failed to add missing resolution patch-id column")?;
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -1282,6 +1307,67 @@ mod tests {
     }
 
     #[test]
+    fn test_repairs_resolution_events_missing_patch_id_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "
+                CREATE TABLE schema_migrations (
+                    version     INTEGER PRIMARY KEY,
+                    name        TEXT NOT NULL,
+                    applied_at  TEXT NOT NULL
+                );
+
+                CREATE TABLE comment_resolution_events (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    comment_id          INTEGER NOT NULL,
+                    resolved_at         TEXT NOT NULL,
+                    resolved_commit     TEXT NOT NULL,
+                    resolved_head_ref   TEXT NOT NULL,
+                    resolved_merge_base TEXT NOT NULL,
+                    file_path           TEXT NOT NULL,
+                    line_start          INTEGER NOT NULL,
+                    line_end            INTEGER NOT NULL,
+                    char_start          INTEGER,
+                    char_end            INTEGER,
+                    anchor_text         TEXT NOT NULL,
+                    context_before      TEXT NOT NULL DEFAULT '',
+                    context_after       TEXT NOT NULL DEFAULT '',
+                    anchor_status       TEXT NOT NULL DEFAULT 'anchored'
+                );
+
+                INSERT INTO schema_migrations (version, name, applied_at)
+                VALUES
+                    (1, 'initial', '2026-06-27T12:00:00+10:00'),
+                    (2, 'rename_base_ref_to_merge_base',
+                     '2026-06-27T12:00:00+10:00'),
+                    (3, 'add_reviewed_commit',
+                     '2026-06-27T12:00:00+10:00'),
+                    (4, 'split_comment_anchors',
+                     '2026-06-27T12:00:00+10:00'),
+                    (5, 'comment_resolution_events',
+                     '2026-06-27T12:00:00+10:00'),
+                    (6, 'compound_comment_anchors',
+                     '2026-06-27T12:00:00+10:00'),
+                    (7, 'comment_resolution_anchor_segments',
+                     '2026-06-27T12:00:00+10:00');
+                ",
+            )
+            .unwrap();
+        }
+
+        let db = Database::open(&db_path).unwrap();
+
+        assert!(
+            db.column_exists("comment_resolution_events", "resolved_patch_id")
+                .unwrap()
+        );
+        assert!(db.migration_applied(8).unwrap());
+    }
+
+    #[test]
     fn test_migrates_inline_comment_anchors() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
@@ -1413,13 +1499,8 @@ mod tests {
 
         assert!(db.get_comment(7).unwrap().is_none());
 
-        let count: i64 = db
-            .conn
-            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(count, 7);
+        assert!(db.migration_applied(7).unwrap());
+        assert!(db.migration_applied(8).unwrap());
     }
 
     #[test]
