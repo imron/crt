@@ -272,6 +272,29 @@ impl Document {
     pub fn clear_search(&mut self) {
         self.overlays.search = SearchOverlay::default();
     }
+
+    pub fn search_matches(&self, row: RowIndex) -> impl Iterator<Item = SearchMatch> + '_ {
+        self.content_row(row).into_iter().flat_map(move |content| {
+            self.overlays
+                .search
+                .match_spans_for(row, content.text.as_str())
+        })
+    }
+
+    pub fn all_search_matches(&self) -> impl Iterator<Item = SearchMatch> + '_ {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter_map(|(row, document_row)| match document_row {
+                DocumentRow::Content(content) => Some((RowIndex(row), content)),
+                DocumentRow::Spacer => None,
+            })
+            .flat_map(|(row, content)| {
+                self.overlays
+                    .search
+                    .match_spans_for(row, content.text.as_str())
+            })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -783,29 +806,46 @@ impl SearchOverlay {
         Self { query: Some(query) }
     }
 
-    fn render_runs_for<'a>(&'a self, _row: RowIndex, text: &'a str) -> Vec<TextRun<'a>> {
-        let Some(query) = self.query.as_deref() else {
+    fn match_spans_for<'a>(
+        &'a self,
+        row: RowIndex,
+        text: &'a str,
+    ) -> impl Iterator<Item = SearchMatch> + 'a {
+        self.query
+            .as_deref()
+            .into_iter()
+            .flat_map(move |query| text.match_indices(query))
+            .map(move |(start, value)| SearchMatch {
+                row,
+                columns: ColumnSpan {
+                    start: ColumnIndex(start),
+                    end: ColumnIndex(start + value.len()),
+                },
+            })
+    }
+
+    fn render_runs_for<'a>(&'a self, row: RowIndex, text: &'a str) -> Vec<TextRun<'a>> {
+        if self.query.is_none() {
             return vec![TextRun {
                 text: Cow::Borrowed(text),
                 kind: TextRunKind::Plain,
             }];
-        };
+        }
 
         let mut runs = Vec::new();
         let mut offset = 0;
-        for (start, value) in text.match_indices(query) {
-            if start > offset {
+        for span in self.match_spans_for(row, text) {
+            if span.columns.start.0 > offset {
                 runs.push(TextRun {
-                    text: Cow::Borrowed(&text[offset..start]),
+                    text: Cow::Borrowed(&text[offset..span.columns.start.0]),
                     kind: TextRunKind::Plain,
                 });
             }
-            let end = start + value.len();
             runs.push(TextRun {
-                text: Cow::Borrowed(&text[start..end]),
+                text: Cow::Borrowed(&text[span.columns.start.0..span.columns.end.0]),
                 kind: TextRunKind::SearchMatch,
             });
-            offset = end;
+            offset = span.columns.end.0;
         }
         if runs.is_empty() {
             return vec![TextRun {
@@ -821,6 +861,18 @@ impl SearchOverlay {
         }
         runs
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchMatch {
+    pub row: RowIndex,
+    pub columns: ColumnSpan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColumnSpan {
+    pub start: ColumnIndex,
+    pub end: ColumnIndex,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1811,8 +1863,17 @@ mod tests {
     #[test]
     fn document_key_changes_when_structural_inputs_change() {
         let base = key(ContentMode::Diff, RenderVariant::Inline);
+
+        let mut changed = base.clone();
+        changed.file_id = "src/other.rs".to_string();
+        assert_ne!(base, changed);
+
         let mut changed = base.clone();
         changed.diff_hash = "diff-b".to_string();
+        assert_ne!(base, changed);
+
+        let mut changed = base.clone();
+        changed.content_mode = ContentMode::FullFile;
         assert_ne!(base, changed);
 
         let mut changed = base.clone();
@@ -1820,13 +1881,60 @@ mod tests {
         assert_ne!(base, changed);
 
         let mut changed = base.clone();
+        changed.diff_algorithm = DiffAlgorithm::Histogram;
+        assert_ne!(base, changed);
+
+        let mut changed = base.clone();
         changed.ignore_whitespace = true;
+        assert_ne!(base, changed);
+
+        let mut changed = base.clone();
+        changed.head_content_id = Some(ContentId::from("head-b"));
+        assert_ne!(base, changed);
+
+        let mut changed = base.clone();
+        changed.base_content_id = Some(ContentId::from("base-b"));
         assert_ne!(base, changed);
     }
 
     #[test]
-    fn document_key_ignores_overlay_state_by_construction() {
-        let base = key(ContentMode::Diff, RenderVariant::Inline);
+    fn active_document_key_ignores_overlay_inputs() {
+        let active_key = key(ContentMode::Diff, RenderVariant::Inline);
+        let hunk = replacement_hunk();
+        let comments = vec![comment(
+            1,
+            false,
+            vec![segment(CommentAnchorSide::Head, 2, 2)],
+        )];
+        let mut plain_input = input(
+            active_key.clone(),
+            std::slice::from_ref(&hunk),
+            Some("one\nold\nfour\n"),
+            Some("one\nnew one\nnew two\nfour\n"),
+            &[],
+        );
+        plain_input.cursor = Some(RowIndex(0));
+        let mut decorated_input = input(
+            active_key.clone(),
+            std::slice::from_ref(&hunk),
+            Some("one\nold\nfour\n"),
+            Some("one\nnew one\nnew two\nfour\n"),
+            &comments,
+        );
+        decorated_input.selected_comment_id = Some(1);
+        decorated_input.cursor = Some(RowIndex(2));
+
+        let plain = DiffDocumentBuilder::build(plain_input).expect("plain active document");
+        let decorated =
+            DiffDocumentBuilder::build(decorated_input).expect("decorated active document");
+
+        assert_eq!(plain.key, active_key);
+        assert_eq!(decorated.key, active_key);
+    }
+
+    #[test]
+    fn document_overlays_do_not_mutate_document_key() {
+        let document_key = key(ContentMode::Diff, RenderVariant::Inline);
         let comments = DocumentComments::new(vec![DocumentComment {
             id: 1,
             span: RowSpan {
@@ -1857,7 +1965,7 @@ mod tests {
         };
         let document = Document::new(Vec::new(), Vec::new()).with_overlays(overlays);
 
-        assert_eq!(base, key(ContentMode::Diff, RenderVariant::Inline));
+        assert_eq!(document_key, key(ContentMode::Diff, RenderVariant::Inline));
         assert_eq!(document.overlays().comments.selected_comment_id(), None);
     }
 
@@ -2106,6 +2214,40 @@ mod tests {
     }
 
     #[test]
+    fn side_by_side_documents_insert_base_spacers_for_insertions() {
+        let hunk = DiffHunk {
+            old_start: 2,
+            old_lines: 0,
+            new_start: 2,
+            new_lines: 2,
+            header: "@@ -1,0 +2,2 @@".to_string(),
+            lines: vec![
+                diff_line(LineKind::Addition, "new two", None, Some(2)),
+                diff_line(LineKind::Addition, "new three", None, Some(3)),
+            ],
+        };
+        let document = build_side_by_side_document(&input(
+            key(ContentMode::Diff, RenderVariant::SideBySide),
+            &[hunk],
+            Some("one\nfour\n"),
+            Some("one\nnew two\nnew three\nfour\n"),
+            &[],
+        ))
+        .expect("valid side-by-side document");
+
+        assert!(matches!(
+            document.base().row(RowIndex(1)),
+            Some(DocumentRow::Spacer)
+        ));
+        assert_eq!(content(document.head(), 1).text, "new two");
+        assert!(matches!(
+            document.base().row(RowIndex(2)),
+            Some(DocumentRow::Spacer)
+        ));
+        assert_eq!(content(document.head(), 2).text, "new three");
+    }
+
+    #[test]
     fn hunk_navigation_uses_first_change_rows() {
         let hunks = vec![
             DiffHunk {
@@ -2155,6 +2297,59 @@ mod tests {
         );
         assert_eq!(document.next_hunk(RowIndex(5), Direction::Next), None);
         assert_eq!(document.next_hunk(RowIndex(0), Direction::Prev), None);
+    }
+
+    #[test]
+    fn hunk_navigation_works_for_all_document_variants() {
+        let hunk = replacement_hunk();
+        let base_content = Some("one\nold\nfour\n");
+        let head_content = Some("one\nnew one\nnew two\nfour\n");
+        let unified = build_unified_document(&input(
+            key(ContentMode::Diff, RenderVariant::Inline),
+            std::slice::from_ref(&hunk),
+            base_content,
+            head_content,
+            &[],
+        ));
+        let side_by_side = build_side_by_side_document(&input(
+            key(ContentMode::Diff, RenderVariant::SideBySide),
+            std::slice::from_ref(&hunk),
+            base_content,
+            head_content,
+            &[],
+        ))
+        .expect("valid side-by-side document");
+        let base = build_base_document(&input(
+            key(ContentMode::FullFile, RenderVariant::BaseVersion),
+            std::slice::from_ref(&hunk),
+            base_content,
+            head_content,
+            &[],
+        ));
+        let head = build_head_document(&input(
+            key(ContentMode::FullFile, RenderVariant::HeadVersion),
+            std::slice::from_ref(&hunk),
+            base_content,
+            head_content,
+            &[],
+        ));
+
+        assert_eq!(
+            unified.next_hunk(RowIndex(0), Direction::Next),
+            Some(RowIndex(1))
+        );
+        assert_eq!(
+            side_by_side.next_hunk(RowIndex(0), Direction::Next),
+            Some(RowIndex(1))
+        );
+        assert_eq!(
+            base.next_hunk(RowIndex(0), Direction::Next),
+            Some(RowIndex(1))
+        );
+        assert_eq!(
+            head.next_hunk(RowIndex(0), Direction::Next),
+            Some(RowIndex(1))
+        );
     }
 
     #[test]
@@ -2282,6 +2477,108 @@ mod tests {
             Some("Bea")
         );
         assert_eq!(content(&document, 1).blame, None);
+    }
+
+    #[test]
+    fn blame_is_routed_by_document_variant_and_source_side() {
+        let hunk = replacement_hunk();
+        let head_blame = vec![
+            BlameLine {
+                hash: "head-1".to_string(),
+                author: "Head One".to_string(),
+                date: "2026-01-01".to_string(),
+            },
+            BlameLine {
+                hash: "head-2".to_string(),
+                author: "Head Two".to_string(),
+                date: "2026-01-02".to_string(),
+            },
+            BlameLine {
+                hash: "head-3".to_string(),
+                author: "Head Three".to_string(),
+                date: "2026-01-03".to_string(),
+            },
+        ];
+        let base_blame = vec![
+            BlameLine {
+                hash: "base-1".to_string(),
+                author: "Base One".to_string(),
+                date: "2026-01-01".to_string(),
+            },
+            BlameLine {
+                hash: "base-2".to_string(),
+                author: "Base Two".to_string(),
+                date: "2026-01-02".to_string(),
+            },
+        ];
+        let mut input = input(
+            key(ContentMode::Diff, RenderVariant::Inline),
+            std::slice::from_ref(&hunk),
+            Some("one\nold\n"),
+            Some("one\nnew one\nnew two\n"),
+            &[],
+        );
+        input.head_blame = &head_blame;
+        input.base_blame = &base_blame;
+
+        let unified = build_unified_document(&input);
+        assert_eq!(
+            content(&unified, 1).blame.as_ref().map(|blame| &blame.hash),
+            Some(&"base-2".to_string())
+        );
+        assert_eq!(
+            content(&unified, 2).blame.as_ref().map(|blame| &blame.hash),
+            Some(&"head-2".to_string())
+        );
+
+        input.key = key(ContentMode::FullFile, RenderVariant::BaseVersion);
+        let base = build_base_document(&input);
+        assert_eq!(
+            content(&base, 1).blame.as_ref().map(|blame| &blame.hash),
+            Some(&"base-2".to_string())
+        );
+        assert!(
+            base.rows()
+                .iter()
+                .filter_map(|row| match row {
+                    DocumentRow::Content(content) => content.blame.as_ref(),
+                    DocumentRow::Spacer => None,
+                })
+                .all(|blame| blame.hash.starts_with("base-"))
+        );
+
+        input.key = key(ContentMode::FullFile, RenderVariant::HeadVersion);
+        let head = build_head_document(&input);
+        assert_eq!(
+            content(&head, 1).blame.as_ref().map(|blame| &blame.hash),
+            Some(&"head-2".to_string())
+        );
+        assert!(
+            head.rows()
+                .iter()
+                .filter_map(|row| match row {
+                    DocumentRow::Content(content) => content.blame.as_ref(),
+                    DocumentRow::Spacer => None,
+                })
+                .all(|blame| blame.hash.starts_with("head-"))
+        );
+
+        input.key = key(ContentMode::Diff, RenderVariant::SideBySide);
+        let side_by_side = build_side_by_side_document(&input).expect("side-by-side document");
+        assert_eq!(
+            content(side_by_side.base(), 1)
+                .blame
+                .as_ref()
+                .map(|blame| &blame.hash),
+            Some(&"base-2".to_string())
+        );
+        assert_eq!(
+            content(side_by_side.head(), 1)
+                .blame
+                .as_ref()
+                .map(|blame| &blame.hash),
+            Some(&"head-2".to_string())
+        );
     }
 
     #[test]
@@ -3184,6 +3481,25 @@ mod tests {
 
         document.search("needle");
         assert_eq!(document.overlays().search.query.as_deref(), Some("needle"));
+        assert_eq!(
+            document.search_matches(RowIndex(0)).collect::<Vec<_>>(),
+            vec![
+                SearchMatch {
+                    row: RowIndex(0),
+                    columns: ColumnSpan {
+                        start: ColumnIndex(0),
+                        end: ColumnIndex(6)
+                    }
+                },
+                SearchMatch {
+                    row: RowIndex(0),
+                    columns: ColumnSpan {
+                        start: ColumnIndex(11),
+                        end: ColumnIndex(17)
+                    }
+                }
+            ]
+        );
         let RenderLine::Content(rendered) = document.line(RowIndex(0)).expect("render line") else {
             panic!("expected content render line");
         };
@@ -3195,6 +3511,10 @@ mod tests {
         assert_eq!(document.overlays().search.query, None);
         document.search("hay");
         document.clear_search();
+        assert_eq!(
+            document.search_matches(RowIndex(0)).collect::<Vec<_>>(),
+            Vec::<SearchMatch>::new()
+        );
         let RenderLine::Content(rendered) = document.line(RowIndex(0)).expect("render line") else {
             panic!("expected content render line");
         };
@@ -3230,7 +3550,115 @@ mod tests {
     }
 
     #[test]
-    fn selection_and_source_metadata_support_anchor_capture() {
+    fn all_search_matches_iterates_content_rows_in_document_order() {
+        let mut document = Document::new(
+            vec![
+                DocumentRow::Content(ContentRow {
+                    gutter: Gutter {
+                        text: "1".to_string(),
+                    },
+                    kind: LineKind::Context,
+                    text: "needle first needle".to_string(),
+                    blame: None,
+                    source: SourceLocation::single(CommentAnchorSide::Head, 1),
+                }),
+                DocumentRow::Spacer,
+                DocumentRow::Content(ContentRow {
+                    gutter: Gutter {
+                        text: "2".to_string(),
+                    },
+                    kind: LineKind::Context,
+                    text: "second needle".to_string(),
+                    blame: None,
+                    source: SourceLocation::single(CommentAnchorSide::Head, 2),
+                }),
+            ],
+            Vec::new(),
+        );
+
+        assert_eq!(
+            document.all_search_matches().collect::<Vec<_>>(),
+            Vec::<SearchMatch>::new()
+        );
+
+        document.search("needle");
+
+        assert_eq!(
+            document.all_search_matches().collect::<Vec<_>>(),
+            vec![
+                SearchMatch {
+                    row: RowIndex(0),
+                    columns: ColumnSpan {
+                        start: ColumnIndex(0),
+                        end: ColumnIndex(6)
+                    }
+                },
+                SearchMatch {
+                    row: RowIndex(0),
+                    columns: ColumnSpan {
+                        start: ColumnIndex(13),
+                        end: ColumnIndex(19)
+                    }
+                },
+                SearchMatch {
+                    row: RowIndex(2),
+                    columns: ColumnSpan {
+                        start: ColumnIndex(7),
+                        end: ColumnIndex(13)
+                    }
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn visual_line_selection_stores_document_row_spans() {
+        let mut document = Document::new(Vec::new(), Vec::new());
+        document.overlays_mut().selection = Some(VisibleSelection::Line(RowSpan {
+            start: RowIndex(2),
+            end: RowIndex(5),
+        }));
+
+        assert_eq!(
+            document.overlays().selection,
+            Some(VisibleSelection::Line(RowSpan {
+                start: RowIndex(2),
+                end: RowIndex(5)
+            }))
+        );
+    }
+
+    #[test]
+    fn text_selection_stores_document_row_and_column_positions() {
+        let mut document = Document::new(Vec::new(), Vec::new());
+        document.overlays_mut().selection = Some(VisibleSelection::Text {
+            start: DocumentPosition {
+                row: RowIndex(1),
+                column: ColumnIndex(3),
+            },
+            end: DocumentPosition {
+                row: RowIndex(4),
+                column: ColumnIndex(9),
+            },
+        });
+
+        assert_eq!(
+            document.overlays().selection,
+            Some(VisibleSelection::Text {
+                start: DocumentPosition {
+                    row: RowIndex(1),
+                    column: ColumnIndex(3)
+                },
+                end: DocumentPosition {
+                    row: RowIndex(4),
+                    column: ColumnIndex(9)
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn selected_content_rows_expose_source_metadata_for_anchor_capture() {
         let hunk = replacement_hunk();
         let mut document = build_unified_document(&input(
             key(ContentMode::Diff, RenderVariant::Inline),
@@ -3269,5 +3697,114 @@ mod tests {
             document.overlays().selection,
             Some(VisibleSelection::Text { .. })
         ));
+    }
+
+    #[test]
+    fn current_line_comment_capture_uses_selected_row_source_metadata() {
+        let hunk = replacement_hunk();
+        let document = build_unified_document(&input(
+            key(ContentMode::Diff, RenderVariant::Inline),
+            &[hunk],
+            Some("one\nold\nfour\n"),
+            Some("one\nnew one\nnew two\nfour\n"),
+            &[],
+        ));
+
+        assert_eq!(
+            document
+                .content_row(RowIndex(1))
+                .and_then(|content| content.source.line_for_side(CommentAnchorSide::Base)),
+            Some(2)
+        );
+        assert_eq!(
+            document
+                .content_row(RowIndex(2))
+                .and_then(|content| content.source.line_for_side(CommentAnchorSide::Head)),
+            Some(2)
+        );
+        assert_eq!(
+            document
+                .content_row(RowIndex(0))
+                .map(|content| content.source),
+            Some(SourceLocation::paired(Some(1), Some(1)))
+        );
+    }
+
+    #[test]
+    fn multiline_comment_capture_can_derive_base_and_head_segments() {
+        let hunk = replacement_hunk();
+        let document = build_unified_document(&input(
+            key(ContentMode::Diff, RenderVariant::Inline),
+            &[hunk],
+            Some("one\nold\nfour\n"),
+            Some("one\nnew one\nnew two\nfour\n"),
+            &[],
+        ));
+        let selected_rows = RowSpan {
+            start: RowIndex(1),
+            end: RowIndex(3),
+        };
+        let mut base_lines = Vec::new();
+        let mut head_lines = Vec::new();
+        for row in selected_rows.start.0..=selected_rows.end.0 {
+            let source = content(&document, row).source;
+            if let Some(line) = source.line_for_side(CommentAnchorSide::Base) {
+                base_lines.push(line);
+            }
+            if let Some(line) = source.line_for_side(CommentAnchorSide::Head) {
+                head_lines.push(line);
+            }
+        }
+
+        assert_eq!(base_lines, vec![2]);
+        assert_eq!(head_lines, vec![2, 3]);
+    }
+
+    #[test]
+    fn source_lookup_can_preserve_cursor_across_document_variants() {
+        let hunk = replacement_hunk();
+        let unified = build_unified_document(&input(
+            key(ContentMode::Diff, RenderVariant::Inline),
+            std::slice::from_ref(&hunk),
+            Some("one\nold\nfour\n"),
+            Some("one\nnew one\nnew two\nfour\n"),
+            &[],
+        ));
+        let head = build_head_document(&input(
+            key(ContentMode::FullFile, RenderVariant::HeadVersion),
+            std::slice::from_ref(&hunk),
+            Some("one\nold\nfour\n"),
+            Some("one\nnew one\nnew two\nfour\n"),
+            &[],
+        ));
+        let base = build_base_document(&input(
+            key(ContentMode::FullFile, RenderVariant::BaseVersion),
+            &[hunk],
+            Some("one\nold\nfour\n"),
+            Some("one\nnew one\nnew two\nfour\n"),
+            &[],
+        ));
+        let unified_source = content(&unified, 2).source;
+        let head_index = SourceRowIndex::new(head.rows());
+        let base_index = SourceRowIndex::new(base.rows());
+
+        let head_row = unified_source
+            .line_for_side(CommentAnchorSide::Head)
+            .and_then(|line| {
+                head_index
+                    .rows_for_range(CommentAnchorSide::Head, line, line)
+                    .next()
+            });
+        let base_row = content(&unified, 1)
+            .source
+            .line_for_side(CommentAnchorSide::Base)
+            .and_then(|line| {
+                base_index
+                    .rows_for_range(CommentAnchorSide::Base, line, line)
+                    .next()
+            });
+
+        assert_eq!(head_row, Some(RowIndex(1)));
+        assert_eq!(base_row, Some(RowIndex(1)));
     }
 }

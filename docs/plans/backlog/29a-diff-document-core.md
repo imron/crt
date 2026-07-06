@@ -2,7 +2,7 @@
 
 ## Status
 
-Backlog.
+Complete.
 
 ## Overview
 
@@ -202,12 +202,12 @@ Add unit tests for:
 
 ## Acceptance Criteria
 
-- [ ] New document types compile and are covered by unit tests.
-- [ ] Builders can construct all four `DiffDocument` variants.
-- [ ] `DocumentComments` is constructed for all four variants.
-- [ ] Comment markers are covered by document-level unit tests.
-- [ ] Search, selection, hunk, and source metadata behavior is covered at the
+- [x] New document types compile and are covered by unit tests.
+- [x] Builders can construct all four `DiffDocument` variants.
+- [x] `DocumentComments` is constructed for all four variants.
+- [x] Comment markers are covered by document-level unit tests.
+- [x] Search, selection, hunk, and source metadata behavior is covered at the
       document layer.
-- [ ] Existing rendering and update behavior is unchanged.
-- [ ] No TUI code consumes the new document model yet.
-- [ ] No legacy diff projection code is removed in this slice.
+- [x] Existing rendering and update behavior is unchanged.
+- [x] No TUI code consumes the new document model yet.
+- [x] No legacy diff projection code is removed in this slice.
