@@ -396,7 +396,9 @@ fn render_single_line(
             show_blame,
             is_cursor,
         ),
-        RenderLine::Spacer { marker } => render_spacer_line(marker_text(marker), inner_w, styles),
+        RenderLine::Spacer { marker } => {
+            render_spacer_line(marker_text(marker), inner_w, styles, is_cursor)
+        }
     }
 }
 
@@ -429,7 +431,7 @@ fn render_side_by_side_line(
     let mut spans = base_line.spans;
     spans.push(Span::styled(
         SIDE_BY_SIDE_DIVIDER.to_string(),
-        Style::default().fg(*styles.diff.gutter_fg),
+        spacer_style(styles, is_cursor).fg(*styles.diff.gutter_fg),
     ));
     spans.extend(head_line.spans);
     Line::from(spans)
@@ -454,9 +456,9 @@ fn render_side_line(
             is_cursor,
         ),
         Some(RenderLine::Spacer { marker }) => {
-            render_spacer_line(marker_text(marker), width, styles)
+            render_spacer_line(marker_text(marker), width, styles, is_cursor)
         }
-        None => render_spacer_line(String::new(), width, styles),
+        None => render_spacer_line(String::new(), width, styles, is_cursor),
     };
     clip_line(rendered, width)
 }
@@ -670,13 +672,30 @@ fn push_reserved_gutter_text(
     text.push(' ');
 }
 
-fn render_spacer_line(marker: String, width: usize, styles: &StyleConfig) -> Line<'static> {
-    let gutter_style = Style::default().fg(*styles.diff.gutter_fg);
+fn render_spacer_line(
+    marker: String,
+    width: usize,
+    styles: &StyleConfig,
+    is_cursor: bool,
+) -> Line<'static> {
+    let base_style = spacer_style(styles, is_cursor);
+    let gutter_style = base_style.fg(*styles.diff.gutter_fg);
     let marker_width = marker.chars().count();
     let mut spans = Vec::new();
     spans.push(Span::styled(marker, gutter_style));
-    spans.push(Span::raw(" ".repeat(width.saturating_sub(marker_width))));
+    spans.push(Span::styled(
+        " ".repeat(width.saturating_sub(marker_width)),
+        base_style,
+    ));
     Line::from(spans)
+}
+
+fn spacer_style(styles: &StyleConfig, is_cursor: bool) -> Style {
+    if is_cursor {
+        Style::default().bg(*styles.diff.cursor_line_bg)
+    } else {
+        Style::default()
+    }
 }
 
 fn line_style(kind: LineKind, styles: &StyleConfig, is_cursor: bool) -> Style {
@@ -1051,16 +1070,61 @@ mod tests {
 
     #[test]
     fn cursor_overlay_renders_on_padded_spacer_rows() {
-        let line = render_spacer_line(" ".to_string(), 8, &StyleConfig::default());
+        let styles = StyleConfig::default();
+        let line = render_spacer_line(" ".to_string(), 8, &styles, true);
 
         let line = with_column_cursor(line, 4, 0, true);
 
         assert_eq!(line.spans[0].content.as_ref(), " ");
+        assert_eq!(line.spans[0].style.bg, Some(*styles.diff.cursor_line_bg));
         assert_eq!(line.spans[1].content.as_ref(), "   ");
+        assert_eq!(line.spans[1].style.bg, Some(*styles.diff.cursor_line_bg));
         assert_eq!(line.spans[2].content.as_ref(), " ");
-        assert_eq!(line.spans[2].style.fg, Some(Color::Black));
+        assert_eq!(line.spans[2].style.fg, Some(*styles.diff.cursor_line_bg));
         assert_eq!(line.spans[2].style.bg, Some(Color::White));
         assert_eq!(line.spans[3].content.as_ref(), "   ");
+        assert_eq!(line.spans[3].style.bg, Some(*styles.diff.cursor_line_bg));
+    }
+
+    #[test]
+    fn side_by_side_cursor_row_styles_empty_spacer_side() {
+        let styles = StyleConfig::default();
+        let inner_w = 41;
+        let layout = DocumentLayout {
+            gutter_w: 3,
+            base_gutter_w: 3,
+            head_gutter_w: 3,
+            gutter_cols: 0,
+            content_start_col: 0,
+        };
+        let head = plain_content(
+            SourceLocation::single(CommentAnchorSide::Head, 441),
+            "441",
+            LineKind::Addition,
+            "added",
+        );
+
+        let line = render_side_by_side_line(
+            Some(RenderLine::Spacer {
+                marker: CommentMarker::none(),
+            }),
+            Some(head),
+            &styles,
+            &layout,
+            inner_w,
+            false,
+            true,
+        );
+        let side_w = side_width(inner_w);
+        let divider_w = SIDE_BY_SIDE_DIVIDER.chars().count();
+        let mut offset = 0;
+        for span in &line.spans {
+            let span_len = span.content.chars().count();
+            if offset < side_w + divider_w {
+                assert_eq!(span.style.bg, Some(*styles.diff.cursor_line_bg));
+            }
+            offset += span_len;
+        }
     }
 
     #[test]
