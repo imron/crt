@@ -205,7 +205,9 @@ impl Document {
                 blame: content.blame.as_ref(),
                 runs: self.overlays.render_runs_for(row, content),
             })),
-            DocumentRow::Spacer => Some(RenderLine::Spacer),
+            DocumentRow::Spacer => Some(RenderLine::Spacer {
+                marker: self.overlays.comments.marker_for_row(row),
+            }),
         }
     }
 
@@ -309,7 +311,7 @@ impl From<&BlameLine> for BlameInfo {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceLocation {
     pub base: Option<u32>,
     pub head: Option<u32>,
@@ -366,15 +368,31 @@ impl SourceRowIndex {
             let DocumentRow::Content(content) = document_row else {
                 continue;
             };
-            let row = RowIndex(row);
-            if let Some(line) = content.source.base {
-                index.base_rows.entry(line).or_default().push(row);
+            index.insert_source(RowIndex(row), content.source);
+        }
+        index
+    }
+
+    fn aligned(base_rows: &[DocumentRow], head_rows: &[DocumentRow]) -> Self {
+        let mut index = Self::default();
+        for row in 0..base_rows.len().max(head_rows.len()) {
+            if let Some(DocumentRow::Content(content)) = base_rows.get(row) {
+                index.insert_source(RowIndex(row), content.source);
             }
-            if let Some(line) = content.source.head {
-                index.head_rows.entry(line).or_default().push(row);
+            if let Some(DocumentRow::Content(content)) = head_rows.get(row) {
+                index.insert_source(RowIndex(row), content.source);
             }
         }
         index
+    }
+
+    fn insert_source(&mut self, row: RowIndex, source: SourceLocation) {
+        if let Some(line) = source.base {
+            self.base_rows.entry(line).or_default().push(row);
+        }
+        if let Some(line) = source.head {
+            self.head_rows.entry(line).or_default().push(row);
+        }
     }
 
     fn rows_for_range(
@@ -808,7 +826,7 @@ impl SearchOverlay {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderLine<'a> {
     Content(RenderContent<'a>),
-    Spacer,
+    Spacer { marker: CommentMarker },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -873,6 +891,7 @@ pub fn build_unified_document(input: &DiffDocumentInput<'_>) -> Document {
     let mut document = build_unified_structural_document(input);
     document.overlays.comments = project_comments(
         document.rows(),
+        None,
         input.file_path,
         input.comments,
         input.selected_comment_id,
@@ -890,6 +909,7 @@ pub fn build_head_document(input: &DiffDocumentInput<'_>) -> Document {
     );
     document.overlays.comments = project_comments(
         document.rows(),
+        None,
         input.file_path,
         input.comments,
         input.selected_comment_id,
@@ -907,6 +927,7 @@ pub fn build_base_document(input: &DiffDocumentInput<'_>) -> Document {
     );
     document.overlays.comments = project_comments(
         document.rows(),
+        None,
         input.file_path,
         input.comments,
         input.selected_comment_id,
@@ -919,8 +940,10 @@ pub fn build_side_by_side_document(
     input: &DiffDocumentInput<'_>,
 ) -> Result<SideBySideDocument, SideBySideDocumentError> {
     let (mut base, mut head) = build_side_by_side_structural_documents(input);
+    let marker_source_rows = SourceRowIndex::aligned(base.rows(), head.rows());
     base.overlays.comments = project_comments(
         base.rows(),
+        Some(&marker_source_rows),
         input.file_path,
         input.comments,
         input.selected_comment_id,
@@ -928,6 +951,7 @@ pub fn build_side_by_side_document(
     );
     head.overlays.comments = project_comments(
         head.rows(),
+        Some(&marker_source_rows),
         input.file_path,
         input.comments,
         input.selected_comment_id,
@@ -1385,22 +1409,29 @@ fn blame_for_line(blame: &[BlameLine], line: u32) -> Option<BlameInfo> {
 
 fn project_comments(
     rows: &[DocumentRow],
+    marker_source_rows: Option<&SourceRowIndex>,
     file_path: &str,
     comments: &[Comment],
     selected_comment_id: Option<i64>,
     cursor: Option<RowIndex>,
 ) -> DocumentComments {
     let source_rows = SourceRowIndex::new(rows);
+    let marker_source_rows = marker_source_rows.unwrap_or(&source_rows);
     let projected = comments
         .iter()
         .filter(|comment| comment.file_path() == file_path)
-        .filter_map(|comment| project_comment(&source_rows, comment))
+        .filter_map(|comment| project_comment(&source_rows, marker_source_rows, comment))
         .collect();
     DocumentComments::with_selection(projected, selected_comment_id, cursor)
 }
 
-fn project_comment(source_rows: &SourceRowIndex, comment: &Comment) -> Option<DocumentComment> {
+fn project_comment(
+    source_rows: &SourceRowIndex,
+    marker_source_rows: &SourceRowIndex,
+    comment: &Comment,
+) -> Option<DocumentComment> {
     let mut matching_rows = Vec::new();
+    let mut marker_matching_rows = Vec::new();
     for segment in comment
         .anchor()
         .segments
@@ -1410,17 +1441,30 @@ fn project_comment(source_rows: &SourceRowIndex, comment: &Comment) -> Option<Do
         let start = u32::try_from(segment.line_start.max(1)).ok()?;
         let end = u32::try_from(segment.line_end.max(segment.line_start).max(1)).ok()?;
         matching_rows.extend(source_rows.rows_for_range(segment.side, start, end));
+        marker_matching_rows.extend(marker_source_rows.rows_for_range(segment.side, start, end));
     }
 
     matching_rows.sort();
     matching_rows.dedup();
-    let start = *matching_rows.first()?;
-    let end = *matching_rows.last().unwrap_or(&start);
+    marker_matching_rows.sort();
+    marker_matching_rows.dedup();
+    let span_rows = if matching_rows.is_empty() {
+        &marker_matching_rows
+    } else {
+        &matching_rows
+    };
+    let start = *span_rows.first()?;
+    let end = *span_rows.last().unwrap_or(&start);
     let span = RowSpan { start, end };
+    let marker_start = *marker_matching_rows.first().unwrap_or(&start);
+    let marker_end = *marker_matching_rows.last().unwrap_or(&marker_start);
     Some(DocumentComment {
         id: comment.id,
         span,
-        marker_rows: MarkerRows { start, end },
+        marker_rows: MarkerRows {
+            start: marker_start,
+            end: marker_end,
+        },
         resolved: comment.resolved,
         selected: false,
         current: false,
@@ -2177,6 +2221,46 @@ mod tests {
     }
 
     #[test]
+    fn spacer_rows_can_render_comment_markers() {
+        let comments = vec![comment(
+            8,
+            false,
+            vec![segment(CommentAnchorSide::Head, 2, 4)],
+        )];
+        let hunk = DiffHunk {
+            old_start: 1,
+            old_lines: 3,
+            new_start: 1,
+            new_lines: 4,
+            header: "@@ -1,3 +1,4 @@".to_string(),
+            lines: vec![
+                diff_line(LineKind::Context, "one", Some(1), Some(1)),
+                diff_line(LineKind::Deletion, "old two", Some(2), None),
+                diff_line(LineKind::Addition, "new two", None, Some(2)),
+                diff_line(LineKind::Addition, "new three", None, Some(3)),
+                diff_line(LineKind::Addition, "new four", None, Some(4)),
+            ],
+        };
+        let side_by_side = build_side_by_side_document(&input(
+            key(ContentMode::Diff, RenderVariant::SideBySide),
+            &[hunk],
+            Some("one\nold two\n"),
+            Some("one\nnew two\nnew three\nnew four\n"),
+            &comments,
+        ))
+        .expect("valid side-by-side document");
+
+        assert!(matches!(
+            side_by_side.base().row(RowIndex(2)),
+            Some(DocumentRow::Spacer)
+        ));
+        let Some(RenderLine::Spacer { marker }) = side_by_side.base().line(RowIndex(2)) else {
+            panic!("expected spacer render line");
+        };
+        assert_eq!(marker.kind(), Some(CommentMarkerKind::Join));
+    }
+
+    #[test]
     fn comment_markers_cover_single_multiline_nested_and_overlap_cases() {
         let rows = vec![
             DocumentRow::Content(side_content_row(
@@ -2214,7 +2298,14 @@ mod tests {
             comment(3, false, vec![segment(CommentAnchorSide::Head, 3, 3)]),
         ];
         let overlays = DocumentOverlays {
-            comments: project_comments(&rows, "src/lib.rs", &comments, Some(2), Some(RowIndex(2))),
+            comments: project_comments(
+                &rows,
+                None,
+                "src/lib.rs",
+                &comments,
+                Some(2),
+                Some(RowIndex(2)),
+            ),
             ..DocumentOverlays::default()
         };
         let document = Document::new(rows, Vec::new()).with_overlays(overlays);
@@ -2269,8 +2360,14 @@ mod tests {
             comment(2, false, vec![segment(CommentAnchorSide::Head, 1, 2)]),
             comment(3, false, vec![segment(CommentAnchorSide::Head, 2, 2)]),
         ];
-        let document_comments =
-            project_comments(&rows, "src/lib.rs", &comments, Some(1), Some(RowIndex(0)));
+        let document_comments = project_comments(
+            &rows,
+            None,
+            "src/lib.rs",
+            &comments,
+            Some(1),
+            Some(RowIndex(0)),
+        );
 
         assert_eq!(
             document_comments
