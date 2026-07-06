@@ -24,6 +24,7 @@ const SIDE_BY_SIDE_DIVIDER: &str = " │ ";
 enum GutterMode {
     Unified,
     Single,
+    ReservedSingle,
 }
 
 /// Draw the diff/file view pane from `ActiveDocument`.
@@ -204,7 +205,7 @@ impl DocumentLayout {
             }
             DiffDocument::Base(document) | DiffDocument::Head(document) => {
                 let gutter_w = single_gutter_width(document);
-                let content_start_col = single_content_start(gutter_w, show_blame);
+                let content_start_col = unified_content_start(gutter_w, show_blame);
                 Self {
                     gutter_w,
                     base_gutter_w: gutter_w,
@@ -310,7 +311,7 @@ fn visible_lines(
                                 line,
                                 styles,
                                 layout.gutter_w,
-                                GutterMode::Single,
+                                GutterMode::ReservedSingle,
                                 inner_w,
                                 diff.show_blame,
                                 is_cursor,
@@ -479,6 +480,10 @@ fn render_content_line(
             push_single_gutter(&mut spans, &content, gutter_w, gutter_style);
             gutter_w + 1
         }
+        GutterMode::ReservedSingle => {
+            push_reserved_single_gutter(&mut spans, &content, gutter_w, gutter_style);
+            gutter_w + 1 + gutter_w + 1
+        }
     };
     spans.push(Span::styled(marker_text(content.marker), marker_style));
 
@@ -559,6 +564,21 @@ fn push_single_gutter(
     let gutter = single_source_line(content.source)
         .map(|line| format!("{line:>gutter_w$}"))
         .unwrap_or_else(|| format!("{:>gutter_w$}", content.gutter.as_ref()));
+    spans.push(Span::styled(gutter, gutter_style));
+    spans.push(Span::styled(" ", gutter_style));
+}
+
+fn push_reserved_single_gutter(
+    spans: &mut Vec<Span<'static>>,
+    content: &RenderContent<'_>,
+    gutter_w: usize,
+    gutter_style: Style,
+) {
+    let gutter = single_source_line(content.source)
+        .map(|line| format!("{line:>gutter_w$}"))
+        .unwrap_or_else(|| format!("{:>gutter_w$}", content.gutter.as_ref()));
+    spans.push(Span::styled(" ".repeat(gutter_w), gutter_style));
+    spans.push(Span::styled(" ", gutter_style));
     spans.push(Span::styled(gutter, gutter_style));
     spans.push(Span::styled(" ", gutter_style));
 }
@@ -708,6 +728,15 @@ fn render_line_text(
                     text.push_str(&gutter);
                     text.push(' ');
                 }
+                GutterMode::ReservedSingle => {
+                    text.push_str(&" ".repeat(gutter_w));
+                    text.push(' ');
+                    let gutter = single_source_line(content.source)
+                        .map(|line| format!("{line:>gutter_w$}"))
+                        .unwrap_or_else(|| format!("{:>gutter_w$}", content.gutter.as_ref()));
+                    text.push_str(&gutter);
+                    text.push(' ');
+                }
             }
             text.push_str(&marker_text(content.marker));
             text.push(' ');
@@ -784,6 +813,44 @@ mod tests {
         let text = render_line_text(line, false, GutterMode::Unified, 3);
 
         assert_eq!(text, "    441   + added");
+    }
+
+    #[test]
+    fn reserved_single_render_text_keeps_head_content_at_unified_start_column() {
+        let line = plain_content(
+            SourceLocation::single(CommentAnchorSide::Head, 423),
+            "423",
+            LineKind::Context,
+            "head",
+        );
+
+        let text = render_line_text(line, false, GutterMode::ReservedSingle, 3);
+
+        assert_eq!(text, "    423     head");
+    }
+
+    #[test]
+    fn base_and_head_layouts_reserve_unified_gutter_width() {
+        let document = Document::new(
+            vec![DocumentRow::Content(crate::app::document::ContentRow {
+                gutter: crate::app::document::Gutter {
+                    text: "423".to_string(),
+                },
+                kind: LineKind::Context,
+                text: "line".to_string(),
+                blame: None,
+                source: SourceLocation::single(CommentAnchorSide::Head, 423),
+            })],
+            Vec::new(),
+        );
+
+        let head_layout = DocumentLayout::new(&DiffDocument::Head(document.clone()), false, 80);
+        let unified_layout = DocumentLayout::new(&DiffDocument::Unified(document), false, 80);
+
+        assert_eq!(
+            head_layout.content_start_col,
+            unified_layout.content_start_col
+        );
     }
 
     #[test]
