@@ -433,8 +433,7 @@ impl App {
         None
     }
 
-    pub fn model(&mut self) -> AppModel {
-        self.state.ensure_active_document();
+    pub fn model(&self) -> AppModel<'_> {
         AppModel::from_state(&self.state)
     }
 

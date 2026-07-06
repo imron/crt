@@ -27,13 +27,13 @@ use crate::review_types::{
 };
 
 #[derive(Debug, Clone)]
-pub struct AppModel {
+pub struct AppModel<'a> {
     pub revision: u64,
     pub context: ConnectionContext,
     pub layout: AppLayout,
     pub file_list: FileList,
     pub diff: DiffPanel,
-    pub active_document: Option<ActiveDocument>,
+    pub active_document: Option<&'a ActiveDocument>,
     pub comments_panel: CommentsPanel,
     pub focus: PaneFocus,
     pub search_results: Option<SearchResultsOverlay>,
@@ -946,8 +946,8 @@ pub struct DefinitionResultItem {
     pub selected: bool,
 }
 
-impl AppModel {
-    pub fn from_state(state: &AppState) -> Self {
+impl<'a> AppModel<'a> {
+    pub fn from_state(state: &'a AppState) -> Self {
         Self {
             revision: state.model_revision(),
             context: state.context.clone(),
@@ -958,7 +958,7 @@ impl AppModel {
             },
             file_list: file_list_model(state),
             diff: diff_panel_model(state),
-            active_document: state.active_document.clone(),
+            active_document: state.active_document.as_ref(),
             comments_panel: comments_panel_model(state),
             focus: state.pane_focus,
             search_results: search_results_model(state),
@@ -3277,6 +3277,7 @@ mod tests {
             start: TextAnchor { line: 1, column: 2 },
             end: TextAnchor { line: 3, column: 4 },
         });
+        app.state.ensure_active_document();
 
         let model = app.model();
 
@@ -3433,7 +3434,7 @@ mod tests {
 
     #[test]
     fn model_projects_core_ui_concepts() {
-        let mut app = App::new(
+        let app = App::new(
             Config::default(),
             test_context(),
             vec![file(
