@@ -7,6 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use super::super::state::TuiState;
+use super::diff_view::apply_col_cursor;
 use crate::app::document::{
     BlameInfo, DiffDocument, Document, DocumentRow, RenderContent, RenderLine, SourceLocation,
     TextRunKind,
@@ -286,26 +287,36 @@ fn visible_lines(
                 DiffDocument::Unified(document) => document
                     .line(crate::app::document::RowIndex(row))
                     .map(|line| {
-                        render_single_line(
-                            line,
-                            styles,
-                            layout.gutter_w,
-                            GutterMode::Unified,
-                            inner_w,
-                            diff.show_blame,
+                        with_column_cursor(
+                            render_single_line(
+                                line,
+                                styles,
+                                layout.gutter_w,
+                                GutterMode::Unified,
+                                inner_w,
+                                diff.show_blame,
+                                is_cursor,
+                            ),
+                            layout.content_start_col,
+                            diff.cursor.column,
                             is_cursor,
                         )
                     }),
                 DiffDocument::Base(document) | DiffDocument::Head(document) => document
                     .line(crate::app::document::RowIndex(row))
                     .map(|line| {
-                        render_single_line(
-                            line,
-                            styles,
-                            layout.gutter_w,
-                            GutterMode::Single,
-                            inner_w,
-                            diff.show_blame,
+                        with_column_cursor(
+                            render_single_line(
+                                line,
+                                styles,
+                                layout.gutter_w,
+                                GutterMode::Single,
+                                inner_w,
+                                diff.show_blame,
+                                is_cursor,
+                            ),
+                            layout.content_start_col,
+                            diff.cursor.column,
                             is_cursor,
                         )
                     }),
@@ -313,19 +324,37 @@ fn visible_lines(
                     if row >= document.len() {
                         return None;
                     }
-                    Some(render_side_by_side_line(
-                        document.base().line(crate::app::document::RowIndex(row)),
-                        document.head().line(crate::app::document::RowIndex(row)),
-                        styles,
-                        layout,
-                        inner_w,
-                        diff.show_blame,
+                    Some(with_column_cursor(
+                        render_side_by_side_line(
+                            document.base().line(crate::app::document::RowIndex(row)),
+                            document.head().line(crate::app::document::RowIndex(row)),
+                            styles,
+                            layout,
+                            inner_w,
+                            diff.show_blame,
+                            is_cursor,
+                        ),
+                        layout.content_start_col,
+                        diff.cursor.column,
                         is_cursor,
                     ))
                 }
             }
         })
         .collect()
+}
+
+fn with_column_cursor(
+    line: Line<'static>,
+    content_start_col: usize,
+    cursor_col: usize,
+    is_cursor: bool,
+) -> Line<'static> {
+    if is_cursor {
+        apply_col_cursor(&line, content_start_col, cursor_col)
+    } else {
+        line
+    }
 }
 
 fn render_single_line(
@@ -672,6 +701,9 @@ fn render_line_text(
 mod tests {
     use std::borrow::Cow;
 
+    use ratatui::style::{Color, Style};
+    use ratatui::text::{Line, Span};
+
     use crate::app::document::{RenderContent, SourceLocation, TextRun};
     use crate::app::model::CommentMarker;
 
@@ -722,6 +754,36 @@ mod tests {
         let text = render_line_text(line, false, GutterMode::Unified, 3);
 
         assert_eq!(text, "    441   + added");
+    }
+
+    #[test]
+    fn cursor_overlay_targets_content_column_after_fixed_gutter() {
+        let line = Line::from(vec![Span::styled(
+            "012345",
+            Style::default().fg(Color::Red).bg(Color::Blue),
+        )]);
+
+        let line = with_column_cursor(line, 2, 1, true);
+
+        assert_eq!(line.spans[0].content.as_ref(), "012");
+        assert_eq!(line.spans[1].content.as_ref(), "3");
+        assert_eq!(line.spans[1].style.fg, Some(Color::Blue));
+        assert_eq!(line.spans[1].style.bg, Some(Color::Red));
+        assert_eq!(line.spans[2].content.as_ref(), "45");
+    }
+
+    #[test]
+    fn cursor_overlay_renders_on_padded_spacer_rows() {
+        let line = render_spacer_line(" ".to_string(), 8, &StyleConfig::default());
+
+        let line = with_column_cursor(line, 4, 0, true);
+
+        assert_eq!(line.spans[0].content.as_ref(), " ");
+        assert_eq!(line.spans[1].content.as_ref(), "   ");
+        assert_eq!(line.spans[2].content.as_ref(), " ");
+        assert_eq!(line.spans[2].style.fg, Some(Color::Black));
+        assert_eq!(line.spans[2].style.bg, Some(Color::White));
+        assert_eq!(line.spans[3].content.as_ref(), "   ");
     }
 }
 
