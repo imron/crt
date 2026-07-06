@@ -64,7 +64,7 @@ pub struct LastPointerClick {
 pub struct TuiState {
     /// Whether inline comments are visible in the diff pane.
     pub show_comments: bool,
-    /// TUI-local Stage 29 renderer toggle.
+    /// TUI-local document renderer toggle.
     pub use_document_diff_view: bool,
     pub diff_cache: Option<DiffCache>,
     /// Display row indices where each hunk starts in the rendered TUI diff.

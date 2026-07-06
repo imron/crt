@@ -191,10 +191,9 @@ pub struct CurrentCommentContext {
     pub body: String,
 }
 
-/// Stage-20 scaffold interaction engine.
+/// Core interaction engine.
 ///
-/// This intentionally contains minimal behavior; later stages will migrate
-/// existing TUI behavior into this engine.
+/// This owns prompt lifecycle and maps core input contracts to app effects.
 #[derive(Debug, Default)]
 pub struct CoreInteractionEngine {
     next_prompt_id: u64,

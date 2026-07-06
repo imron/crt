@@ -92,11 +92,11 @@ pub fn run_with_cli(cli: Cli) -> Result<()> {
             cmd_mcp_server()
         }
         Some(Command::ApplyComments { .. }) => {
-            println!("crt apply-comments: not yet implemented (stage 15)");
+            println!("crt apply-comments: not yet implemented");
             Ok(())
         }
         Some(Command::ClearComments { .. }) => {
-            println!("crt clear-comments: not yet implemented (stage 15)");
+            println!("crt clear-comments: not yet implemented");
             Ok(())
         }
         None => cmd_review(cli.base, cli.reset, cli.standalone),
@@ -114,7 +114,7 @@ fn cmd_server() -> Result<()> {
     rt.block_on(server::run_persistent(&socket_path))
 }
 
-/// Default `crt <base>` — review mode (will be TUI in Stage 6).
+/// Default `crt <base>` — review mode.
 fn cmd_review(base: Option<String>, reset: bool, standalone: bool) -> Result<()> {
     let base = base.context("A base ref is required.\n\nUsage: crt <BASE>\n\nExample: crt main")?;
 
