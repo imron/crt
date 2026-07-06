@@ -642,7 +642,7 @@ impl DocumentOverlays {
         };
         let start = span.start.0.min(text_len);
         let end = span.end.0.min(text_len);
-        if start >= end {
+        if start >= end && text_len > 0 {
             return Vec::new();
         }
         vec![ColumnSpan {
@@ -1059,6 +1059,16 @@ impl SearchOverlay {
             return vec![TextRun {
                 text: Cow::Borrowed(text),
                 kind: TextRunKind::Plain,
+            }];
+        }
+        if text.is_empty() {
+            return vec![TextRun {
+                text: Cow::Borrowed(text),
+                kind: if selection_spans.is_empty() {
+                    TextRunKind::Plain
+                } else {
+                    TextRunKind::Selection
+                },
             }];
         }
 
@@ -4293,6 +4303,36 @@ mod tests {
         assert_eq!(before.runs[0].kind, TextRunKind::Plain);
         assert_eq!(selected.runs[0].kind, TextRunKind::Selection);
         assert_eq!(selected.runs[0].text, Cow::Borrowed("selected"));
+    }
+
+    #[test]
+    fn visual_line_selection_marks_empty_content_rows() {
+        let mut document = Document::new(
+            vec![DocumentRow::Content(ContentRow {
+                gutter: Gutter {
+                    text: "1".to_string(),
+                },
+                kind: LineKind::Context,
+                text: String::new(),
+                blame: None,
+                source: SourceLocation::single(CommentAnchorSide::Head, 1),
+                changed_spans: Vec::new(),
+            })],
+            Vec::new(),
+        );
+        document.overlays_mut().selection = Some(VisibleSelection::Line(RowSpan {
+            start: RowIndex(0),
+            end: RowIndex(0),
+        }));
+
+        let RenderLine::Content(selected) = document.line(RowIndex(0)).expect("selected line")
+        else {
+            panic!("expected content render line");
+        };
+
+        assert_eq!(selected.runs.len(), 1);
+        assert_eq!(selected.runs[0].kind, TextRunKind::Selection);
+        assert_eq!(selected.runs[0].text, Cow::Borrowed(""));
     }
 
     #[test]

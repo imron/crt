@@ -603,6 +603,7 @@ fn render_content_line(
 
     let fixed_width = blame_width + gutter_width + COMMENT_MARKER_WIDTH + 3;
     let mut content_width = 0;
+    let mut selection_extends_to_padding = false;
     for run in content.runs {
         let run_style = match run.kind {
             TextRunKind::Plain => base_style,
@@ -620,10 +621,16 @@ fn render_content_line(
             TextRunKind::Selection => base_style.fg(*styles.selection.fg).bg(*styles.selection.bg),
         };
         content_width += run.text.chars().count();
+        selection_extends_to_padding = run.kind == TextRunKind::Selection;
         spans.push(Span::styled(run.text.to_string(), run_style));
     }
     let pad = width.saturating_sub(fixed_width + content_width);
-    spans.push(Span::styled(" ".repeat(pad), base_style));
+    let pad_style = if selection_extends_to_padding {
+        base_style.fg(*styles.selection.fg).bg(*styles.selection.bg)
+    } else {
+        base_style
+    };
+    spans.push(Span::styled(" ".repeat(pad), pad_style));
     Line::from(spans)
 }
 
@@ -1155,6 +1162,27 @@ mod tests {
 
         assert_eq!(selection.style.bg, Some(*styles.selection.bg));
         assert_eq!(selection.style.fg, Some(*styles.selection.fg));
+    }
+
+    #[test]
+    fn selection_runs_extend_selection_colour_to_padding() {
+        let styles = StyleConfig::default();
+        let RenderLine::Content(content) = search_content(
+            SourceLocation::paired(None, Some(441)),
+            "441",
+            LineKind::Context,
+            "",
+            "",
+            TextRunKind::Selection,
+        ) else {
+            panic!("expected content line");
+        };
+
+        let line = render_content_line(content, &styles, 3, GutterMode::Unified, 40, false, false);
+        let padding = line.spans.last().expect("padding span");
+
+        assert_eq!(padding.style.bg, Some(*styles.selection.bg));
+        assert_eq!(padding.style.fg, Some(*styles.selection.fg));
     }
 
     #[test]
