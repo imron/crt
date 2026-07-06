@@ -1031,9 +1031,9 @@ pub struct AppState {
     /// Whether blame annotations are visible.
     pub show_blame: bool,
     /// Blame data for the HEAD version of the current file (line 1 = index 0).
-    pub head_blame: Vec<crate::git::BlameLine>,
+    pub head_blame: Vec<model::BlameLine>,
     /// Blame data for the base version of the current file.
-    pub base_blame: Vec<crate::git::BlameLine>,
+    pub base_blame: Vec<model::BlameLine>,
     /// Jump stack for Ctrl-] / Ctrl-t navigation.
     pub jump_stack: Vec<JumpLocation>,
     /// Active diff search query (the confirmed search term).
@@ -1271,8 +1271,8 @@ impl AppState {
                 &path,
                 self.show_blame,
             );
-            self.head_blame = head;
-            self.base_blame = base;
+            self.head_blame = head.into_iter().map(model::BlameLine::from).collect();
+            self.base_blame = base.into_iter().map(model::BlameLine::from).collect();
         }
     }
 

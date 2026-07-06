@@ -5,6 +5,7 @@
 //! backend-specific geometry.
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use crate::app::diff_rows::{
     LinearDiffRow, LinearDiffRows, SideBySideDiffRows, inline_diff_rows, side_by_side_diff_rows,
@@ -183,9 +184,9 @@ pub struct DiffLine {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlameLine {
-    pub hash: String,
-    pub author: String,
-    pub date: String,
+    pub hash: Rc<str>,
+    pub author: Rc<str>,
+    pub date: Rc<str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -990,6 +991,7 @@ pub fn active_document_key(state: &AppState) -> Option<DocumentKey> {
         render_variant: state.render_variant,
         diff_algorithm: state.diff_algorithm,
         ignore_whitespace: state.ignore_whitespace,
+        show_blame: state.show_blame,
         head_content_id: content_id(state.head_content.as_ref()),
         base_content_id: content_id(state.base_content.as_ref()),
     })
@@ -997,16 +999,14 @@ pub fn active_document_key(state: &AppState) -> Option<DocumentKey> {
 
 pub fn build_active_document(state: &AppState, key: DocumentKey) -> Option<ActiveDocument> {
     let entry = state.selected_file_entry()?;
-    let head_blame: Vec<BlameLine> = state.head_blame.iter().map(BlameLine::from).collect();
-    let base_blame: Vec<BlameLine> = state.base_blame.iter().map(BlameLine::from).collect();
     let mut active_document = DiffDocumentBuilder::build(DiffDocumentInput {
         key,
         file_path: &entry.change.path,
         hunks: &entry.diff.hunks,
         head_content: state.head_content.as_deref(),
         base_content: state.base_content.as_deref(),
-        head_blame: &head_blame,
-        base_blame: &base_blame,
+        head_blame: &state.head_blame,
+        base_blame: &state.base_blame,
         comments: &state.comments,
         selected_comment_id: state.selected_comment_id,
         cursor: Some(RowIndex(state.diff_line_cursor)),
@@ -1027,7 +1027,7 @@ pub fn build_active_document(state: &AppState, key: DocumentKey) -> Option<Activ
     Some(active_document)
 }
 
-pub(crate) fn document_visible_selection(
+pub fn document_visible_selection(
     selection: Option<&StateVisualSelection>,
 ) -> Option<DocumentVisibleSelection> {
     let selection = selection?;
@@ -1436,8 +1436,8 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
         side_by_side_rows,
         head_content: state.head_content.clone(),
         base_content: state.base_content.clone(),
-        head_blame: state.head_blame.iter().map(BlameLine::from).collect(),
-        base_blame: state.base_blame.iter().map(BlameLine::from).collect(),
+        head_blame: state.head_blame.clone(),
+        base_blame: state.base_blame.clone(),
         scroll: state.diff_scroll,
         cursor: TextAnchor {
             line: state.diff_line_cursor,
@@ -2016,9 +2016,19 @@ impl From<&review_types::ReviewStatus> for ReviewStatus {
 impl From<&crate::git::BlameLine> for BlameLine {
     fn from(line: &crate::git::BlameLine) -> Self {
         Self {
-            hash: line.hash.clone(),
-            author: line.author.clone(),
-            date: line.date.clone(),
+            hash: Rc::from(line.hash.as_str()),
+            author: Rc::from(line.author.as_str()),
+            date: Rc::from(line.date.as_str()),
+        }
+    }
+}
+
+impl From<crate::git::BlameLine> for BlameLine {
+    fn from(line: crate::git::BlameLine) -> Self {
+        Self {
+            hash: Rc::from(line.hash),
+            author: Rc::from(line.author),
+            date: Rc::from(line.date),
         }
     }
 }

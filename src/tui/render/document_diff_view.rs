@@ -968,12 +968,13 @@ fn render_line_text(
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
+    use std::rc::Rc;
 
     use ratatui::style::{Color, Style};
     use ratatui::text::{Line, Span};
 
     use super::*;
-    use crate::app::document::{RenderContent, SourceLocation, TextRun};
+    use crate::app::document::{BlameInfo, RenderContent, SourceLocation, TextRun};
     use crate::app::model::CommentMarker;
 
     fn plain_content(
@@ -1046,6 +1047,14 @@ mod tests {
                 },
             ],
         })
+    }
+
+    fn blame_info() -> BlameInfo {
+        BlameInfo {
+            hash: Rc::from("abcdef1"),
+            author: Rc::from("Ada"),
+            date: Rc::from("2026-01-01"),
+        }
     }
 
     #[test]
@@ -1193,6 +1202,78 @@ mod tests {
 
         assert_eq!(padding.style.bg, Some(*styles.selection.bg));
         assert_eq!(padding.style.fg, Some(*styles.selection.fg));
+    }
+
+    #[test]
+    fn blame_renders_only_when_show_blame_is_enabled() {
+        let styles = StyleConfig::default();
+        let blame = blame_info();
+        let content = RenderContent {
+            gutter: Cow::Borrowed("1"),
+            source: SourceLocation::paired(Some(1), Some(1)),
+            marker: CommentMarker::none(),
+            kind: LineKind::Context,
+            blame: Some(&blame),
+            runs: vec![TextRun {
+                text: Cow::Borrowed("line"),
+                kind: TextRunKind::Plain,
+            }],
+        };
+
+        let line = render_content_line(content, &styles, 3, GutterMode::Unified, 80, false, false);
+        let text = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(!text.contains("abcdef1"));
+        assert!(!text.contains("Ada"));
+    }
+
+    #[test]
+    fn blame_column_uses_blame_style_when_enabled() {
+        let styles = StyleConfig::default();
+        let blame = blame_info();
+        let content = RenderContent {
+            gutter: Cow::Borrowed("1"),
+            source: SourceLocation::paired(Some(1), Some(1)),
+            marker: CommentMarker::none(),
+            kind: LineKind::Context,
+            blame: Some(&blame),
+            runs: vec![TextRun {
+                text: Cow::Borrowed("line"),
+                kind: TextRunKind::Plain,
+            }],
+        };
+
+        let line = render_content_line(content, &styles, 3, GutterMode::Unified, 80, true, false);
+        let blame = line.spans.first().expect("blame span");
+
+        assert!(blame.content.as_ref().contains("abcdef1"));
+        assert!(blame.content.as_ref().contains("2026-01-01"));
+        assert!(blame.content.as_ref().contains("Ada"));
+        assert_eq!(blame.style.fg, Some(*styles.diff.blame_fg));
+    }
+
+    #[test]
+    fn missing_blame_renders_blank_blame_column_when_enabled() {
+        let styles = StyleConfig::default();
+        let RenderLine::Content(content) = plain_content(
+            SourceLocation::paired(Some(1), Some(1)),
+            "1",
+            LineKind::Context,
+            "line",
+        ) else {
+            panic!("expected content line");
+        };
+
+        let line = render_content_line(content, &styles, 3, GutterMode::Unified, 80, true, false);
+        let blame = line.spans.first().expect("blame span");
+
+        assert_eq!(blame.content.chars().count(), BLAME_COL_WIDTH);
+        assert!(blame.content.chars().all(|ch| ch == ' '));
+        assert_eq!(blame.style.fg, Some(*styles.diff.blame_fg));
     }
 
     #[test]

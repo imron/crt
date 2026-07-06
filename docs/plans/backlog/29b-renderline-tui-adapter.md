@@ -73,6 +73,10 @@ Update TUI diff rendering so:
 - ratatui-specific styling remains in the TUI;
 - semantic runs and line kinds come from the document.
 
+During migration, keep the document renderer behind the TUI-local `*` toggle.
+It should become the only renderer when 29f removes the legacy diff
+projection/rendering path.
+
 ## Design Requirements
 
 - The TUI may decide terminal layout, widths, clipping, and ratatui styles.
@@ -116,3 +120,5 @@ Add renderer boundary tests for:
 - [ ] Existing visual output remains equivalent.
 - [ ] Existing diff, side-by-side, hunk, blame, and comment marker tests stay
       green or are replaced by document-render tests.
+- [ ] The legacy renderer remains available behind the `*` toggle until 29f
+      removes it.
