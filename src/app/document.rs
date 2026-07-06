@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::app::model::{BlameLine, CommentMarker, CommentMarkerKind};
 use crate::config::DiffAlgorithm;
@@ -353,6 +353,49 @@ impl SourceLocation {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct SourceRowIndex {
+    base_rows: BTreeMap<u32, Vec<RowIndex>>,
+    head_rows: BTreeMap<u32, Vec<RowIndex>>,
+}
+
+impl SourceRowIndex {
+    fn new(rows: &[DocumentRow]) -> Self {
+        let mut index = Self::default();
+        for (row, document_row) in rows.iter().enumerate() {
+            let DocumentRow::Content(content) = document_row else {
+                continue;
+            };
+            let row = RowIndex(row);
+            if let Some(line) = content.source.base {
+                index.base_rows.entry(line).or_default().push(row);
+            }
+            if let Some(line) = content.source.head {
+                index.head_rows.entry(line).or_default().push(row);
+            }
+        }
+        index
+    }
+
+    fn rows_for_range(
+        &self,
+        side: CommentAnchorSide,
+        start: u32,
+        end: u32,
+    ) -> impl Iterator<Item = RowIndex> + '_ {
+        self.rows_for_side(side)
+            .range(start..=end)
+            .flat_map(|(_, rows)| rows.iter().copied())
+    }
+
+    fn rows_for_side(&self, side: CommentAnchorSide) -> &BTreeMap<u32, Vec<RowIndex>> {
+        match side {
+            CommentAnchorSide::Base => &self.base_rows,
+            CommentAnchorSide::Head => &self.head_rows,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RowIndex(pub usize);
 
@@ -414,7 +457,9 @@ pub struct DocumentPosition {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DocumentComments {
-    comments_by_id: BTreeMap<i64, usize>,
+    comments_by_id: HashMap<i64, usize>,
+    unresolved_comment_indices: Vec<usize>,
+    unresolved_comment_positions_by_id: HashMap<i64, usize>,
     comments_by_row: BTreeMap<RowIndex, Vec<usize>>,
     marker_comments_by_row: BTreeMap<RowIndex, Vec<usize>>,
     comments: Vec<DocumentComment>,
@@ -438,6 +483,16 @@ impl DocumentComments {
             .enumerate()
             .map(|(index, comment)| (comment.id, index))
             .collect();
+        let unresolved_comment_indices: Vec<usize> = comments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, comment)| (!comment.resolved).then_some(index))
+            .collect();
+        let unresolved_comment_positions_by_id = unresolved_comment_indices
+            .iter()
+            .enumerate()
+            .map(|(position, comment_index)| (comments[*comment_index].id, position))
+            .collect();
         let current_comment_id =
             current_comment_id_for_rows(&comments, selected_comment_id, cursor);
         for comment in &mut comments {
@@ -451,6 +506,8 @@ impl DocumentComments {
         });
         Self {
             comments_by_id,
+            unresolved_comment_indices,
+            unresolved_comment_positions_by_id,
             comments_by_row,
             marker_comments_by_row,
             comments,
@@ -523,7 +580,11 @@ impl DocumentComments {
     }
 
     pub fn next_comment(&self, row: RowIndex, direction: Direction) -> Option<&DocumentComment> {
-        self.next_matching_comment(row, direction, |_| true)
+        let selected_position = self
+            .current_comment_id
+            .or(self.selected_comment_id)
+            .and_then(|id| self.comments_by_id.get(&id).copied());
+        self.next_in_comment_order(row, direction, None, selected_position)
     }
 
     pub fn next_unresolved_comment(
@@ -531,55 +592,99 @@ impl DocumentComments {
         row: RowIndex,
         direction: Direction,
     ) -> Option<&DocumentComment> {
-        self.next_matching_comment(row, direction, |comment| !comment.resolved)
+        let selected_position = self
+            .current_comment_id
+            .or(self.selected_comment_id)
+            .and_then(|id| self.unresolved_comment_positions_by_id.get(&id).copied());
+        self.next_in_comment_order(
+            row,
+            direction,
+            Some(&self.unresolved_comment_indices),
+            selected_position,
+        )
     }
 
-    fn next_matching_comment(
+    fn next_in_comment_order(
         &self,
         row: RowIndex,
         direction: Direction,
-        predicate: impl Fn(&DocumentComment) -> bool,
+        indices: Option<&[usize]>,
+        selected_position: Option<usize>,
     ) -> Option<&DocumentComment> {
-        let comments: Vec<&DocumentComment> = self
-            .comments
-            .iter()
-            .filter(|comment| predicate(comment))
-            .collect();
-        if comments.is_empty() {
+        let ordered_len = indices.map_or(self.comments.len(), <[usize]>::len);
+        if ordered_len == 0 {
             return None;
         }
-        let selected_index = self
-            .current_comment_id
-            .or(self.selected_comment_id)
-            .and_then(|id| comments.iter().position(|comment| comment.id == id));
-        match (direction, selected_index) {
-            (Direction::Next, Some(index)) => {
-                comments.get(index.saturating_add(1)).copied().or_else(|| {
-                    comments
-                        .iter()
-                        .copied()
-                        .find(|comment| comment.span.start > row)
-                })
-            }
-            (Direction::Prev, Some(index)) => index
+
+        match (direction, selected_position) {
+            (Direction::Next, Some(position)) => self
+                .comment_at_order_position(indices, position.saturating_add(1))
+                .or_else(|| self.first_comment_starting_after(indices, row)),
+            (Direction::Prev, Some(position)) => position
                 .checked_sub(1)
-                .and_then(|previous| comments.get(previous).copied())
-                .or_else(|| {
-                    comments
-                        .iter()
-                        .rev()
-                        .copied()
-                        .find(|comment| comment.span.start < row || comment.span.contains(row))
-                }),
-            (Direction::Next, None) => comments.iter().copied().find(|comment| {
-                comment.span.start > row
-                    || (comment.span.start == row && !comment.span.contains(row))
+                .and_then(|previous| self.comment_at_order_position(indices, previous))
+                .or_else(|| self.last_comment_starting_before_or_containing(indices, row)),
+            (Direction::Next, None) => self.first_comment_starting_after(indices, row),
+            (Direction::Prev, None) => self.last_comment_starting_before(indices, row),
+        }
+    }
+
+    fn comment_at_order_position(
+        &self,
+        indices: Option<&[usize]>,
+        position: usize,
+    ) -> Option<&DocumentComment> {
+        match indices {
+            Some(indices) => indices
+                .get(position)
+                .and_then(|comment_index| self.comments.get(*comment_index)),
+            None => self.comments.get(position),
+        }
+    }
+
+    fn first_comment_starting_after(
+        &self,
+        indices: Option<&[usize]>,
+        row: RowIndex,
+    ) -> Option<&DocumentComment> {
+        let position = self.partition_comment_order(indices, |comment| comment.span.start <= row);
+        self.comment_at_order_position(indices, position)
+    }
+
+    fn last_comment_starting_before(
+        &self,
+        indices: Option<&[usize]>,
+        row: RowIndex,
+    ) -> Option<&DocumentComment> {
+        let position = self.partition_comment_order(indices, |comment| comment.span.start < row);
+        position
+            .checked_sub(1)
+            .and_then(|position| self.comment_at_order_position(indices, position))
+    }
+
+    fn last_comment_starting_before_or_containing(
+        &self,
+        indices: Option<&[usize]>,
+        row: RowIndex,
+    ) -> Option<&DocumentComment> {
+        let position = self.partition_comment_order(indices, |comment| {
+            comment.span.start < row || comment.span.contains(row)
+        });
+        position
+            .checked_sub(1)
+            .and_then(|position| self.comment_at_order_position(indices, position))
+    }
+
+    fn partition_comment_order(
+        &self,
+        indices: Option<&[usize]>,
+        predicate: impl Fn(&DocumentComment) -> bool,
+    ) -> usize {
+        match indices {
+            Some(indices) => indices.partition_point(|comment_index| {
+                self.comments.get(*comment_index).is_some_and(&predicate)
             }),
-            (Direction::Prev, None) => comments
-                .iter()
-                .rev()
-                .copied()
-                .find(|comment| comment.span.start < row),
+            None => self.comments.partition_point(predicate),
         }
     }
 
@@ -1285,15 +1390,16 @@ fn project_comments(
     selected_comment_id: Option<i64>,
     cursor: Option<RowIndex>,
 ) -> DocumentComments {
+    let source_rows = SourceRowIndex::new(rows);
     let projected = comments
         .iter()
         .filter(|comment| comment.file_path() == file_path)
-        .filter_map(|comment| project_comment(rows, comment))
+        .filter_map(|comment| project_comment(&source_rows, comment))
         .collect();
     DocumentComments::with_selection(projected, selected_comment_id, cursor)
 }
 
-fn project_comment(rows: &[DocumentRow], comment: &Comment) -> Option<DocumentComment> {
+fn project_comment(source_rows: &SourceRowIndex, comment: &Comment) -> Option<DocumentComment> {
     let mut matching_rows = Vec::new();
     for segment in comment
         .anchor()
@@ -1303,16 +1409,7 @@ fn project_comment(rows: &[DocumentRow], comment: &Comment) -> Option<DocumentCo
     {
         let start = u32::try_from(segment.line_start.max(1)).ok()?;
         let end = u32::try_from(segment.line_end.max(segment.line_start).max(1)).ok()?;
-        matching_rows.extend(rows.iter().enumerate().filter_map(|(idx, row)| {
-            let content = match row {
-                DocumentRow::Content(content) => content,
-                DocumentRow::Spacer => return None,
-            };
-            content
-                .source
-                .has_line_in_range(segment.side, start, end)
-                .then_some(RowIndex(idx))
-        }));
+        matching_rows.extend(source_rows.rows_for_range(segment.side, start, end));
     }
 
     matching_rows.sort();
@@ -2248,6 +2345,85 @@ mod tests {
             comments.marker_comments_by_row.get(&RowIndex(2)),
             Some(&vec![1])
         );
+        assert_eq!(comments.comments_by_id.get(&10), Some(&0));
+        assert_eq!(comments.comments_by_id.get(&20), Some(&1));
+        assert_eq!(comments.unresolved_comment_indices, vec![0, 1]);
+        assert_eq!(
+            comments.unresolved_comment_positions_by_id.get(&10),
+            Some(&0)
+        );
+        assert_eq!(
+            comments.unresolved_comment_positions_by_id.get(&20),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn document_comments_index_unresolved_navigation_order() {
+        let source_comments = vec![
+            document_comment(1, 0, 0),
+            DocumentComment {
+                resolved: true,
+                ..document_comment(2, 1, 1)
+            },
+            document_comment(3, 2, 2),
+        ];
+        let comments = DocumentComments::with_selection(source_comments.clone(), Some(1), None);
+
+        assert_eq!(comments.unresolved_comment_indices, vec![0, 2]);
+        assert_eq!(
+            comments
+                .next_unresolved_comment(RowIndex(0), Direction::Next)
+                .map(|comment| comment.id),
+            Some(3)
+        );
+        let comments = DocumentComments::with_selection(source_comments, Some(3), None);
+        assert_eq!(
+            comments
+                .next_unresolved_comment(RowIndex(2), Direction::Prev)
+                .map(|comment| comment.id),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn source_row_index_maps_source_lines_to_document_rows() {
+        let rows = vec![
+            DocumentRow::Content(content_row(
+                Some(10),
+                Some(20),
+                "same",
+                LineKind::Context,
+                &[],
+                &[],
+            )),
+            DocumentRow::Spacer,
+            DocumentRow::Content(side_content_row(
+                CommentAnchorSide::Base,
+                11,
+                "old",
+                LineKind::Deletion,
+                &[],
+            )),
+            DocumentRow::Content(side_content_row(
+                CommentAnchorSide::Head,
+                21,
+                "new",
+                LineKind::Addition,
+                &[],
+            )),
+        ];
+        let index = SourceRowIndex::new(&rows);
+
+        let base_rows: Vec<RowIndex> = index
+            .rows_for_range(CommentAnchorSide::Base, 10, 11)
+            .collect();
+        let head_rows: Vec<RowIndex> = index
+            .rows_for_range(CommentAnchorSide::Head, 20, 21)
+            .collect();
+
+        assert_eq!(base_rows, vec![RowIndex(0), RowIndex(2)]);
+        assert_eq!(head_rows, vec![RowIndex(0), RowIndex(3)]);
     }
 
     #[test]
