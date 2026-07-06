@@ -5,7 +5,6 @@ pub mod document;
 pub mod model;
 mod update;
 
-use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 
@@ -160,7 +159,7 @@ pub struct SavedFilePosition {
 pub struct App {
     pub state: AppState,
     pub config: Config,
-    active_document: RefCell<Option<ActiveDocument>>,
+    active_document: Option<ActiveDocument>,
     client: Option<Client>,
     config_path: Option<PathBuf>,
     pending_work: VecDeque<AppWork>,
@@ -177,7 +176,7 @@ impl App {
         Self {
             state,
             config,
-            active_document: RefCell::new(None),
+            active_document: None,
             client: None,
             config_path: None,
             pending_work: VecDeque::new(),
@@ -437,24 +436,24 @@ impl App {
         None
     }
 
-    pub fn model(&self) -> AppModel {
-        AppModel::from_state_with_active_document(&self.state, self.active_document_for_model())
+    pub fn model(&mut self) -> AppModel {
+        let active_document = self.active_document_for_model();
+        AppModel::from_state_with_active_document(&self.state, active_document)
     }
 
-    fn active_document_for_model(&self) -> Option<ActiveDocument> {
+    fn active_document_for_model(&mut self) -> Option<ActiveDocument> {
         let Some(key) = model::active_document_key(&self.state) else {
-            *self.active_document.borrow_mut() = None;
+            self.active_document = None;
             return None;
         };
         let file_path = key.file_id.clone();
         let needs_rebuild = self
             .active_document
-            .borrow()
             .as_ref()
             .is_none_or(|document| document.key != key);
         if needs_rebuild {
-            *self.active_document.borrow_mut() = model::build_active_document(&self.state, key);
-        } else if let Some(document) = self.active_document.borrow_mut().as_mut() {
+            self.active_document = model::build_active_document(&self.state, key);
+        } else if let Some(document) = self.active_document.as_mut() {
             document.refresh_overlays(
                 &file_path,
                 &self.state.comments,
@@ -468,7 +467,7 @@ impl App {
                 self.state.diff_search_query.as_deref(),
             );
         }
-        self.active_document.borrow().clone()
+        self.active_document.clone()
     }
 
     pub fn interaction_context(&self) -> InteractionContext {

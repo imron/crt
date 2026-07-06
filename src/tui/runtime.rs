@@ -372,8 +372,7 @@ impl Tui {
 
     /// Check if a mouse column is on the border between file list and diff panes.
     fn is_on_pane_border(&self, col: u16, row: u16) -> bool {
-        let model = self.app.model();
-        if !model.layout.file_list_visible || !model.layout.diff_visible {
+        if !self.app.state.show_file_list || !self.app.state.show_diff_pane {
             return false;
         }
         let border_col = self.tui_state.file_list_area.right().saturating_sub(1);

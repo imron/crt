@@ -3430,7 +3430,7 @@ mod tests {
 
     #[test]
     fn model_projects_core_ui_concepts() {
-        let app = App::new(
+        let mut app = App::new(
             Config::default(),
             test_context(),
             vec![file(
