@@ -3541,7 +3541,7 @@ mod tests {
             .pending_comment_anchor
             .as_ref()
             .expect("cross-hunk selection should capture anchor data");
-        assert_eq!(capture.segments.len(), 4);
+        assert_eq!(capture.segments.len(), 2);
         let base_segments: Vec<&CommentAnchorSegment> = capture
             .segments
             .iter()
@@ -3552,19 +3552,19 @@ mod tests {
             .iter()
             .filter(|segment| segment.side == CommentAnchorSide::Head)
             .collect();
+        assert_eq!(base_segments.len(), 1);
+        assert_eq!(head_segments.len(), 1);
+        assert_eq!(base_segments[0].line_start, 10);
+        assert_eq!(base_segments[0].line_end, 20);
         assert_eq!(
-            base_segments
-                .iter()
-                .map(|segment| (segment.line_start, segment.anchor_text.as_str()))
-                .collect::<Vec<_>>(),
-            vec![(10, "old first"), (20, "old second")]
+            base_segments[0].anchor_text,
+            "old first\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19\nold second"
         );
+        assert_eq!(head_segments[0].line_start, 10);
+        assert_eq!(head_segments[0].line_end, 20);
         assert_eq!(
-            head_segments
-                .iter()
-                .map(|segment| (segment.line_start, segment.anchor_text.as_str()))
-                .collect::<Vec<_>>(),
-            vec![(10, "new first"), (20, "new second")]
+            head_segments[0].anchor_text,
+            "new first\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19\nnew second"
         );
         assert_eq!(capture.file_path, "src/main.rs");
         assert_eq!(capture.line_start, 10);
