@@ -584,13 +584,7 @@ impl DocumentComments {
     }
 
     fn current_marker_comment(&self, row: RowIndex) -> Option<&DocumentComment> {
-        if let Some(current) = self.current_comment_id.and_then(|id| {
-            self.marker_comments_at(row)
-                .find(|comment| comment.id == id)
-        }) {
-            return Some(current);
-        }
-        preferred_comment(self.marker_comments_at(row))
+        preferred_marker_comment(self.marker_comments_at(row), row, self.current_comment_id)
     }
 
     fn comments_at(&self, row: RowIndex) -> impl Iterator<Item = &DocumentComment> {
@@ -1349,10 +1343,11 @@ fn current_comment_id_for_rows(
     }) {
         return Some(selected.id);
     }
-    preferred_comment(
+    preferred_current_comment(
         comments
             .iter()
             .filter(|comment| comment.span.contains(cursor)),
+        cursor,
     )
     .map(|comment| comment.id)
 }
@@ -1365,6 +1360,79 @@ fn preferred_comment<'a>(
         .max_by_key(|comment| (comment.span.start, comment.id))
 }
 
+fn preferred_current_comment<'a>(
+    candidates: impl IntoIterator<Item = &'a DocumentComment>,
+    row: RowIndex,
+) -> Option<&'a DocumentComment> {
+    candidates
+        .into_iter()
+        .max_by_key(|comment| current_comment_key(comment, row))
+}
+
+fn current_comment_key(comment: &DocumentComment, row: RowIndex) -> (u8, RowIndex, u8, i64) {
+    let kind = marker_kind(comment.marker_rows, row);
+    (
+        marker_category_priority(kind),
+        comment.span.start,
+        marker_kind_priority(kind),
+        comment.id,
+    )
+}
+
+fn preferred_marker_comment<'a>(
+    candidates: impl IntoIterator<Item = &'a DocumentComment>,
+    row: RowIndex,
+    current_comment_id: Option<i64>,
+) -> Option<&'a DocumentComment> {
+    let mut current_boundary = None;
+    let mut boundary = None;
+    let mut current_join = None;
+    let mut join = None;
+
+    for comment in candidates {
+        let kind = marker_kind(comment.marker_rows, row);
+        if Some(comment.id) == current_comment_id {
+            if is_boundary_marker(kind) {
+                current_boundary = preferred_marker_candidate(current_boundary, comment, row);
+                continue;
+            }
+            current_join = preferred_marker_candidate(current_join, comment, row);
+            continue;
+        }
+
+        if is_boundary_marker(kind) {
+            boundary = preferred_marker_candidate(boundary, comment, row);
+        } else {
+            join = preferred_marker_candidate(join, comment, row);
+        }
+    }
+
+    current_boundary.or(boundary).or(current_join).or(join)
+}
+
+fn preferred_marker_candidate<'a>(
+    existing: Option<&'a DocumentComment>,
+    candidate: &'a DocumentComment,
+    row: RowIndex,
+) -> Option<&'a DocumentComment> {
+    match existing {
+        Some(existing)
+            if marker_preference_key(existing, row) >= marker_preference_key(candidate, row) =>
+        {
+            Some(existing)
+        }
+        _ => Some(candidate),
+    }
+}
+
+fn marker_preference_key(comment: &DocumentComment, row: RowIndex) -> (RowIndex, u8, i64) {
+    (
+        comment.span.start,
+        marker_kind_priority(marker_kind(comment.marker_rows, row)),
+        comment.id,
+    )
+}
+
 fn marker_kind(rows: MarkerRows, row: RowIndex) -> CommentMarkerKind {
     if rows.start == rows.end {
         CommentMarkerKind::SingleLine
@@ -1375,6 +1443,22 @@ fn marker_kind(rows: MarkerRows, row: RowIndex) -> CommentMarkerKind {
     } else {
         CommentMarkerKind::Join
     }
+}
+
+fn marker_category_priority(kind: CommentMarkerKind) -> u8 {
+    if is_boundary_marker(kind) { 1 } else { 0 }
+}
+
+fn marker_kind_priority(kind: CommentMarkerKind) -> u8 {
+    match kind {
+        CommentMarkerKind::Join => 0,
+        CommentMarkerKind::Start | CommentMarkerKind::End => 1,
+        CommentMarkerKind::SingleLine => 2,
+    }
+}
+
+fn is_boundary_marker(kind: CommentMarkerKind) -> bool {
+    !matches!(kind, CommentMarkerKind::Join)
 }
 
 fn split_content_lines(content: Option<&str>) -> Vec<&str> {
@@ -1548,6 +1632,30 @@ mod tests {
             .comments
             .marker_for_row(RowIndex(row))
             .kind()
+    }
+
+    fn document_comment(id: i64, start: usize, end: usize) -> DocumentComment {
+        DocumentComment {
+            id,
+            span: RowSpan {
+                start: RowIndex(start),
+                end: RowIndex(end),
+            },
+            marker_rows: MarkerRows {
+                start: RowIndex(start),
+                end: RowIndex(end),
+            },
+            resolved: false,
+            selected: false,
+            current: false,
+        }
+    }
+
+    fn document_comments_at_cursor(
+        comments: Vec<DocumentComment>,
+        cursor: usize,
+    ) -> DocumentComments {
+        DocumentComments::with_selection(comments, None, Some(RowIndex(cursor)))
     }
 
     #[test]
@@ -2019,10 +2127,13 @@ mod tests {
             Some(CommentMarkerKind::SingleLine)
         );
         assert_eq!(marker_kind_at(&document, 1), Some(CommentMarkerKind::Start));
-        assert_eq!(marker_kind_at(&document, 2), Some(CommentMarkerKind::Join));
+        assert_eq!(
+            marker_kind_at(&document, 2),
+            Some(CommentMarkerKind::SingleLine)
+        );
         assert_eq!(marker_kind_at(&document, 3), Some(CommentMarkerKind::End));
         assert!(
-            document
+            !document
                 .overlays()
                 .comments
                 .marker_for_row(RowIndex(2))
@@ -2137,6 +2248,72 @@ mod tests {
             comments.marker_comments_by_row.get(&RowIndex(2)),
             Some(&vec![1])
         );
+    }
+
+    #[test]
+    fn current_comment_prefers_boundaries_then_highest_starting_row() {
+        let comments = vec![document_comment(1, 10, 20), document_comment(2, 15, 25)];
+
+        assert_eq!(
+            document_comments_at_cursor(comments.clone(), 14).current_comment_id(),
+            Some(1)
+        );
+        assert_eq!(
+            document_comments_at_cursor(comments.clone(), 15).current_comment_id(),
+            Some(2)
+        );
+        assert_eq!(
+            document_comments_at_cursor(comments.clone(), 19).current_comment_id(),
+            Some(2)
+        );
+        assert_eq!(
+            document_comments_at_cursor(comments.clone(), 20).current_comment_id(),
+            Some(1)
+        );
+        assert_eq!(
+            document_comments_at_cursor(comments, 21).current_comment_id(),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn inactive_boundary_marker_overrides_current_join_marker() {
+        let comments = document_comments_at_cursor(
+            vec![document_comment(1, 10, 20), document_comment(2, 15, 25)],
+            20,
+        );
+
+        let line_15_marker = comments.marker_for_row(RowIndex(15));
+        assert_eq!(line_15_marker.kind(), Some(CommentMarkerKind::Start));
+        assert!(!line_15_marker.is_current());
+
+        let line_20_marker = comments.marker_for_row(RowIndex(20));
+        assert_eq!(line_20_marker.kind(), Some(CommentMarkerKind::End));
+        assert!(line_20_marker.is_current());
+    }
+
+    #[test]
+    fn current_boundary_marker_overrides_inactive_nested_boundary() {
+        let comments = vec![
+            document_comment(1, 10, 20),
+            document_comment(2, 15, 25),
+            document_comment(3, 15, 15),
+        ];
+
+        let single_line_current = document_comments_at_cursor(comments.clone(), 15);
+        assert_eq!(single_line_current.current_comment_id(), Some(3));
+        let marker = single_line_current.marker_for_row(RowIndex(15));
+        assert_eq!(marker.kind(), Some(CommentMarkerKind::SingleLine));
+        assert!(marker.is_current());
+
+        let nested_range_current = document_comments_at_cursor(comments, 16);
+        assert_eq!(nested_range_current.current_comment_id(), Some(2));
+        let marker = nested_range_current.marker_for_row(RowIndex(15));
+        assert_eq!(marker.kind(), Some(CommentMarkerKind::Start));
+        assert!(marker.is_current());
+        let marker = nested_range_current.marker_for_row(RowIndex(16));
+        assert_eq!(marker.kind(), Some(CommentMarkerKind::Join));
+        assert!(marker.is_current());
     }
 
     #[test]
