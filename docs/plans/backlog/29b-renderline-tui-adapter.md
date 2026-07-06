@@ -27,7 +27,10 @@ Add the render boundary:
 ```rust
 pub enum RenderLine<'a> {
     Content(RenderContent<'a>),
-    Spacer,
+    Spacer {
+        marker: CommentMarker,
+        selected: bool,
+    },
 }
 
 pub struct RenderContent<'a> {
@@ -38,6 +41,17 @@ pub struct RenderContent<'a> {
     pub runs: Vec<TextRun<'a>>,
 }
 ```
+
+`RenderContent` describes source content rows. `RenderLine::Spacer` describes
+side-by-side alignment rows that have no source text, blame, or line kind.
+Spacer render lines may still carry overlay-only state:
+
+- `marker` keeps comment boundaries visually continuous through alignment
+  gaps.
+- `selected` lets visual line selections fill spacer rows.
+
+The TUI should render those spacer overlays, but it must not infer source,
+blame, or line-kind semantics from them.
 
 Add document render APIs:
 
@@ -88,7 +102,8 @@ Add renderer boundary tests for:
 - base rows render from `RenderLine`.
 - side-by-side renders the base document on the left and head document on the
   right.
-- spacer rows render blank content and do not expose source text.
+- spacer rows render no source text but can render overlay markers and
+  selection fill.
 - line kind styling is derived from `RenderContent.kind`.
 - blame is rendered only when `show_blame` is enabled and blame exists.
 - TUI rendering does not call old base/head source mapping helpers.

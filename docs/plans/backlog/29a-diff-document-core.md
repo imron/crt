@@ -129,7 +129,10 @@ the model and marker behavior should be tested in this slice.
 - `SideBySideDocument` contains two generic documents.
 - `SideBySideDocument.base.len() == SideBySideDocument.head.len()`.
 - Spacer rows are represented by `DocumentRow::Spacer`.
-- Spacer rows cannot contain source, text, blame, comments, or line kind.
+- Spacer rows cannot contain source, text, blame, owned comments, or line
+  kind.
+- Spacer rows can render overlay-only markers and selection state through
+  `RenderLine::Spacer`.
 - `DocumentKey` includes only structural inputs.
 - `DocumentKey` excludes cursor, scroll, comments, search, selection, and
   `show_blame`.
@@ -142,7 +145,8 @@ the model and marker behavior should be tested in this slice.
   the same comment id.
 - Selected/current comment precedence is computed by `DocumentComments`, not
   by the TUI.
-- `RenderContent.marker` can be produced from `DocumentComments`.
+- `RenderContent.marker` and `RenderLine::Spacer.marker` can be produced from
+  `DocumentComments`.
 
 ## Blame Rules
 
@@ -169,6 +173,8 @@ Add unit tests for:
 - side-by-side insertion/deletion/replacement rows insert spacers on the
   correct side.
 - spacer rows cannot expose content through `content_row`.
+- spacer render lines can expose comment markers and selection state without
+  exposing source content.
 - hunk spans and first-change rows match existing hunk navigation targets.
 - `Document::next_hunk` uses `HunkSpan.first_change`.
 - hunk navigation works in unified, base, head, and side-by-side documents.
