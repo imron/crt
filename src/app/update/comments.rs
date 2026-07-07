@@ -277,12 +277,4 @@ fn comment_display_span(state: &AppState, comment: &Comment) -> Option<RowSpan> 
         .active_document
         .as_ref()
         .and_then(|document| document.diff.comment_span(comment.id))
-        .or_else(|| {
-            CommentProjection::display_rows_for_comment(state, comment).map(|(start, end)| {
-                RowSpan {
-                    start: RowIndex(start),
-                    end: RowIndex(end),
-                }
-            })
-        })
 }

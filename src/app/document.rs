@@ -131,6 +131,24 @@ impl DiffDocument {
         }
     }
 
+    pub fn first_unresolved_comment(&self) -> Option<&DocumentComment> {
+        match self {
+            Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
+                document.first_unresolved_comment()
+            }
+            Self::SideBySide(document) => document.first_unresolved_comment(),
+        }
+    }
+
+    pub fn last_unresolved_comment(&self) -> Option<&DocumentComment> {
+        match self {
+            Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
+                document.last_unresolved_comment()
+            }
+            Self::SideBySide(document) => document.last_unresolved_comment(),
+        }
+    }
+
     pub fn hunk_spans(&self) -> &[HunkSpan] {
         match self {
             Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
@@ -308,6 +326,22 @@ impl SideBySideDocument {
             self.base.next_unresolved_comment(row, direction),
             self.head.next_unresolved_comment(row, direction),
             direction,
+        )
+    }
+
+    pub fn first_unresolved_comment(&self) -> Option<&DocumentComment> {
+        preferred_navigation_comment(
+            self.base.first_unresolved_comment(),
+            self.head.first_unresolved_comment(),
+            Direction::Next,
+        )
+    }
+
+    pub fn last_unresolved_comment(&self) -> Option<&DocumentComment> {
+        preferred_navigation_comment(
+            self.base.last_unresolved_comment(),
+            self.head.last_unresolved_comment(),
+            Direction::Prev,
         )
     }
 
@@ -497,6 +531,14 @@ impl Document {
         self.overlays
             .comments
             .next_unresolved_comment(row, direction)
+    }
+
+    pub fn first_unresolved_comment(&self) -> Option<&DocumentComment> {
+        self.overlays.comments.first_unresolved_comment()
+    }
+
+    pub fn last_unresolved_comment(&self) -> Option<&DocumentComment> {
+        self.overlays.comments.last_unresolved_comment()
     }
 
     pub fn next_hunk(&self, row: RowIndex, direction: Direction) -> Option<RowIndex> {
@@ -855,7 +897,7 @@ impl DocumentComments {
         selected_comment_id: Option<i64>,
         cursor: Option<RowIndex>,
     ) -> Self {
-        comments.sort_by_key(|comment| (comment.span.start, comment.id));
+        comments.sort_by_key(|comment| (comment.span.start, comment.span.end, comment.id));
         let comments_by_id = comments
             .iter()
             .enumerate()
@@ -978,6 +1020,18 @@ impl DocumentComments {
             Some(&self.unresolved_comment_indices),
             selected_position,
         )
+    }
+
+    pub fn first_unresolved_comment(&self) -> Option<&DocumentComment> {
+        self.unresolved_comment_indices
+            .first()
+            .and_then(|index| self.comments.get(*index))
+    }
+
+    pub fn last_unresolved_comment(&self) -> Option<&DocumentComment> {
+        self.unresolved_comment_indices
+            .last()
+            .and_then(|index| self.comments.get(*index))
     }
 
     fn next_in_comment_order(

@@ -143,17 +143,19 @@ pub fn apply_diff_cursor_effect(
 }
 
 fn clamp_diff_scroll(state: &mut AppState, view: &impl AppViewport) {
-    if view.diff_content_height() == 0 {
+    let content_height = diff_content_height(state, view);
+    if content_height == 0 {
         return;
     }
-    state.diff_scroll = state.diff_scroll.min(view.max_diff_scroll());
+    state.diff_scroll = state.diff_scroll.min(content_height.saturating_sub(1));
 }
 
 pub fn clamp_cursor_and_scroll(state: &mut AppState, view: &impl AppViewport) {
-    if view.diff_content_height() == 0 {
+    let content_height = diff_content_height(state, view);
+    if content_height == 0 {
         return;
     }
-    let max = view.max_diff_scroll();
+    let max = content_height.saturating_sub(1);
     state.diff_line_cursor = state.diff_line_cursor.min(max);
     if state.diff_line_cursor < state.diff_scroll {
         state.diff_scroll = state.diff_line_cursor;
@@ -166,6 +168,14 @@ pub fn clamp_cursor_and_scroll(state: &mut AppState, view: &impl AppViewport) {
             .saturating_sub(view.diff_view_height() - 1);
     }
     clamp_diff_scroll(state, view);
+}
+
+fn diff_content_height(state: &AppState, view: &impl AppViewport) -> usize {
+    state
+        .active_document
+        .as_ref()
+        .map(|document| document.diff.len())
+        .unwrap_or_else(|| view.diff_content_height())
 }
 
 fn clamp_col_cursor(state: &mut AppState, view: &impl AppViewport) {
