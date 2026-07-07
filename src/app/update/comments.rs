@@ -2,7 +2,6 @@ use super::cursor::clamp_cursor_and_scroll;
 use super::output::AppOutput;
 use super::viewport::{AppViewport, active_diff_content_height};
 use crate::app::document::{RowIndex, RowSpan};
-use crate::app::model::CommentProjection;
 use crate::app::{AppState, FileListSectionFocus};
 use crate::core::CommentsPanelEffect;
 use crate::core::navigation::Direction;
@@ -20,18 +19,7 @@ pub fn current_comment(state: &AppState) -> Option<&Comment> {
     let comment_id = state
         .active_document
         .as_ref()
-        .and_then(|document| document.document().diff.current_comment_id())
-        .or_else(|| {
-            let path = selected_path(state)?;
-            let line = CommentProjection::current_visible_line(state)?;
-            CommentProjection::current_comment_id_for_line(
-                &state.comments,
-                path,
-                i64::from(line),
-                CommentProjection::current_comment_side(state),
-                state.selected_comment_id,
-            )
-        })?;
+        .and_then(|document| document.document().diff.current_comment_id())?;
     state
         .comments
         .iter()
@@ -263,12 +251,6 @@ pub fn ensure_selected_comment(state: &mut AppState) {
 fn selected_comment(state: &AppState) -> Option<&Comment> {
     let id = state.selected_comment_id?;
     state.comments.iter().find(|comment| comment.id == id)
-}
-
-fn selected_path(state: &AppState) -> Option<&str> {
-    state
-        .selected_file_entry()
-        .map(|entry| entry.change.path.as_str())
 }
 
 fn comment_display_span(state: &AppState, comment: &Comment) -> Option<RowSpan> {

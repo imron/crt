@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
-use crate::app::model::{BlameLine, CommentMarker, CommentMarkerKind};
+use crate::app::model::BlameLine;
 use crate::config::DiffAlgorithm;
 use crate::core::navigation::Direction;
 use crate::review_types::{
@@ -63,6 +63,51 @@ impl From<&str> for ContentId {
 impl From<String> for ContentId {
     fn from(value: String) -> Self {
         Self(value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CommentMarker {
+    kind: Option<CommentMarkerKind>,
+    resolved: bool,
+    current: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CommentMarkerKind {
+    SingleLine,
+    Start,
+    End,
+    Join,
+}
+
+impl CommentMarker {
+    pub fn none() -> Self {
+        Self {
+            kind: None,
+            resolved: false,
+            current: false,
+        }
+    }
+
+    pub fn new(kind: CommentMarkerKind, resolved: bool, current: bool) -> Self {
+        Self {
+            kind: Some(kind),
+            resolved,
+            current,
+        }
+    }
+
+    pub fn is_current(&self) -> bool {
+        self.current
+    }
+
+    pub fn is_resolved(&self) -> bool {
+        self.resolved
+    }
+
+    pub fn kind(&self) -> Option<CommentMarkerKind> {
+        self.kind
     }
 }
 

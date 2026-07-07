@@ -8,8 +8,8 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use super::super::state::TuiState;
 use crate::app::document::{
-    BlameInfo, DiffDocument, Document, DocumentRow, RenderContent, RenderLine, SourceLocation,
-    TextRunKind,
+    BlameInfo, CommentMarker, CommentMarkerKind, DiffDocument, Document, DocumentRow,
+    RenderContent, RenderLine, SourceLocation, TextRunKind,
 };
 use crate::app::model::{AppModel, ReviewStatus};
 use crate::config::StyleConfig;
@@ -793,15 +793,11 @@ fn line_style(kind: LineKind, styles: &StyleConfig, is_cursor: bool) -> Style {
     }
 }
 
-fn marker_text(marker: crate::app::model::CommentMarker) -> String {
+fn marker_text(marker: CommentMarker) -> String {
     match marker.kind() {
         None => " ".to_string(),
-        Some(crate::app::model::CommentMarkerKind::Join) => "┃".to_string(),
-        Some(
-            crate::app::model::CommentMarkerKind::SingleLine
-            | crate::app::model::CommentMarkerKind::Start
-            | crate::app::model::CommentMarkerKind::End,
-        ) => {
+        Some(CommentMarkerKind::Join) => "┃".to_string(),
+        Some(CommentMarkerKind::SingleLine | CommentMarkerKind::Start | CommentMarkerKind::End) => {
             if marker.is_resolved() {
                 "○".to_string()
             } else {
@@ -898,7 +894,6 @@ mod tests {
 
     use super::*;
     use crate::app::document::{BlameInfo, RenderContent, SourceLocation, TextRun};
-    use crate::app::model::CommentMarker;
 
     fn plain_content(
         source: SourceLocation,

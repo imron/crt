@@ -51,18 +51,6 @@ pub trait SearchService {
     ) -> Result<review_types::FindDefinitionResult>;
 }
 
-pub trait NavigationService {
-    fn map_new_to_old_line(&self, entry: &review_types::FileEntry, new_line: usize) -> usize;
-    fn map_old_to_new_line(&self, entry: &review_types::FileEntry, old_line: usize) -> usize;
-    fn estimate_line_from_display_row(
-        &self,
-        entry: &review_types::FileEntry,
-        display_row: usize,
-        hunk_starts: &[usize],
-        hunk_ends: &[usize],
-    ) -> usize;
-}
-
 pub trait RepoQueryService {
     fn repo_root(&self, path: &Path) -> Result<String>;
 }

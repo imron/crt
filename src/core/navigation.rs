@@ -1,7 +1,5 @@
 //! Navigation rules shared by UI adapters.
 
-use crate::review_types::FileEntry;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Next,
@@ -12,40 +10,6 @@ pub enum Direction {
 pub enum FileNavigationScope {
     DiffPane,
     FileListPane,
-}
-
-pub fn map_new_to_old_line(entry: Option<&FileEntry>, new_line: usize) -> usize {
-    let Some(entry) = entry else {
-        return new_line;
-    };
-
-    let mut offset: i64 = 0;
-    for hunk in &entry.diff.hunks {
-        if (hunk.new_start as usize) > new_line {
-            break;
-        }
-        offset = (hunk.old_start as i64 + hunk.old_lines as i64)
-            - (hunk.new_start as i64 + hunk.new_lines as i64);
-    }
-
-    (new_line as i64 + offset).max(1) as usize
-}
-
-pub fn map_old_to_new_line(entry: Option<&FileEntry>, old_line: usize) -> usize {
-    let Some(entry) = entry else {
-        return old_line;
-    };
-
-    let mut offset: i64 = 0;
-    for hunk in &entry.diff.hunks {
-        if (hunk.old_start as usize) > old_line {
-            break;
-        }
-        offset = (hunk.new_start as i64 + hunk.new_lines as i64)
-            - (hunk.old_start as i64 + hunk.old_lines as i64);
-    }
-
-    (old_line as i64 + offset).max(1) as usize
 }
 
 pub fn navigate_file(
@@ -131,45 +95,6 @@ pub fn scroll_to_show_hunk(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review_types::{
-        ChangeKind, DiffContent, DiffHunk, DiffLine, FileChange, ReviewStatus,
-    };
-
-    fn entry() -> FileEntry {
-        FileEntry {
-            change: FileChange {
-                path: "a.rs".to_string(),
-                old_path: None,
-                kind: ChangeKind::Modified,
-            },
-            status: ReviewStatus::Unreviewed,
-            diff: DiffContent {
-                hunks: vec![DiffHunk {
-                    old_start: 10,
-                    old_lines: 5,
-                    new_start: 10,
-                    new_lines: 3,
-                    header: String::new(),
-                    lines: vec![DiffLine {
-                        kind: crate::review_types::LineKind::Context,
-                        content: String::new(),
-                        old_lineno: Some(10),
-                        new_lineno: Some(10),
-                    }],
-                }],
-                is_binary: false,
-                diff_hash: "hash".to_string(),
-            },
-        }
-    }
-
-    #[test]
-    fn maps_new_and_old_lines_across_hunk_offsets() {
-        let file = entry();
-
-        assert_eq!(map_new_to_old_line(Some(&file), 20), 22);
-        assert_eq!(map_old_to_new_line(Some(&file), 20), 18);
-    }
 
     #[test]
     fn file_navigation_cycles_unreviewed_in_diff_pane() {

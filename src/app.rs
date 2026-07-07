@@ -1,6 +1,5 @@
 //! Application state and input dispatch.
 
-pub mod diff_rows;
 pub mod document;
 pub mod model;
 mod update;
@@ -4773,6 +4772,7 @@ mod tests {
         app.state.head_content = Some("one\ntwo\nthree\n".to_string());
         app.state.show_comments_panel = true;
         app.state.diff_line_cursor = 1;
+        app.state.ensure_active_document();
 
         let model = app.model();
 
@@ -4782,6 +4782,7 @@ mod tests {
         assert_eq!(model.comments_panel.total, 2);
 
         app.state.diff_line_cursor = 0;
+        app.state.ensure_active_document();
         let model = app.model();
 
         assert!(model.comments_panel.comments.is_empty());
@@ -5190,6 +5191,7 @@ mod tests {
         move_comment_head_range(&mut inner, 11, 11);
         app.state.comments = vec![outer, inner];
         app.state.diff_line_cursor = 10;
+        app.state.ensure_active_document();
 
         let context = app.interaction_context();
 
@@ -5232,6 +5234,7 @@ mod tests {
             .0;
 
         app.state.selected_comment_id = None;
+        app.state.ensure_active_document();
         let default_context = app.interaction_context();
         assert_eq!(
             default_context.current_comment.map(|comment| comment.id),
@@ -5239,6 +5242,7 @@ mod tests {
         );
 
         app.state.selected_comment_id = Some(33);
+        app.state.ensure_active_document();
         let selected_context = app.interaction_context();
         assert_eq!(
             selected_context.current_comment.map(|comment| comment.id),
