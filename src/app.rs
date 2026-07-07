@@ -2753,6 +2753,85 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_comment_shortcut_cross_file_uses_target_document_row() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![
+                test_file("a.rs"),
+                test_file_with_offset_multiline_replacement_hunk("b.rs"),
+            ],
+        );
+        let mut current = stored_comment(1, "a.rs");
+        move_comment_head_range(&mut current, 2, 2);
+        let mut next_file = stored_comment(2, "b.rs");
+        move_comment_to_base_head_ranges(&mut next_file, 26, 26, 27, 28);
+        app.state.comments = vec![current, next_file];
+        app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
+        app.state.content_mode = ContentMode::Diff;
+        app.state.render_variant = RenderVariant::Inline;
+        app.state.diff_line_cursor = 1;
+        app.state.selected_comment_id = Some(1);
+        app.state.ensure_active_document();
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 12]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+
+        let document = app
+            .state
+            .active_document
+            .as_ref()
+            .expect("target file should have an active document");
+        let Some(span) = document.diff.comment_span(2) else {
+            panic!("target comment should be projected into the active document");
+        };
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "b.rs");
+        assert_eq!(app.state.selected_comment_id, Some(2));
+        assert_eq!(app.state.diff_line_cursor, span.start.0);
+        assert_eq!(span.start.0, 0);
+    }
+
+    #[test]
+    fn unresolved_comment_shortcut_cross_file_does_not_use_source_row_for_hidden_comment() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![
+                test_file("a.rs"),
+                test_file_with_offset_multiline_replacement_hunk("b.rs"),
+            ],
+        );
+        let mut current = stored_comment(1, "a.rs");
+        move_comment_head_range(&mut current, 2, 2);
+        let mut hidden = stored_comment(2, "b.rs");
+        move_comment_head_range(&mut hidden, 40, 40);
+        app.state.comments = vec![current, hidden];
+        app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
+        app.state.content_mode = ContentMode::Diff;
+        app.state.render_variant = RenderVariant::Inline;
+        app.state.diff_line_cursor = 1;
+        app.state.selected_comment_id = Some(1);
+        app.state.ensure_active_document();
+
+        let output = app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 12]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "b.rs");
+        assert_eq!(app.state.selected_comment_id, Some(2));
+        assert_ne!(app.state.diff_line_cursor, 39);
+        assert_eq!(
+            output.status,
+            Some(StatusUpdate::Set(
+                "Comment is not visible in this view".to_string()
+            ))
+        );
+    }
+
+    #[test]
     fn unresolved_comment_shortcut_prev_skips_current_multiline_range() {
         let mut app = App::new(Config::default(), test_context(), vec![test_file("a.rs")]);
         let mut previous = stored_comment(1, "a.rs");
@@ -4426,6 +4505,41 @@ mod tests {
         assert_eq!(app.state.selected_comment_id, Some(7));
         assert_eq!(app.state.diff_line_cursor, 26);
         assert_eq!(app.state.diff_scroll, 20);
+    }
+
+    #[test]
+    fn comment_navigation_keeps_visible_comment_on_screen_without_scrolling() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        let mut comment = stored_comment(7, "src/main.rs");
+        move_comment_head_range(&mut comment, 8, 9);
+        app.state.comments = vec![comment];
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::HeadVersion;
+        app.state.head_content = Some(
+            (1..=30)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.state.diff_scroll = 5;
+        app.state.diff_line_cursor = 5;
+        let lines: Vec<String> = (1..=30).map(|n| n.to_string()).collect();
+        let view = RenderedViewport { lines };
+
+        app.apply_core_effects(
+            &view,
+            vec![CoreEffect::CommentsPanel(
+                CommentsPanelEffect::NavigateNextComment,
+            )],
+        );
+
+        assert_eq!(app.state.selected_comment_id, Some(7));
+        assert_eq!(app.state.diff_line_cursor, 7);
+        assert_eq!(app.state.diff_scroll, 5);
     }
 
     #[test]
