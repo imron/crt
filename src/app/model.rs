@@ -16,8 +16,8 @@ use crate::app::document::{
     VisibleSelection as DocumentVisibleSelection,
 };
 use crate::app::{
-    AppState, CommentAnchorCapture, FileListSectionFocus, VisualSelection as StateVisualSelection,
-    VisualSelectionMode,
+    ActiveDocumentState, AppState, CommentAnchorCapture, FileListSectionFocus,
+    VisualSelection as StateVisualSelection, VisualSelectionMode,
 };
 use crate::config::DiffAlgorithm;
 use crate::core::TextAnchor;
@@ -33,7 +33,7 @@ pub struct AppModel<'a> {
     pub layout: AppLayout,
     pub file_list: FileList,
     pub diff: DiffPanel,
-    pub active_document: Option<&'a ActiveDocument>,
+    pub active_document: Option<&'a ActiveDocumentState>,
     pub comments_panel: CommentsPanel,
     pub focus: PaneFocus,
     pub search_results: Option<SearchResultsOverlay>,
@@ -1406,6 +1406,20 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
         .unwrap_or_default();
     let comment_markers =
         comment_marker_set_for_current_view(state, &comments, &inline_rows, &side_by_side_rows);
+    let document_scroll = state
+        .active_document
+        .as_ref()
+        .map_or(state.diff_scroll, |active| active.scroll().0);
+    let document_cursor = state.active_document.as_ref().map_or(
+        TextAnchor {
+            line: state.diff_line_cursor,
+            column: state.diff_col_cursor,
+        },
+        |active| TextAnchor {
+            line: active.cursor().row.0,
+            column: active.cursor().column.0,
+        },
+    );
 
     DiffPanel {
         selected_file_index: selected.map(|_| state.selected_file),
@@ -1431,11 +1445,8 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
         base_content: state.base_content.clone(),
         head_blame: state.head_blame.clone(),
         base_blame: state.base_blame.clone(),
-        scroll: state.diff_scroll,
-        cursor: TextAnchor {
-            line: state.diff_line_cursor,
-            column: state.diff_col_cursor,
-        },
+        scroll: document_scroll,
+        cursor: document_cursor,
         search_query: state.diff_search_query.clone(),
         search_highlights: state
             .diff_search_matches
@@ -1640,7 +1651,7 @@ fn comments_panel_model(state: &AppState) -> CommentsPanel {
     let active_document_comment_id = state
         .active_document
         .as_ref()
-        .and_then(|document| document.diff.current_comment_id());
+        .and_then(|document| document.document().diff.current_comment_id());
     let current_line = active_document_comment_id
         .is_none()
         .then(|| current_visible_line(state).map(i64::from))
@@ -3299,19 +3310,20 @@ mod tests {
             model
                 .active_document
                 .as_ref()
-                .map(|document| document.key.file_id.as_str()),
+                .map(|document| document.document().key.file_id.as_str()),
             Some("src/main.rs")
         );
         assert_eq!(
-            model
-                .active_document
-                .as_ref()
-                .map(|document| document.key.diff_hash.as_str()),
+            model.active_document.as_ref().map(|document| document
+                .document()
+                .key
+                .diff_hash
+                .as_str()),
             Some("hash-src/main.rs")
         );
         assert_eq!(model.diff.search_query, Some("run".to_string()));
         let active_document = model.active_document.as_ref().expect("active document");
-        let DiffDocument::Unified(document) = &active_document.diff else {
+        let DiffDocument::Unified(document) = &active_document.document().diff else {
             panic!("expected unified active document");
         };
         assert_eq!(

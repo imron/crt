@@ -20,7 +20,7 @@ pub fn current_comment(state: &AppState) -> Option<&Comment> {
     let comment_id = state
         .active_document
         .as_ref()
-        .and_then(|document| document.diff.current_comment_id())
+        .and_then(|document| document.document().diff.current_comment_id())
         .or_else(|| {
             let path = selected_path(state)?;
             let line = CommentProjection::current_visible_line(state)?;
@@ -138,7 +138,7 @@ fn navigate_adjacent_comment(state: &mut AppState, view: &impl AppViewport, dire
     let Some(comment_id) = state
         .active_document
         .as_ref()
-        .and_then(|document| document.diff.next_comment(row, direction))
+        .and_then(|document| document.document().diff.next_comment(row, direction))
         .map(|comment| comment.id)
     else {
         return;
@@ -152,6 +152,7 @@ fn select_adjacent(state: &mut AppState, direction: Direction) {
         .as_ref()
         .and_then(|document| {
             document
+                .document()
                 .diff
                 .next_comment(RowIndex(state.diff_line_cursor), direction)
         })
@@ -274,5 +275,5 @@ fn comment_display_span(state: &AppState, comment: &Comment) -> Option<RowSpan> 
     state
         .active_document
         .as_ref()
-        .and_then(|document| document.diff.comment_span(comment.id))
+        .and_then(|document| document.document().diff.comment_span(comment.id))
 }

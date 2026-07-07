@@ -147,6 +147,33 @@ pub struct SavedFilePosition {
     pub render_variant: RenderVariant,
 }
 
+/// Active document projection plus state expressed in that document's row space.
+#[derive(Debug, Clone)]
+pub struct ActiveDocumentState {
+    document: document::ActiveDocument,
+    scroll: document::RowIndex,
+    cursor: document::DocumentPosition,
+    visual_selection: Option<VisualSelection>,
+}
+
+impl ActiveDocumentState {
+    pub fn document(&self) -> &document::ActiveDocument {
+        &self.document
+    }
+
+    pub fn scroll(&self) -> document::RowIndex {
+        self.scroll
+    }
+
+    pub fn cursor(&self) -> document::DocumentPosition {
+        self.cursor
+    }
+
+    pub fn visual_selection(&self) -> Option<&VisualSelection> {
+        self.visual_selection.as_ref()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Application state
 // ---------------------------------------------------------------------------
@@ -1007,8 +1034,8 @@ pub struct AppState {
     pub head_blame: Vec<model::BlameLine>,
     /// Blame data for the base version of the current file.
     pub base_blame: Vec<model::BlameLine>,
-    /// Cached active document projection for the selected diff view.
-    pub active_document: Option<document::ActiveDocument>,
+    /// Cached active document projection and document-local state.
+    pub active_document: Option<ActiveDocumentState>,
     /// Jump stack for Ctrl-] / Ctrl-t navigation.
     pub jump_stack: Vec<JumpLocation>,
     /// Active diff search query (the confirmed search term).
@@ -1102,9 +1129,10 @@ impl AppState {
     }
 
     pub fn rebuild_active_document(&mut self) {
-        self.active_document = self
-            .current_document_key()
-            .and_then(|key| model::build_active_document(self, key));
+        self.active_document = self.current_document_key().and_then(|key| {
+            model::build_active_document(self, key)
+                .map(|document| self.active_document_state(document))
+        });
     }
 
     pub fn ensure_active_document(&mut self) {
@@ -1115,11 +1143,24 @@ impl AppState {
         let needs_rebuild = self
             .active_document
             .as_ref()
-            .is_none_or(|document| document.key != key);
+            .is_none_or(|active| active.document().key != key);
         if needs_rebuild {
-            self.active_document = model::build_active_document(self, key);
+            self.active_document = model::build_active_document(self, key)
+                .map(|document| self.active_document_state(document));
         } else {
             self.refresh_document_overlays();
+        }
+    }
+
+    fn active_document_state(&self, document: document::ActiveDocument) -> ActiveDocumentState {
+        ActiveDocumentState {
+            document,
+            scroll: document::RowIndex(self.diff_scroll),
+            cursor: document::DocumentPosition {
+                row: document::RowIndex(self.diff_line_cursor),
+                column: document::ColumnIndex(self.diff_col_cursor),
+            },
+            visual_selection: self.visual_selection.clone(),
         }
     }
 
@@ -1131,10 +1172,16 @@ impl AppState {
             self.active_document = None;
             return;
         };
-        let Some(document) = self.active_document.as_mut() else {
+        let Some(active) = self.active_document.as_mut() else {
             return;
         };
-        document.refresh_overlays(
+        active.scroll = document::RowIndex(self.diff_scroll);
+        active.cursor = document::DocumentPosition {
+            row: document::RowIndex(self.diff_line_cursor),
+            column: document::ColumnIndex(self.diff_col_cursor),
+        };
+        active.visual_selection = self.visual_selection.clone();
+        active.document.refresh_overlays(
             &file_path,
             &self.comments,
             self.selected_comment_id,
@@ -2182,7 +2229,7 @@ mod tests {
         state
             .active_document
             .as_ref()
-            .map(|document| document.diff.len())
+            .map(|document| document.document().diff.len())
             .unwrap_or(0)
     }
 
@@ -2191,12 +2238,14 @@ mod tests {
             .active_document
             .as_ref()
             .expect("active document")
+            .document()
             .key
             .clone();
-        state.active_document = Some(document::ActiveDocument {
+        let document = document::ActiveDocument {
             key,
             diff: document::DiffDocument::Unified(document::Document::new(Vec::new(), Vec::new())),
-        });
+        };
+        state.active_document = Some(state.active_document_state(document));
     }
 
     #[test]
@@ -2222,10 +2271,11 @@ mod tests {
 
         assert!(app.state.active_document.is_some());
         assert_eq!(
-            app.state
-                .active_document
-                .as_ref()
-                .map(|document| document.key.file_id.as_str()),
+            app.state.active_document.as_ref().map(|document| document
+                .document
+                .key
+                .file_id
+                .as_str()),
             Some("src/lib.rs")
         );
         assert!(active_document_len(&app.state) > 0);
@@ -2248,6 +2298,7 @@ mod tests {
             .active_document
             .as_ref()
             .expect("active document")
+            .document()
             .key
             .clone();
 
@@ -2257,8 +2308,42 @@ mod tests {
         );
 
         let active_document = app.state.active_document.as_ref().expect("active document");
-        assert_ne!(active_document.key, original_key);
-        assert_eq!(active_document.key.file_id, "src/b.rs");
+        assert_ne!(active_document.document().key, original_key);
+        assert_eq!(active_document.document().key.file_id, "src/b.rs");
+    }
+
+    #[test]
+    fn active_document_state_tracks_document_local_state() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_hunk("src/lib.rs")],
+        );
+        app.state.on_file_changed();
+        app.state.diff_scroll = 3;
+        app.state.diff_line_cursor = 4;
+        app.state.diff_col_cursor = 2;
+        app.state.visual_selection = Some(VisualSelection {
+            mode: VisualSelectionMode::Text,
+            start: TextAnchor { line: 1, column: 2 },
+            end: TextAnchor { line: 4, column: 8 },
+        });
+
+        app.state.ensure_active_document();
+
+        let active_document = app.state.active_document.as_ref().expect("active document");
+        assert_eq!(active_document.scroll(), document::RowIndex(3));
+        assert_eq!(
+            active_document.cursor(),
+            document::DocumentPosition {
+                row: document::RowIndex(4),
+                column: document::ColumnIndex(2),
+            }
+        );
+        assert_eq!(
+            active_document.visual_selection(),
+            app.state.visual_selection.as_ref()
+        );
     }
 
     #[test]
@@ -2275,12 +2360,15 @@ mod tests {
         app.state.ensure_active_document();
 
         let active_document = app.state.active_document.as_ref().expect("active document");
-        assert_eq!(active_document.key.content_mode, ContentMode::Diff);
         assert_eq!(
-            active_document.key.render_variant,
+            active_document.document().key.content_mode,
+            ContentMode::Diff
+        );
+        assert_eq!(
+            active_document.document().key.render_variant,
             RenderVariant::SideBySide
         );
-        assert!(active_document.diff.len() > 0);
+        assert!(active_document.document().diff.len() > 0);
     }
 
     #[test]
@@ -2324,8 +2412,8 @@ mod tests {
         app.state.ensure_active_document();
 
         let active_document = app.state.active_document.as_ref().expect("active document");
-        assert!(active_document.key.show_blame);
-        assert!(active_document.diff.len() > 0);
+        assert!(active_document.document().key.show_blame);
+        assert!(active_document.document().diff.len() > 0);
     }
 
     #[test]
@@ -2344,7 +2432,7 @@ mod tests {
             model
                 .active_document
                 .as_ref()
-                .map(|document| document.diff.len()),
+                .map(|document| document.document().diff.len()),
             Some(0)
         );
     }
@@ -2900,7 +2988,7 @@ mod tests {
             .active_document
             .as_ref()
             .expect("target file should have an active document");
-        let Some(span) = document.diff.comment_span(2) else {
+        let Some(span) = document.document().diff.comment_span(2) else {
             panic!("target comment should be projected into the active document");
         };
         assert_eq!(app.state.files[app.state.selected_file].change.path, "b.rs");
@@ -4587,7 +4675,7 @@ mod tests {
             .state
             .active_document
             .as_ref()
-            .and_then(|active| match &active.diff {
+            .and_then(|active| match &active.document().diff {
                 document::DiffDocument::Unified(document) => document
                     .rows()
                     .iter()

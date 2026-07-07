@@ -51,6 +51,7 @@ pub fn draw(
         reset_tui_document_state(tui_state);
         return;
     };
+    let document = active_document.document();
 
     if matches!(diff.review_status, Some(ReviewStatus::Reviewed { .. }))
         && !diff.reviewed_diff_expanded
@@ -67,26 +68,26 @@ pub fn draw(
         return;
     }
 
-    let hunk_spans = active_document.diff.hunk_spans();
+    let hunk_spans = document.diff.hunk_spans();
     tui_state.hunk_start_rows = hunk_spans
         .iter()
         .map(|span| span.full_span.start.0)
         .collect();
     tui_state.hunk_end_rows = hunk_spans.iter().map(|span| span.full_span.end.0).collect();
     tui_state.hunk_first_change_rows = hunk_spans.iter().map(|span| span.first_change.0).collect();
-    tui_state.diff_content_height = active_document.diff.len();
+    tui_state.diff_content_height = document.diff.len();
 
-    if tui_state.document_diff_rendered_text_key.as_ref() != Some(&active_document.key) {
-        tui_state.diff_rendered_text = rendered_text(&active_document.diff, diff.show_blame);
-        tui_state.document_diff_rendered_text_key = Some(active_document.key.clone());
+    if tui_state.document_diff_rendered_text_key.as_ref() != Some(&document.key) {
+        tui_state.diff_rendered_text = rendered_text(&document.diff, diff.show_blame);
+        tui_state.document_diff_rendered_text_key = Some(document.key.clone());
     }
 
-    let layout = DocumentLayout::new(&active_document.diff, diff.show_blame, inner_w);
+    let layout = DocumentLayout::new(&document.diff, diff.show_blame, inner_w);
     tui_state.diff_gutter_cols = layout.gutter_cols;
     tui_state.diff_content_start_col = layout.content_start_col;
 
     let visible = visible_lines(
-        &active_document.diff,
+        &document.diff,
         diff,
         styles,
         &layout,

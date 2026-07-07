@@ -491,6 +491,7 @@ pub fn navigate_unresolved_comment_from_cursor(
         .as_ref()
         .and_then(|document| {
             document
+                .document()
                 .diff
                 .next_unresolved_comment(RowIndex(state.diff_line_cursor), dir)
         })
@@ -514,7 +515,7 @@ pub fn selected_comment_visible_in_current_view(state: &AppState) -> bool {
     state
         .active_document
         .as_ref()
-        .is_none_or(|document| document.diff.comment_span(id).is_some())
+        .is_none_or(|document| document.document().diff.comment_span(id).is_some())
 }
 
 fn activate_unresolved_comment(state: &mut AppState, view: &impl AppViewport, comment_id: i64) {
@@ -545,8 +546,8 @@ fn activate_unresolved_comment_target(
         .active_document
         .as_ref()
         .and_then(|document| match dir {
-            Direction::Next => document.diff.first_unresolved_comment(),
-            Direction::Prev => document.diff.last_unresolved_comment(),
+            Direction::Next => document.document().diff.first_unresolved_comment(),
+            Direction::Prev => document.document().diff.last_unresolved_comment(),
         })
         .map(|comment| comment.id)
         .unwrap_or(target.comment_id);
