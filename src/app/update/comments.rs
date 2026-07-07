@@ -240,21 +240,30 @@ fn scroll_to_comment(
         return;
     }
 
+    let content_height = active_diff_content_height(state, view);
+    if content_height == 0 {
+        return;
+    }
+    let max_full_view_scroll = content_height.saturating_sub(view_height);
     let comment_height = end_row.saturating_sub(start_row).saturating_add(1);
     let scroll = if comment_height <= view_height {
-        let max_full_view_scroll = view.diff_content_height().saturating_sub(view_height);
         end_row
             .saturating_add(2)
             .saturating_sub(view_height)
             .min(max_full_view_scroll)
     } else {
-        let max_start_offset = view_height / 2;
-        start_row
-            .saturating_sub(max_start_offset)
-            .min(view.max_diff_scroll())
+        start_row.min(max_full_view_scroll)
     };
 
     state.diff_scroll = scroll;
+}
+
+fn active_diff_content_height(state: &AppState, view: &impl AppViewport) -> usize {
+    state
+        .active_document
+        .as_ref()
+        .map(|document| document.diff.len())
+        .unwrap_or_else(|| view.diff_content_height())
 }
 
 pub fn ensure_selected_comment(state: &mut AppState) {
