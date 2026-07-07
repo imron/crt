@@ -1540,26 +1540,21 @@ mod tests {
 
     fn setup_content_repo(path: &str, base_content: &str, head_content: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("temp repo");
-        run_git(dir.path(), &["init"]);
-        run_git(dir.path(), &["config", "user.email", "test@test.com"]);
-        run_git(dir.path(), &["config", "user.name", "Test"]);
+        let repo = init_test_repo(dir.path());
         let file_path = dir.path().join(path);
         if let Some(parent) = file_path.parent() {
             std::fs::create_dir_all(parent).expect("create parent dirs");
         }
         std::fs::write(&file_path, base_content).expect("write base content");
-        run_git(dir.path(), &["add", "-A"]);
-        run_git(dir.path(), &["commit", "-m", "base"]);
-        run_git(dir.path(), &["tag", "base"]);
+        commit_all(&repo, "base");
+        tag_head(&repo, "base");
         std::fs::write(&file_path, head_content).expect("write head content");
         dir
     }
 
     fn setup_worktree_repo(files: &[(&str, String)]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("temp repo");
-        run_git(dir.path(), &["init"]);
-        run_git(dir.path(), &["config", "user.email", "test@test.com"]);
-        run_git(dir.path(), &["config", "user.name", "Test"]);
+        let repo = init_test_repo(dir.path());
         for (path, content) in files {
             let file_path = dir.path().join(path);
             if let Some(parent) = file_path.parent() {
@@ -1567,24 +1562,53 @@ mod tests {
             }
             std::fs::write(&file_path, content).expect("write file content");
         }
-        run_git(dir.path(), &["add", "-A"]);
-        run_git(dir.path(), &["commit", "-m", "base"]);
+        commit_all(&repo, "base");
         dir
     }
 
-    fn run_git(path: &std::path::Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(path)
-            .output()
-            .expect("run git");
-        if !out.status.success() {
-            panic!(
-                "git {:?} failed: {}",
-                args,
-                String::from_utf8_lossy(&out.stderr)
-            );
-        }
+    fn init_test_repo(path: &std::path::Path) -> git2::Repository {
+        let repo = git2::Repository::init(path).expect("init repo");
+        let mut config = repo.config().expect("repo config");
+        config
+            .set_str("user.email", "test@test.com")
+            .expect("set email");
+        config.set_str("user.name", "Test").expect("set name");
+        drop(config);
+        repo
+    }
+
+    fn commit_all(repo: &git2::Repository, message: &str) -> git2::Oid {
+        let mut index = repo.index().expect("repo index");
+        index
+            .add_all(["."], git2::IndexAddOption::DEFAULT, None)
+            .expect("add all");
+        index.write().expect("write index");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let signature = git2::Signature::now("Test", "test@test.com").expect("signature");
+        let parent = repo
+            .head()
+            .ok()
+            .and_then(|head| head.target())
+            .and_then(|oid| repo.find_commit(oid).ok());
+        let parents = parent.iter().collect::<Vec<_>>();
+
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            message,
+            &tree,
+            parents.as_slice(),
+        )
+        .expect("commit")
+    }
+
+    fn tag_head(repo: &git2::Repository, name: &str) {
+        let head_id = repo.head().expect("head").target().expect("head oid");
+        let target = repo.find_object(head_id, None).expect("head object");
+        repo.tag_lightweight(name, &target, false)
+            .expect("tag head");
     }
 
     fn test_file(path: &str) -> FileEntry {

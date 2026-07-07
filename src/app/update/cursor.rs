@@ -1,4 +1,4 @@
-use super::viewport::AppViewport;
+use super::viewport::{AppViewport, active_diff_content_height};
 use crate::app::AppState;
 use crate::core::DiffCursorEffect;
 
@@ -143,7 +143,7 @@ pub fn apply_diff_cursor_effect(
 }
 
 fn clamp_diff_scroll(state: &mut AppState, view: &impl AppViewport) {
-    let content_height = diff_content_height(state, view);
+    let content_height = active_diff_content_height(state, view);
     if content_height == 0 {
         return;
     }
@@ -151,7 +151,7 @@ fn clamp_diff_scroll(state: &mut AppState, view: &impl AppViewport) {
 }
 
 pub fn clamp_cursor_and_scroll(state: &mut AppState, view: &impl AppViewport) {
-    let content_height = diff_content_height(state, view);
+    let content_height = active_diff_content_height(state, view);
     if content_height == 0 {
         return;
     }
@@ -168,14 +168,6 @@ pub fn clamp_cursor_and_scroll(state: &mut AppState, view: &impl AppViewport) {
             .saturating_sub(view.diff_view_height() - 1);
     }
     clamp_diff_scroll(state, view);
-}
-
-fn diff_content_height(state: &AppState, view: &impl AppViewport) -> usize {
-    state
-        .active_document
-        .as_ref()
-        .map(|document| document.diff.len())
-        .unwrap_or_else(|| view.diff_content_height())
 }
 
 fn clamp_col_cursor(state: &mut AppState, view: &impl AppViewport) {

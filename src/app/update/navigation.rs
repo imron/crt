@@ -486,7 +486,6 @@ pub fn navigate_unresolved_comment_from_cursor(
         return false;
     }
 
-    state.ensure_active_document();
     if let Some(comment_id) = state
         .active_document
         .as_ref()
@@ -542,7 +541,6 @@ fn activate_unresolved_comment_target(
 
     state.select_file(file_index, FileListSectionFocus::UnresolvedComments, false);
     state.selected_comment_id = None;
-    state.ensure_active_document();
     let comment_id = state
         .active_document
         .as_ref()
