@@ -158,6 +158,42 @@ impl DiffDocument {
         }
     }
 
+    pub fn source_at(&self, row: RowIndex) -> Option<SourceLocation> {
+        match self {
+            Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
+                document.source_at(row)
+            }
+            Self::SideBySide(document) => document.source_at(row),
+        }
+    }
+
+    pub fn text_at(&self, row: RowIndex) -> Option<&str> {
+        match self {
+            Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
+                document.text_at(row)
+            }
+            Self::SideBySide(document) => document.text_at(row),
+        }
+    }
+
+    pub fn row_for_source_line(&self, side: CommentAnchorSide, line: u32) -> Option<RowIndex> {
+        match self {
+            Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
+                document.row_for_source_line(side, line)
+            }
+            Self::SideBySide(document) => document.row_for_source_line(side, line),
+        }
+    }
+
+    pub fn next_hunk(&self, row: RowIndex, direction: Direction) -> Option<RowIndex> {
+        match self {
+            Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
+                document.next_hunk(row, direction)
+            }
+            Self::SideBySide(document) => document.next_hunk(row, direction),
+        }
+    }
+
     pub fn search(&mut self, query: impl Into<String>) {
         self.search_with_current(query, None);
     }
@@ -173,6 +209,24 @@ impl DiffDocument {
                 document.search_with_current(query, current)
             }
             Self::SideBySide(document) => document.search_with_current(query, current),
+        }
+    }
+
+    pub fn all_search_matches(&self) -> Vec<SearchMatch> {
+        match self {
+            Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
+                document.all_search_matches().collect()
+            }
+            Self::SideBySide(document) => document.all_search_matches(),
+        }
+    }
+
+    pub fn selected_text(&self, selection: VisibleSelection) -> String {
+        match self {
+            Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
+                document.selected_text(selection)
+            }
+            Self::SideBySide(document) => document.selected_text(selection),
         }
     }
 
@@ -355,6 +409,30 @@ impl SideBySideDocument {
         self.head.hunk_spans()
     }
 
+    pub fn source_at(&self, row: RowIndex) -> Option<SourceLocation> {
+        let base = self
+            .base
+            .source_at(row)
+            .unwrap_or_else(SourceLocation::none);
+        let head = self
+            .head
+            .source_at(row)
+            .unwrap_or_else(SourceLocation::none);
+        let source = SourceLocation::paired(base.base, head.head);
+        (source.base.is_some() || source.head.is_some()).then_some(source)
+    }
+
+    pub fn text_at(&self, row: RowIndex) -> Option<&str> {
+        self.head.text_at(row).or_else(|| self.base.text_at(row))
+    }
+
+    pub fn row_for_source_line(&self, side: CommentAnchorSide, line: u32) -> Option<RowIndex> {
+        match side {
+            CommentAnchorSide::Base => self.base.row_for_source_line(side, line),
+            CommentAnchorSide::Head => self.head.row_for_source_line(side, line),
+        }
+    }
+
     pub fn search(&mut self, query: impl Into<String>) {
         self.search_with_current(query, None);
     }
@@ -367,6 +445,42 @@ impl SideBySideDocument {
         let query = query.into();
         self.base.search_with_current(query.clone(), current);
         self.head.search_with_current(query, current);
+    }
+
+    pub fn all_search_matches(&self) -> Vec<SearchMatch> {
+        let mut matches = self
+            .base
+            .all_search_matches()
+            .chain(self.head.all_search_matches())
+            .collect::<Vec<_>>();
+        matches.sort_by_key(|match_| (match_.row, match_.columns.start, match_.columns.end));
+        matches
+    }
+
+    pub fn selected_text(&self, selection: VisibleSelection) -> String {
+        let mut lines = Vec::new();
+        let span = selection.row_span();
+        for row in span.start.0..=span.end.0 {
+            lines.extend(self.selected_row_text(RowIndex(row), selection));
+        }
+        lines.join("\n")
+    }
+
+    fn selected_row_text(&self, row: RowIndex, selection: VisibleSelection) -> Vec<String> {
+        let base = self
+            .base
+            .selected_row_text(row, selection)
+            .filter(|text| !text.is_empty());
+        let head = self
+            .head
+            .selected_row_text(row, selection)
+            .filter(|text| !text.is_empty());
+        match (base, head) {
+            (Some(base), Some(head)) if base == head => vec![head],
+            (Some(base), Some(head)) => vec![base, head],
+            (Some(text), None) | (None, Some(text)) => vec![text],
+            (None, None) => vec![String::new()],
+        }
     }
 
     fn refresh_overlays(
@@ -476,6 +590,26 @@ impl Document {
             DocumentRow::Content(content) => Some(content),
             DocumentRow::Spacer => None,
         }
+    }
+
+    pub fn source_at(&self, row: RowIndex) -> Option<SourceLocation> {
+        self.content_row(row).map(|content| content.source)
+    }
+
+    pub fn text_at(&self, row: RowIndex) -> Option<&str> {
+        self.content_row(row).map(|content| content.text.as_str())
+    }
+
+    pub fn row_for_source_line(&self, side: CommentAnchorSide, line: u32) -> Option<RowIndex> {
+        self.rows
+            .iter()
+            .enumerate()
+            .find_map(|(row, document_row)| {
+                let DocumentRow::Content(content) = document_row else {
+                    return None;
+                };
+                (content.source.line_for_side(side) == Some(line)).then_some(RowIndex(row))
+            })
     }
 
     pub fn line(&self, row: RowIndex) -> Option<RenderLine<'_>> {
@@ -594,6 +728,27 @@ impl Document {
                     .search
                     .match_spans_for(row, content.text.as_str())
             })
+    }
+
+    pub fn selected_text(&self, selection: VisibleSelection) -> String {
+        let span = selection.row_span();
+        (span.start.0..=span.end.0)
+            .map(|row| {
+                self.selected_row_text(RowIndex(row), selection)
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn selected_row_text(&self, row: RowIndex, selection: VisibleSelection) -> Option<String> {
+        let content = self.content_row(row)?;
+        let span = selection.normalized_span_for(row, content.text.as_str())?;
+        Some(byte_span_text(
+            content.text.as_str(),
+            span.start.0,
+            span.end.0,
+        ))
     }
 }
 
@@ -828,6 +983,19 @@ pub struct DocumentPosition {
 }
 
 impl VisibleSelection {
+    fn row_span(self) -> RowSpan {
+        match self {
+            Self::Line(span) => span,
+            Self::Text { start, end } => {
+                let (start, end) = ordered_document_positions(start, end);
+                RowSpan {
+                    start: start.row,
+                    end: end.row,
+                }
+            }
+        }
+    }
+
     fn contains_row(self, row: RowIndex) -> bool {
         match self {
             Self::Line(span) => span.contains(row),
@@ -862,6 +1030,12 @@ impl VisibleSelection {
             }
         }
     }
+}
+
+fn byte_span_text(text: &str, start: usize, end: usize) -> String {
+    let start = start.min(text.len());
+    let end = end.min(text.len()).max(start);
+    text[start..end].trim_end().to_string()
 }
 
 fn ordered_document_positions(

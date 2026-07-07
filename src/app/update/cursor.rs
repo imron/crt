@@ -1,5 +1,6 @@
 use super::viewport::{AppViewport, active_diff_content_height};
 use crate::app::AppState;
+use crate::app::document::RowIndex;
 use crate::core::DiffCursorEffect;
 
 pub fn apply_diff_cursor_effect(
@@ -12,7 +13,7 @@ pub fn apply_diff_cursor_effect(
             state.diff_line_cursor = line;
             state.diff_col_cursor = column;
             clamp_cursor_and_scroll(state, view);
-            clamp_col_cursor(state, view);
+            clamp_col_cursor(state);
         }
         DiffCursorEffect::LineDown => {
             state.diff_line_cursor = state.diff_line_cursor.saturating_add(1);
@@ -115,7 +116,7 @@ pub fn apply_diff_cursor_effect(
             state.diff_col_cursor = state.diff_col_cursor.saturating_sub(1);
         }
         DiffCursorEffect::CharRight => {
-            let max = view.current_line_text_len(state).saturating_sub(1);
+            let max = current_line_text_len(state).saturating_sub(1);
             if state.diff_col_cursor < max {
                 state.diff_col_cursor += 1;
             }
@@ -124,7 +125,7 @@ pub fn apply_diff_cursor_effect(
             state.diff_col_cursor = 0;
         }
         DiffCursorEffect::LineEnd => {
-            state.diff_col_cursor = view.current_line_text_len(state).saturating_sub(1);
+            state.diff_col_cursor = current_line_text_len(state).saturating_sub(1);
         }
         DiffCursorEffect::WordForward => {
             word_forward(state, view);
@@ -170,9 +171,21 @@ pub fn clamp_cursor_and_scroll(state: &mut AppState, view: &impl AppViewport) {
     clamp_diff_scroll(state, view);
 }
 
-fn clamp_col_cursor(state: &mut AppState, view: &impl AppViewport) {
-    let max = view.current_line_text_len(state).saturating_sub(1);
+fn clamp_col_cursor(state: &mut AppState) {
+    let max = current_line_text_len(state).saturating_sub(1);
     state.diff_col_cursor = state.diff_col_cursor.min(max);
+}
+
+fn line_content(state: &AppState, row: usize) -> &str {
+    state
+        .active_document
+        .as_ref()
+        .and_then(|document| document.document().diff.text_at(RowIndex(row)))
+        .unwrap_or("")
+}
+
+fn current_line_text_len(state: &AppState) -> usize {
+    line_content(state, state.diff_line_cursor).chars().count()
 }
 
 fn char_class(c: char) -> u8 {
@@ -186,17 +199,17 @@ fn char_class(c: char) -> u8 {
 }
 
 fn word_forward(state: &mut AppState, view: &impl AppViewport) {
-    let content = view.line_content_trimmed(state.diff_line_cursor);
+    let content = line_content(state, state.diff_line_cursor);
     let chars: Vec<char> = content.chars().collect();
     let text_len = chars.len();
 
     if text_len == 0 || state.diff_col_cursor >= text_len.saturating_sub(1) {
-        let max_line = view.diff_content_height().saturating_sub(1);
+        let max_line = active_diff_content_height(state, view).saturating_sub(1);
         if state.diff_line_cursor < max_line {
             state.diff_line_cursor += 1;
             state.diff_col_cursor = 0;
             clamp_cursor_and_scroll(state, view);
-            let new_content = view.line_content_trimmed(state.diff_line_cursor);
+            let new_content = line_content(state, state.diff_line_cursor);
             let new_chars: Vec<char> = new_content.chars().collect();
             let mut pos = 0;
             while pos < new_chars.len() && new_chars[pos].is_whitespace() {
@@ -216,12 +229,12 @@ fn word_forward(state: &mut AppState, view: &impl AppViewport) {
         pos += 1;
     }
     if pos >= text_len {
-        let max_line = view.diff_content_height().saturating_sub(1);
+        let max_line = active_diff_content_height(state, view).saturating_sub(1);
         if state.diff_line_cursor < max_line {
             state.diff_line_cursor += 1;
             state.diff_col_cursor = 0;
             clamp_cursor_and_scroll(state, view);
-            let new_content = view.line_content_trimmed(state.diff_line_cursor);
+            let new_content = line_content(state, state.diff_line_cursor);
             let new_chars: Vec<char> = new_content.chars().collect();
             let mut p = 0;
             while p < new_chars.len() && new_chars[p].is_whitespace() {
@@ -241,7 +254,7 @@ fn word_backward(state: &mut AppState, view: &impl AppViewport) {
         if state.diff_line_cursor > 0 {
             state.diff_line_cursor -= 1;
             clamp_cursor_and_scroll(state, view);
-            let content = view.line_content_trimmed(state.diff_line_cursor);
+            let content = line_content(state, state.diff_line_cursor);
             let chars: Vec<char> = content.chars().collect();
             if chars.is_empty() {
                 state.diff_col_cursor = 0;
@@ -261,7 +274,7 @@ fn word_backward(state: &mut AppState, view: &impl AppViewport) {
         return;
     }
 
-    let content = view.line_content_trimmed(state.diff_line_cursor);
+    let content = line_content(state, state.diff_line_cursor);
     let chars: Vec<char> = content.chars().collect();
     if chars.is_empty() {
         return;
@@ -279,17 +292,17 @@ fn word_backward(state: &mut AppState, view: &impl AppViewport) {
 }
 
 fn bigword_forward(state: &mut AppState, view: &impl AppViewport) {
-    let content = view.line_content_trimmed(state.diff_line_cursor);
+    let content = line_content(state, state.diff_line_cursor);
     let chars: Vec<char> = content.chars().collect();
     let text_len = chars.len();
 
     if text_len == 0 || state.diff_col_cursor >= text_len.saturating_sub(1) {
-        let max_line = view.diff_content_height().saturating_sub(1);
+        let max_line = active_diff_content_height(state, view).saturating_sub(1);
         if state.diff_line_cursor < max_line {
             state.diff_line_cursor += 1;
             state.diff_col_cursor = 0;
             clamp_cursor_and_scroll(state, view);
-            let new_content = view.line_content_trimmed(state.diff_line_cursor);
+            let new_content = line_content(state, state.diff_line_cursor);
             let new_chars: Vec<char> = new_content.chars().collect();
             let mut pos = 0;
             while pos < new_chars.len() && new_chars[pos].is_whitespace() {
@@ -308,12 +321,12 @@ fn bigword_forward(state: &mut AppState, view: &impl AppViewport) {
         pos += 1;
     }
     if pos >= text_len {
-        let max_line = view.diff_content_height().saturating_sub(1);
+        let max_line = active_diff_content_height(state, view).saturating_sub(1);
         if state.diff_line_cursor < max_line {
             state.diff_line_cursor += 1;
             state.diff_col_cursor = 0;
             clamp_cursor_and_scroll(state, view);
-            let new_content = view.line_content_trimmed(state.diff_line_cursor);
+            let new_content = line_content(state, state.diff_line_cursor);
             let new_chars: Vec<char> = new_content.chars().collect();
             let mut p = 0;
             while p < new_chars.len() && new_chars[p].is_whitespace() {
@@ -333,7 +346,7 @@ fn bigword_backward(state: &mut AppState, view: &impl AppViewport) {
         if state.diff_line_cursor > 0 {
             state.diff_line_cursor -= 1;
             clamp_cursor_and_scroll(state, view);
-            let content = view.line_content_trimmed(state.diff_line_cursor);
+            let content = line_content(state, state.diff_line_cursor);
             let chars: Vec<char> = content.chars().collect();
             if chars.is_empty() {
                 state.diff_col_cursor = 0;
@@ -351,7 +364,7 @@ fn bigword_backward(state: &mut AppState, view: &impl AppViewport) {
         return;
     }
 
-    let content = view.line_content_trimmed(state.diff_line_cursor);
+    let content = line_content(state, state.diff_line_cursor);
     let chars: Vec<char> = content.chars().collect();
     if chars.is_empty() {
         return;

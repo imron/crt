@@ -2,7 +2,7 @@
 
 ## Status
 
-Backlog.
+Complete.
 
 ## Overview
 
@@ -119,11 +119,23 @@ migration and glue:
 
 ## Acceptance Criteria
 
-- [ ] Diff search no longer depends on `AppViewport::diff_rendered_text`.
-- [ ] Hunk navigation no longer depends on TUI hunk rows.
-- [ ] `AppState.visual_selection` is document-typed, with `TextAnchor`
+- [x] Diff search no longer depends on `AppViewport::diff_rendered_text`.
+- [x] Hunk navigation no longer depends on TUI hunk rows.
+- [x] `AppState.visual_selection` is document-typed, with `TextAnchor`
       converted only at the app input boundary.
-- [ ] Selection capture uses document source metadata.
-- [ ] Comment creation uses document source metadata.
-- [ ] Mode switching uses app-owned document source metadata.
-- [ ] TUI remains a row/column event source and renderer only.
+- [x] Selection capture uses document source metadata.
+- [x] Comment creation uses document source metadata.
+- [x] Mode switching uses app-owned document source metadata.
+- [x] TUI remains a row/column event source and renderer only.
+
+## Completion Notes
+
+- `App::apply_core_effects` prepares the active document once at the app
+  boundary before effect handling.
+- Diff search, hunk navigation, word extraction, mode switching, selected text
+  extraction, and comment anchor capture now use active document APIs.
+- `AppState.visual_selection` stores document positions. `TextAnchor` remains
+  an input-boundary type for TUI/core events and legacy model projection.
+- Legacy `AppViewport` methods and compatibility projections still exist for
+  old renderer cleanup in 29f, but active migrated behavior no longer depends
+  on them for this slice.

@@ -1,15 +1,14 @@
 use super::cursor;
 use super::output::AppOutput;
 use super::viewport::AppViewport;
-use crate::app::diff_rows::{
-    LinearDiffRow, SideBySideCell, inline_diff_rows, side_by_side_diff_rows,
+use crate::app::document::{
+    ColumnIndex, DiffDocument, Document, DocumentPosition, DocumentRow, RowIndex,
 };
 use crate::app::{AppState, CommentAnchorCapture, VisualSelection, VisualSelectionMode};
-use crate::core::text::char_to_byte_index;
 use crate::core::{TextAnchor, VisualSelectionEffect};
 use crate::review_types::{
-    AnchorMatchMethod, AnchorPlacementStatus, CommentAnchorSegment, CommentAnchorSide, ContentMode,
-    LineKind, PaneFocus, RenderVariant,
+    AnchorMatchMethod, AnchorPlacementStatus, CommentAnchorSegment, CommentAnchorSide, LineKind,
+    PaneFocus, RenderVariant,
 };
 
 const CONTEXT_LINES: usize = 3;
@@ -64,7 +63,7 @@ pub fn apply_visual_selection_effect(
             state.mark_model_changed();
         }
         VisualSelectionEffect::Commit => {
-            match capture_visual_selection(state, view) {
+            match capture_visual_selection(state) {
                 Some(capture) => {
                     state.pending_comment_anchor = Some(capture);
                     update.set_status("Comment anchor captured");
@@ -82,10 +81,11 @@ fn start_selection(state: &mut AppState, mode: VisualSelectionMode, anchor: Text
     state.pane_focus = PaneFocus::Diff;
     state.diff_line_cursor = anchor.line;
     state.diff_col_cursor = anchor.column;
+    let position = document_position_from_anchor(anchor);
     state.visual_selection = Some(VisualSelection {
         mode,
-        start: anchor,
-        end: anchor,
+        start: position,
+        end: position,
     });
     state.pending_comment_anchor = None;
     state.mark_model_changed();
@@ -95,35 +95,44 @@ fn extend_selection(state: &mut AppState, anchor: TextAnchor) {
     state.pane_focus = PaneFocus::Diff;
     state.diff_line_cursor = anchor.line;
     state.diff_col_cursor = anchor.column;
+    let position = document_position_from_anchor(anchor);
     if let Some(selection) = state.visual_selection.as_mut() {
-        selection.end = anchor;
+        selection.end = position;
     } else {
         state.visual_selection = Some(VisualSelection {
             mode: VisualSelectionMode::Text,
-            start: anchor,
-            end: anchor,
+            start: position,
+            end: position,
         });
     }
     state.mark_model_changed();
 }
 
-fn capture_visual_selection(
-    state: &AppState,
-    view: &impl AppViewport,
-) -> Option<CommentAnchorCapture> {
+fn document_position_from_anchor(anchor: TextAnchor) -> DocumentPosition {
+    DocumentPosition {
+        row: RowIndex(anchor.line),
+        column: ColumnIndex(anchor.column),
+    }
+}
+
+fn capture_visual_selection(state: &AppState) -> Option<CommentAnchorCapture> {
     let selection = state.visual_selection.as_ref()?;
     let file_path = state.selected_file_entry()?.change.path.clone();
-    let source_lines = source_lines_for_state(state, view);
+    let source_lines = source_lines_for_active_document(state)?;
     if source_lines.is_empty() {
         return None;
     }
 
-    let (start_anchor, end_anchor) = ordered_anchors(selection.start, selection.end);
+    let (start_anchor, end_anchor) = ordered_positions(selection.start, selection.end);
     let selection_lines = &source_lines;
     let start_row = start_anchor
-        .line
+        .row
+        .0
         .min(selection_lines.len().saturating_sub(1));
-    let end_row = end_anchor.line.min(selection_lines.len().saturating_sub(1));
+    let end_row = end_anchor
+        .row
+        .0
+        .min(selection_lines.len().saturating_sub(1));
     let selected_lines = normalized_selected_lines(state, selection_lines, start_row, end_row);
 
     let mut segments = Vec::new();
@@ -282,8 +291,11 @@ fn context_after(lines: &[&str], line_end: i64) -> String {
     }
 }
 
-fn ordered_anchors(start: TextAnchor, end: TextAnchor) -> (TextAnchor, TextAnchor) {
-    if (end.line, end.column) < (start.line, start.column) {
+fn ordered_positions(
+    start: DocumentPosition,
+    end: DocumentPosition,
+) -> (DocumentPosition, DocumentPosition) {
+    if (end.row, end.column) < (start.row, start.column) {
         (end, start)
     } else {
         (start, end)
@@ -394,144 +406,115 @@ fn collect_change_row(selection_lines: &[SourceLine], idx: usize, rows: &mut Vec
     collect_paired_change_row(selection_lines, idx, rows);
 }
 
-fn source_lines_for_state(state: &AppState, view: &impl AppViewport) -> Vec<SourceLine> {
-    match (state.content_mode, state.render_variant) {
-        (ContentMode::FullFile, RenderVariant::BaseVersion) => state
-            .base_content
-            .as_deref()
-            .map(|content| source_lines_from_file_content(content, CommentAnchorSide::Base))
-            .unwrap_or_else(|| fallback_source_lines(view)),
-        (ContentMode::FullFile, _) => state
-            .head_content
-            .as_deref()
-            .map(|content| source_lines_from_file_content(content, CommentAnchorSide::Head))
-            .unwrap_or_else(|| fallback_source_lines(view)),
-        (ContentMode::Diff, _) => {
-            diff_source_lines(state).unwrap_or_else(|| fallback_source_lines(view))
-        }
-    }
-}
-
-fn source_lines_from_file_content(content: &str, side: CommentAnchorSide) -> Vec<SourceLine> {
-    content
-        .lines()
-        .enumerate()
-        .map(|(idx, content)| SourceLine {
-            entries: vec![SourceLineEntry {
-                side,
-                line_number: (idx + 1) as i64,
-                content: content.to_string(),
-            }],
-            content: content.to_string(),
-            is_change: false,
-        })
-        .collect()
-}
-
-fn diff_source_lines(state: &AppState) -> Option<Vec<SourceLine>> {
-    if state.render_variant == RenderVariant::SideBySide {
-        return side_by_side_diff_source_lines(state);
-    }
-
-    let entry = state.selected_file_entry()?;
-    let rows = inline_diff_rows(&entry.diff.hunks, state.head_content.as_deref());
-    let lines = rows
-        .rows
-        .iter()
-        .map(source_line_from_linear_row)
-        .collect::<Vec<_>>();
+fn source_lines_for_active_document(state: &AppState) -> Option<Vec<SourceLine>> {
+    let active = state.active_document.as_ref()?;
+    let lines = match &active.document().diff {
+        DiffDocument::Unified(document)
+        | DiffDocument::Base(document)
+        | DiffDocument::Head(document) => source_lines_from_document(document),
+        DiffDocument::SideBySide(document) => source_lines_from_side_by_side_document(document),
+    };
     Some(lines)
 }
 
-fn source_line_from_linear_row(row: &LinearDiffRow) -> SourceLine {
+fn source_lines_from_document(document: &Document) -> Vec<SourceLine> {
+    document
+        .rows()
+        .iter()
+        .map(source_lines_from_document_row)
+        .collect()
+}
+
+fn source_lines_from_document_row(row: &DocumentRow) -> SourceLine {
+    let DocumentRow::Content(content) = row else {
+        return SourceLine {
+            entries: Vec::new(),
+            content: String::new(),
+            is_change: false,
+        };
+    };
     let mut entries = Vec::new();
-    if let Some(line_number) = row.old_lineno {
+    if let Some(line_number) = content.source.base {
         entries.push(SourceLineEntry {
             side: CommentAnchorSide::Base,
-            line_number: line_number as i64,
-            content: row.content.clone(),
+            line_number: i64::from(line_number),
+            content: content.text.clone(),
         });
     }
-    if let Some(line_number) = row.new_lineno {
+    if let Some(line_number) = content.source.head {
         entries.push(SourceLineEntry {
             side: CommentAnchorSide::Head,
-            line_number: line_number as i64,
-            content: row.content.clone(),
+            line_number: i64::from(line_number),
+            content: content.text.clone(),
         });
     }
     SourceLine {
         entries,
-        content: row.content.clone(),
-        is_change: row.kind != LineKind::Context,
+        content: content.text.clone(),
+        is_change: content.kind != LineKind::Context,
     }
 }
 
-fn side_by_side_diff_source_lines(state: &AppState) -> Option<Vec<SourceLine>> {
-    let entry = state.selected_file_entry()?;
-    let layout = side_by_side_diff_rows(
-        &entry.diff.hunks,
-        state.base_content.as_deref(),
-        state.head_content.as_deref(),
-    );
-    let lines = layout
-        .rows
-        .iter()
-        .map(source_line_from_side_by_side_row)
-        .collect::<Vec<_>>();
-    Some(lines).filter(|lines| !lines.is_empty())
+fn source_lines_from_side_by_side_document(
+    document: &crate::app::document::SideBySideDocument,
+) -> Vec<SourceLine> {
+    (0..document.len())
+        .map(|row| {
+            let base = document.base().row(RowIndex(row));
+            let head = document.head().row(RowIndex(row));
+            source_line_from_side_by_side_document_rows(base, head)
+        })
+        .collect()
 }
 
-fn source_line_from_side_by_side_row(row: &crate::app::diff_rows::SideBySideRow) -> SourceLine {
-    let entries = [row.base.as_ref(), row.head.as_ref()]
+fn source_line_from_side_by_side_document_rows(
+    base: Option<&DocumentRow>,
+    head: Option<&DocumentRow>,
+) -> SourceLine {
+    let rows = [base, head];
+    let entries = rows
         .into_iter()
         .flatten()
-        .map(source_line_entry_from_side_by_side_cell)
+        .flat_map(|row| match row {
+            DocumentRow::Content(content) => {
+                let mut entries = Vec::new();
+                if let Some(line_number) = content.source.base {
+                    entries.push(SourceLineEntry {
+                        side: CommentAnchorSide::Base,
+                        line_number: i64::from(line_number),
+                        content: content.text.clone(),
+                    });
+                }
+                if let Some(line_number) = content.source.head {
+                    entries.push(SourceLineEntry {
+                        side: CommentAnchorSide::Head,
+                        line_number: i64::from(line_number),
+                        content: content.text.clone(),
+                    });
+                }
+                entries
+            }
+            DocumentRow::Spacer => Vec::new(),
+        })
         .collect::<Vec<_>>();
-    let content = [row.base.as_ref(), row.head.as_ref()]
+    let content = rows
         .into_iter()
         .flatten()
-        .map(|cell| cell.content.as_str())
+        .filter_map(|row| match row {
+            DocumentRow::Content(content) => Some(content.text.as_str()),
+            DocumentRow::Spacer => None,
+        })
         .collect::<Vec<_>>()
         .join("\n");
-    let is_change = [row.base.as_ref(), row.head.as_ref()]
-        .into_iter()
-        .flatten()
-        .any(|cell| cell.kind != LineKind::Context);
+    let is_change = rows.into_iter().flatten().any(|row| match row {
+        DocumentRow::Content(content) => content.kind != LineKind::Context,
+        DocumentRow::Spacer => false,
+    });
     SourceLine {
         entries,
         content,
         is_change,
     }
-}
-
-fn source_line_entry_from_side_by_side_cell(cell: &SideBySideCell) -> SourceLineEntry {
-    SourceLineEntry {
-        side: cell.side,
-        line_number: cell.line_number as i64,
-        content: cell.content.clone(),
-    }
-}
-
-fn fallback_source_lines(view: &impl AppViewport) -> Vec<SourceLine> {
-    let start = view.diff_content_start_col();
-    view.diff_rendered_text()
-        .iter()
-        .enumerate()
-        .map(|(idx, line)| {
-            let content = char_to_byte_index(line, start)
-                .map(|start| line[start..].to_string())
-                .unwrap_or_default();
-            SourceLine {
-                entries: vec![SourceLineEntry {
-                    side: CommentAnchorSide::Head,
-                    line_number: (idx + 1) as i64,
-                    content: content.clone(),
-                }],
-                content,
-                is_change: false,
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -560,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn side_by_side_source_lines_match_render_rows_for_offset_replacement() {
+    fn side_by_side_source_lines_come_from_active_document_rows() {
         let hunk = crate::review_types::DiffHunk {
             old_start: 26,
             old_lines: 1,
@@ -577,13 +560,36 @@ mod tests {
         let head_owned: Vec<String> = (1..=34).map(|n| format!("head {n}")).collect();
         let base_content = format!("{}\n", base_owned.join("\n"));
         let head_content = format!("{}\n", head_owned.join("\n"));
+        let mut state = AppState::new(
+            crate::config::DiffAlgorithm::Myers,
+            crate::review_types::ConnectionContext {
+                repo_root: "/repo".to_string(),
+                worktree: "/repo".to_string(),
+                base_ref: "main".to_string(),
+                head_ref: "feature".to_string(),
+                merge_base: "abc123".to_string(),
+            },
+            vec![crate::review_types::FileEntry {
+                change: crate::review_types::FileChange {
+                    path: "src/lib.rs".to_string(),
+                    old_path: None,
+                    kind: crate::review_types::ChangeKind::Modified,
+                },
+                status: crate::review_types::ReviewStatus::Unreviewed,
+                diff: crate::review_types::DiffContent {
+                    hunks: vec![hunk],
+                    is_binary: false,
+                    diff_hash: "diff".to_string(),
+                },
+            }],
+            40,
+        );
+        state.render_variant = RenderVariant::SideBySide;
+        state.base_content = Some(base_content);
+        state.head_content = Some(head_content);
+        state.rebuild_active_document();
 
-        let layout = side_by_side_diff_rows(&[hunk], Some(&base_content), Some(&head_content));
-        let rows = layout
-            .rows
-            .iter()
-            .map(source_line_from_side_by_side_row)
-            .collect::<Vec<_>>();
+        let rows = source_lines_for_active_document(&state).expect("active document rows");
 
         assert_eq!(rows.len(), 34);
         let replacement_start = &rows[26];

@@ -2,7 +2,7 @@
 
 ## Status
 
-Backlog.
+Complete.
 
 ## Overview
 
@@ -57,9 +57,19 @@ Add regression checks for removed dependency paths:
 
 ## Acceptance Criteria
 
-- [ ] Obsolete active diff row fields are removed from `DiffPanel`.
-- [ ] App update code no longer depends on TUI-rendered text.
-- [ ] App update code no longer depends on TUI hunk row projections.
-- [ ] Active rendering no longer uses transitional comment projection APIs.
-- [ ] TUI diff renderer is a thin document renderer.
-- [ ] All tests pass.
+- [x] Obsolete active diff row fields are removed from `DiffPanel`.
+- [x] App update code no longer depends on TUI-rendered text.
+- [x] App update code no longer depends on TUI hunk row projections.
+- [x] Active rendering no longer uses transitional comment projection APIs.
+- [x] TUI diff renderer is a thin document renderer.
+- [x] All tests pass.
+
+## Notes
+
+- Removed the legacy TUI diff renderer and the local `*` renderer toggle.
+- Removed TUI-owned rendered diff text, hunk row projections, and diff cache
+  state from active app interaction paths.
+- Reduced `AppViewport` to viewport dimensions; cursor/search/hunk/comment
+  behavior now uses the active document APIs.
+- Removed old `DiffPanel` row/search/comment projection fields that duplicated
+  `ActiveDocument`.

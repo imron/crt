@@ -2,13 +2,11 @@ use super::comments;
 use super::cursor::clamp_cursor_and_scroll;
 use super::output::AppOutput;
 use super::viewport::AppViewport;
-use crate::app::diff_rows::{inline_diff_rows, side_by_side_diff_rows};
 use crate::app::document::RowIndex;
 use crate::app::{AppState, FileListSectionFocus, JumpLocation};
 use crate::core::command::Command;
 use crate::core::navigation::{self as core_navigation, Direction, FileNavigationScope};
 use crate::core::search as core_search;
-use crate::core::text::suffix_from_char;
 use crate::review_types::{CommentAnchorSide, ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
 pub fn navigate_to_search_match(
@@ -87,6 +85,7 @@ pub fn toggle_inline_diff(state: &mut AppState, update: &mut AppOutput) {
             state.load_base_content();
         }
         if state.render_variant != previous {
+            state.rebuild_active_document();
             if let Some(row) = target.and_then(|target| row_for_diff_source_line(state, target)) {
                 state.diff_line_cursor = row;
                 state.diff_scroll = state.diff_scroll.min(state.diff_line_cursor);
@@ -106,76 +105,37 @@ struct DiffSourceLine {
 }
 
 fn current_diff_source_line(state: &AppState) -> Option<DiffSourceLine> {
-    let entry = state.selected_file_entry()?;
-    match state.render_variant {
-        RenderVariant::Inline => {
-            let rows = inline_diff_rows(&entry.diff.hunks, state.head_content.as_deref());
-            let row = rows.rows.get(state.diff_line_cursor)?;
-            row.new_lineno
-                .map(|line| DiffSourceLine {
-                    side: CommentAnchorSide::Head,
-                    line,
-                })
-                .or_else(|| {
-                    row.old_lineno.map(|line| DiffSourceLine {
-                        side: CommentAnchorSide::Base,
-                        line,
-                    })
-                })
-        }
-        RenderVariant::SideBySide => {
-            let rows = side_by_side_diff_rows(
-                &entry.diff.hunks,
-                state.base_content.as_deref(),
-                state.head_content.as_deref(),
-            );
-            let row = rows.rows.get(state.diff_line_cursor)?;
-            row.head
-                .as_ref()
-                .map(|cell| DiffSourceLine {
-                    side: CommentAnchorSide::Head,
-                    line: cell.line_number,
-                })
-                .or_else(|| {
-                    row.base.as_ref().map(|cell| DiffSourceLine {
-                        side: CommentAnchorSide::Base,
-                        line: cell.line_number,
-                    })
-                })
-        }
-        _ => None,
-    }
+    let source = state.active_document.as_ref().and_then(|active| {
+        active
+            .document()
+            .diff
+            .source_at(RowIndex(state.diff_line_cursor))
+    })?;
+    source
+        .head
+        .map(|line| DiffSourceLine {
+            side: CommentAnchorSide::Head,
+            line,
+        })
+        .or_else(|| {
+            source.base.map(|line| DiffSourceLine {
+                side: CommentAnchorSide::Base,
+                line,
+            })
+        })
 }
 
 fn row_for_diff_source_line(state: &AppState, target: DiffSourceLine) -> Option<usize> {
-    let entry = state.selected_file_entry()?;
-    match state.render_variant {
-        RenderVariant::Inline => {
-            let rows = inline_diff_rows(&entry.diff.hunks, state.head_content.as_deref());
-            rows.rows.iter().position(|row| match target.side {
-                CommentAnchorSide::Base => row.old_lineno == Some(target.line),
-                CommentAnchorSide::Head => row.new_lineno == Some(target.line),
-            })
-        }
-        RenderVariant::SideBySide => {
-            let rows = side_by_side_diff_rows(
-                &entry.diff.hunks,
-                state.base_content.as_deref(),
-                state.head_content.as_deref(),
-            );
-            rows.rows.iter().position(|row| match target.side {
-                CommentAnchorSide::Base => row
-                    .base
-                    .as_ref()
-                    .is_some_and(|cell| cell.line_number == target.line),
-                CommentAnchorSide::Head => row
-                    .head
-                    .as_ref()
-                    .is_some_and(|cell| cell.line_number == target.line),
-            })
-        }
-        _ => None,
-    }
+    state
+        .active_document
+        .as_ref()
+        .and_then(|active| {
+            active
+                .document()
+                .diff
+                .row_for_source_line(target.side, target.line)
+        })
+        .map(|row| row.0)
 }
 
 pub fn toggle_blame(state: &mut AppState, update: &mut AppOutput) {
@@ -279,12 +239,19 @@ pub fn extract_word_at_cursor(state: &AppState, view: &impl AppViewport) -> Opti
 }
 
 fn content_for_word_extraction<'a>(
-    state: &AppState,
-    view: &'a impl AppViewport,
+    state: &'a AppState,
+    _view: &impl AppViewport,
 ) -> Option<&'a str> {
-    let line = view.diff_rendered_text().get(state.diff_line_cursor)?;
-    let content_start = view.diff_content_start_col();
-    suffix_from_char(line, content_start).map(str::trim)
+    state
+        .active_document
+        .as_ref()
+        .and_then(|active| {
+            active
+                .document()
+                .diff
+                .text_at(RowIndex(state.diff_line_cursor))
+        })
+        .map(str::trim)
 }
 
 fn word_at_char_offset(content: &str, column: usize) -> Option<String> {
@@ -312,15 +279,17 @@ fn is_identifier_char(c: char) -> bool {
 }
 
 pub fn cycle_view_mode(state: &mut AppState, view: &impl AppViewport) {
-    let approx_line = estimate_current_line(state, view);
+    let target = current_diff_source_line(state);
 
     match (&state.content_mode, &state.render_variant) {
         (ContentMode::Diff, _) => {
             state.content_mode = ContentMode::FullFile;
             state.render_variant = RenderVariant::HeadVersion;
-            let row = approx_line.saturating_sub(1);
-            state.diff_line_cursor = row;
-            state.diff_scroll = row;
+            state.rebuild_active_document();
+            if let Some(row) = target.and_then(|target| row_for_diff_source_line(state, target)) {
+                state.diff_line_cursor = row;
+                state.diff_scroll = row;
+            }
             state.invalidate_diff_search_matches();
         }
         (ContentMode::FullFile, RenderVariant::HeadVersion) => {
@@ -328,96 +297,68 @@ pub fn cycle_view_mode(state: &mut AppState, view: &impl AppViewport) {
                 state.load_base_content();
             }
             state.render_variant = RenderVariant::BaseVersion;
-            let base_line =
-                core_navigation::map_new_to_old_line(state.selected_file_entry(), approx_line);
-            let row = base_line.saturating_sub(1);
-            state.diff_line_cursor = row;
-            state.diff_scroll = row;
+            state.rebuild_active_document();
+            if let Some(row) = target.and_then(|target| row_for_diff_source_line(state, target)) {
+                state.diff_line_cursor = row;
+                state.diff_scroll = row;
+            }
             state.invalidate_diff_search_matches();
         }
         (ContentMode::FullFile, RenderVariant::BaseVersion) => {
             state.content_mode = ContentMode::Diff;
             state.render_variant = RenderVariant::Inline;
-            let old_line = state.diff_line_cursor + 1;
-            let new_line =
-                core_navigation::map_old_to_new_line(state.selected_file_entry(), old_line);
-            let row = new_line.saturating_sub(1);
-            state.diff_line_cursor = row;
-            state.diff_scroll = row;
+            state.rebuild_active_document();
+            if let Some(row) = target.and_then(|target| row_for_diff_source_line(state, target)) {
+                state.diff_line_cursor = row;
+                state.diff_scroll = row;
+            }
             state.invalidate_diff_search_matches();
         }
         _ => {
             state.content_mode = ContentMode::Diff;
             state.render_variant = RenderVariant::Inline;
+            state.rebuild_active_document();
             state.invalidate_diff_search_matches();
         }
     }
+    clamp_cursor_and_scroll(state, view);
     state.mark_model_changed();
 }
 
-fn estimate_current_line(state: &AppState, view: &impl AppViewport) -> usize {
-    match state.content_mode {
-        ContentMode::Diff => {
-            let scroll = state.diff_line_cursor;
-            if let Some(entry) = state.selected_file_entry() {
-                let mut deletions_above = 0usize;
-                for (i, &start) in view.hunk_start_rows().iter().enumerate() {
-                    let end = view.hunk_end_rows().get(i).copied().unwrap_or(start);
-                    if start > scroll {
-                        break;
-                    }
-                    let hunk = &entry.diff.hunks[i.min(entry.diff.hunks.len() - 1)];
-                    let hunk_scroll_end = scroll.min(end);
-                    for (j, line) in hunk.lines.iter().enumerate() {
-                        if start + j > hunk_scroll_end {
-                            break;
-                        }
-                        if line.kind == crate::review_types::LineKind::Deletion
-                            && start + j <= scroll
-                        {
-                            deletions_above += 1;
-                        }
-                    }
-                }
-                scroll.saturating_sub(deletions_above) + 1
-            } else {
-                scroll + 1
-            }
-        }
-        ContentMode::FullFile => state.diff_line_cursor + 1,
-    }
-}
-
 pub fn jump_to_next_hunk(state: &mut AppState, view: &impl AppViewport) {
-    if let Some(jump) = core_navigation::jump_to_next_hunk(
-        state.diff_line_cursor,
-        state.diff_scroll,
-        view.diff_view_height(),
-        view.hunk_first_change_rows(),
-        view.hunk_end_rows(),
-    ) {
-        state.diff_line_cursor = jump.cursor;
-        state.diff_scroll = jump.scroll;
-        state.diff_col_cursor = 0;
-        clamp_cursor_and_scroll(state, view);
-        state.mark_model_changed();
-    }
+    jump_to_document_hunk(state, view, Direction::Next);
 }
 
 pub fn jump_to_prev_hunk(state: &mut AppState, view: &impl AppViewport) {
-    if let Some(jump) = core_navigation::jump_to_prev_hunk(
-        state.diff_line_cursor,
+    jump_to_document_hunk(state, view, Direction::Prev);
+}
+
+fn jump_to_document_hunk(state: &mut AppState, view: &impl AppViewport, direction: Direction) {
+    let Some(active) = state.active_document.as_ref() else {
+        return;
+    };
+    let current = RowIndex(state.diff_line_cursor);
+    let Some(target) = active.document().diff.next_hunk(current, direction) else {
+        return;
+    };
+    let hunk_end = active
+        .document()
+        .diff
+        .hunk_spans()
+        .iter()
+        .find(|span| span.first_change == target)
+        .map(|span| span.full_span.end)
+        .unwrap_or(target);
+    state.diff_line_cursor = target.0;
+    state.diff_scroll = core_navigation::scroll_to_show_hunk(
+        target.0,
+        hunk_end.0,
         state.diff_scroll,
         view.diff_view_height(),
-        view.hunk_first_change_rows(),
-        view.hunk_end_rows(),
-    ) {
-        state.diff_line_cursor = jump.cursor;
-        state.diff_scroll = jump.scroll;
-        state.diff_col_cursor = 0;
-        clamp_cursor_and_scroll(state, view);
-        state.mark_model_changed();
-    }
+    );
+    state.diff_col_cursor = 0;
+    clamp_cursor_and_scroll(state, view);
+    state.mark_model_changed();
 }
 
 pub fn navigate_file(state: &mut AppState, view: &impl AppViewport, dir: Direction) {
@@ -716,38 +657,18 @@ mod tests {
     }
 
     #[test]
-    fn word_extraction_skips_multibyte_comment_marker_gutter() {
+    fn word_extraction_uses_active_document_text_not_viewport_gutter() {
         struct View {
             lines: Vec<String>,
         }
 
         impl AppViewport for View {
-            fn hunk_start_rows(&self) -> &[usize] {
-                &[]
-            }
-
-            fn hunk_end_rows(&self) -> &[usize] {
-                &[]
-            }
-
-            fn hunk_first_change_rows(&self) -> &[usize] {
-                &[]
-            }
-
-            fn diff_gutter_cols(&self) -> usize {
-                8
-            }
-
             fn diff_content_height(&self) -> usize {
                 self.lines.len()
             }
 
             fn diff_view_height(&self) -> usize {
                 self.lines.len()
-            }
-
-            fn diff_rendered_text(&self) -> &[String] {
-                &self.lines
             }
         }
 
@@ -760,14 +681,39 @@ mod tests {
                 head_ref: "feature".to_string(),
                 merge_base: "abc123".to_string(),
             },
-            Vec::new(),
+            vec![crate::review_types::FileEntry {
+                change: crate::review_types::FileChange {
+                    path: "src/lib.rs".to_string(),
+                    old_path: None,
+                    kind: crate::review_types::ChangeKind::Modified,
+                },
+                status: crate::review_types::ReviewStatus::Unreviewed,
+                diff: crate::review_types::DiffContent {
+                    hunks: vec![crate::review_types::DiffHunk {
+                        old_start: 1,
+                        old_lines: 1,
+                        new_start: 1,
+                        new_lines: 1,
+                        header: "@@ -1 +1 @@".to_string(),
+                        lines: vec![crate::review_types::DiffLine {
+                            kind: crate::review_types::LineKind::Context,
+                            content: "on specific lines.".to_string(),
+                            old_lineno: Some(1),
+                            new_lineno: Some(1),
+                        }],
+                    }],
+                    is_binary: false,
+                    diff_hash: "diff".to_string(),
+                },
+            }],
             40,
         );
         state.diff_line_cursor = 0;
         state.diff_col_cursor = 0;
+        state.rebuild_active_document();
 
         let view = View {
-            lines: vec![" 25  25┃   on specific lines.".to_string()],
+            lines: vec![" 25  25┃   viewport text ignored".to_string()],
         };
 
         assert_eq!(extract_word_at_cursor(&state, &view).as_deref(), Some("on"));

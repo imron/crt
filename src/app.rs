@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use self::model::AppModel;
 use crate::client::{Client, ClientEvent, CommentScope, Notification};
 use crate::config::Config;
-use crate::core::TextAnchor;
 use crate::core::command::Command;
 use crate::core::diff;
 use crate::core::interaction::{CoreEffect, CoreInteractionEngine, InteractionContext};
@@ -114,8 +113,8 @@ pub enum VisualSelectionMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisualSelection {
     pub mode: VisualSelectionMode,
-    pub start: TextAnchor,
-    pub end: TextAnchor,
+    pub start: document::DocumentPosition,
+    pub end: document::DocumentPosition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,6 +128,13 @@ pub struct CommentAnchorCapture {
     pub anchor_text: String,
     pub context_before: String,
     pub context_after: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffWordSelection {
+    pub word: String,
+    pub start: document::DocumentPosition,
+    pub end: document::DocumentPosition,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +165,10 @@ pub struct ActiveDocumentState {
 impl ActiveDocumentState {
     pub fn document(&self) -> &document::ActiveDocument {
         &self.document
+    }
+
+    pub fn document_mut(&mut self) -> &mut document::ActiveDocument {
+        &mut self.document
     }
 
     pub fn scroll(&self) -> document::RowIndex {
@@ -489,6 +499,7 @@ impl App {
         viewport: &impl AppViewport,
         effects: Vec<CoreEffect>,
     ) -> AppOutput {
+        self.state.ensure_active_document();
         let mut output = update::apply_core_effects(&mut self.state, viewport, effects);
         if output.take_pending_review_toggle() {
             self.pending_work.push_back(AppWork::ToggleSelectedReview);
@@ -1216,6 +1227,46 @@ impl AppState {
         self.files.get(self.selected_file)
     }
 
+    pub fn selected_diff_text(&self) -> Option<String> {
+        let selection = model::document_visible_selection(self.visual_selection.as_ref())?;
+        let active = self.active_document.as_ref()?;
+        Some(active.document().diff.selected_text(selection))
+    }
+
+    pub fn diff_word_selection_at(&self, row: usize, column: usize) -> Option<DiffWordSelection> {
+        let text = self
+            .active_document
+            .as_ref()
+            .and_then(|active| active.document().diff.text_at(document::RowIndex(row)))?;
+        let chars: Vec<char> = text.chars().collect();
+        let ch = *chars.get(column)?;
+        if !is_word_selection_char(ch) {
+            return None;
+        }
+
+        let mut start = column;
+        while start > 0 && is_word_selection_char(chars[start - 1]) {
+            start -= 1;
+        }
+
+        let mut end = column;
+        while end + 1 < chars.len() && is_word_selection_char(chars[end + 1]) {
+            end += 1;
+        }
+
+        Some(DiffWordSelection {
+            word: chars[start..=end].iter().collect(),
+            start: document::DocumentPosition {
+                row: document::RowIndex(row),
+                column: document::ColumnIndex(start),
+            },
+            end: document::DocumentPosition {
+                row: document::RowIndex(row),
+                column: document::ColumnIndex(end),
+            },
+        })
+    }
+
     /// Return the effective diff base for the currently selected file.
     ///
     /// If the file has been reviewed and `show_merge_base` is false, use the
@@ -1481,6 +1532,10 @@ impl AppState {
     }
 }
 
+fn is_word_selection_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1488,7 +1543,8 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::document::DocumentRow;
+    use crate::app::document::{DiffDocument, DocumentRow, RowIndex};
+    use crate::core::TextAnchor;
     use crate::core::navigation::Direction;
     use crate::core::{
         CommentEffect, CommentsPanelEffect, CoreEffect, DefinitionResultsEffect, DiffCursorEffect,
@@ -1503,32 +1559,12 @@ mod tests {
     struct EmptyViewport;
 
     impl AppViewport for EmptyViewport {
-        fn hunk_start_rows(&self) -> &[usize] {
-            &[]
-        }
-
-        fn hunk_end_rows(&self) -> &[usize] {
-            &[]
-        }
-
-        fn hunk_first_change_rows(&self) -> &[usize] {
-            &[]
-        }
-
-        fn diff_gutter_cols(&self) -> usize {
-            0
-        }
-
         fn diff_content_height(&self) -> usize {
             0
         }
 
         fn diff_view_height(&self) -> usize {
             0
-        }
-
-        fn diff_rendered_text(&self) -> &[String] {
-            &[]
         }
     }
 
@@ -1545,32 +1581,12 @@ mod tests {
     }
 
     impl AppViewport for RenderedViewport {
-        fn hunk_start_rows(&self) -> &[usize] {
-            &[]
-        }
-
-        fn hunk_end_rows(&self) -> &[usize] {
-            &[]
-        }
-
-        fn hunk_first_change_rows(&self) -> &[usize] {
-            &[]
-        }
-
-        fn diff_gutter_cols(&self) -> usize {
-            0
-        }
-
         fn diff_content_height(&self) -> usize {
             self.lines.len()
         }
 
         fn diff_view_height(&self) -> usize {
             10
-        }
-
-        fn diff_rendered_text(&self) -> &[String] {
-            &self.lines
         }
     }
 
@@ -2334,8 +2350,14 @@ mod tests {
         app.state.diff_col_cursor = 2;
         app.state.visual_selection = Some(VisualSelection {
             mode: VisualSelectionMode::Text,
-            start: TextAnchor { line: 1, column: 2 },
-            end: TextAnchor { line: 4, column: 8 },
+            start: document::DocumentPosition {
+                row: document::RowIndex(1),
+                column: document::ColumnIndex(2),
+            },
+            end: document::DocumentPosition {
+                row: document::RowIndex(4),
+                column: document::ColumnIndex(8),
+            },
         });
 
         app.state.mark_model_changed();
@@ -3201,22 +3223,22 @@ mod tests {
         let mut app = App::new(
             Config::default(),
             test_context(),
-            vec![test_file("a.rs"), test_file("b.rs")],
+            vec![test_file_with_hunk("a.rs"), test_file_with_hunk("b.rs")],
         );
-        app.state.diff_search_query = Some("Command".to_string());
+        app.state.diff_search_query = Some("alpha".to_string());
         app.state.diff_search_matches = vec![(8, 1, 8)];
         app.state.diff_search_current = 0;
 
         app.state.selected_file = 1;
         app.state.on_file_changed();
 
-        assert_eq!(app.state.diff_search_query.as_deref(), Some("Command"));
+        assert_eq!(app.state.diff_search_query.as_deref(), Some("alpha"));
         assert!(app.state.diff_search_matches.is_empty());
 
-        let view = RenderedViewport::new(vec!["let value = 1;", "    Command::Quit"]);
+        let view = RenderedViewport::new(vec!["rendered viewport should be ignored"]);
         assert!(app.refresh_active_diff_search(&view));
 
-        assert_eq!(app.state.diff_search_matches, vec![(1, 4, 11)]);
+        assert_eq!(app.state.diff_search_matches, vec![(1, 4, 9)]);
         assert_eq!(app.state.diff_search_current, 0);
         assert_eq!(app.state.diff_line_cursor, 1);
 
@@ -3224,6 +3246,109 @@ mod tests {
 
         assert!(!app.refresh_active_diff_search(&view));
         assert_eq!(app.state.diff_line_cursor, 0);
+    }
+
+    #[test]
+    fn hunk_navigation_uses_active_document_hunks_not_viewport_rows() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_two_hunks("src/main.rs")],
+        );
+        app.state.rebuild_active_document();
+        let view = RenderedViewport::new(vec!["viewport has no hunk rows"]);
+
+        app.apply_core_effects(&view, vec![CoreEffect::JumpHunk(Direction::Next)]);
+
+        assert_eq!(app.state.diff_line_cursor, 2);
+        assert_eq!(app.state.diff_col_cursor, 0);
+
+        app.apply_core_effects(&view, vec![CoreEffect::JumpHunk(Direction::Prev)]);
+
+        assert_eq!(app.state.diff_line_cursor, 0);
+        assert_eq!(app.state.diff_col_cursor, 0);
+    }
+
+    #[test]
+    fn view_mode_cycle_preserves_cursor_from_active_document_source() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_hunk("src/main.rs")],
+        );
+        app.state.head_content = Some(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n\
+             let alpha = beta;\nlet gamma = delta;\nafter one\n"
+                .to_string(),
+        );
+        app.state.base_content = Some(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n\
+             before one\nafter one\n"
+                .to_string(),
+        );
+        app.state.diff_line_cursor = 0;
+        app.state.rebuild_active_document();
+        let view = RenderedViewport::new(vec!["viewport text ignored"]);
+        let original_source = app
+            .state
+            .active_document
+            .as_ref()
+            .and_then(|active| {
+                active
+                    .document()
+                    .diff
+                    .source_at(RowIndex(app.state.diff_line_cursor))
+            })
+            .expect("original source");
+
+        app.apply_core_effects(&view, vec![CoreEffect::CycleViewMode]);
+
+        assert_eq!(app.state.content_mode, ContentMode::FullFile);
+        assert_eq!(app.state.render_variant, RenderVariant::HeadVersion);
+        assert_eq!(
+            app.state
+                .active_document
+                .as_ref()
+                .and_then(|active| {
+                    active
+                        .document()
+                        .diff
+                        .source_at(document::RowIndex(app.state.diff_line_cursor))
+                })
+                .and_then(|source| source.head),
+            original_source.head
+        );
+
+        app.apply_core_effects(&view, vec![CoreEffect::CycleViewMode]);
+
+        assert_eq!(app.state.render_variant, RenderVariant::BaseVersion);
+        assert_eq!(
+            app.state
+                .active_document
+                .as_ref()
+                .and_then(|active| {
+                    active
+                        .document()
+                        .diff
+                        .source_at(document::RowIndex(app.state.diff_line_cursor))
+                })
+                .and_then(|source| source.base),
+            original_source.base
+        );
+
+        app.apply_core_effects(&view, vec![CoreEffect::CycleViewMode]);
+
+        assert_eq!(app.state.content_mode, ContentMode::Diff);
+        assert_eq!(app.state.render_variant, RenderVariant::Inline);
+        assert_eq!(
+            app.state.active_document.as_ref().and_then(|active| {
+                active
+                    .document()
+                    .diff
+                    .source_at(RowIndex(app.state.diff_line_cursor))
+            }),
+            Some(original_source)
+        );
     }
 
     #[test]
@@ -3273,31 +3398,37 @@ mod tests {
 
         assert_eq!(app.state.render_variant, RenderVariant::SideBySide);
         assert_eq!(app.state.diff_line_cursor, 26);
-        let row = app
-            .model()
-            .diff
-            .side_by_side_rows
-            .rows
-            .get(app.state.diff_line_cursor)
-            .expect("cursor should land on a side-by-side row")
-            .clone();
-        assert_eq!(row.base.as_ref().map(|cell| cell.line_number), Some(26));
-        assert_eq!(row.head.as_ref().map(|cell| cell.line_number), Some(27));
+        let source = app
+            .state
+            .active_document
+            .as_ref()
+            .and_then(|document| {
+                document
+                    .document()
+                    .diff
+                    .source_at(document::RowIndex(app.state.diff_line_cursor))
+            })
+            .expect("cursor should land on a side-by-side row");
+        assert_eq!(source.base, Some(26));
+        assert_eq!(source.head, Some(27));
 
         app.apply_core_effects(&EmptyViewport, vec![CoreEffect::ToggleInlineDiff]);
 
         assert_eq!(app.state.render_variant, RenderVariant::Inline);
         assert_eq!(app.state.diff_line_cursor, 27);
-        let row = app
-            .model()
-            .diff
-            .inline_rows
-            .rows
-            .get(app.state.diff_line_cursor)
-            .expect("cursor should land on an inline row")
-            .clone();
-        assert_eq!(row.old_lineno, None);
-        assert_eq!(row.new_lineno, Some(27));
+        let source = app
+            .state
+            .active_document
+            .as_ref()
+            .and_then(|document| {
+                document
+                    .document()
+                    .diff
+                    .source_at(document::RowIndex(app.state.diff_line_cursor))
+            })
+            .expect("cursor should land on an inline row");
+        assert_eq!(source.base, None);
+        assert_eq!(source.head, Some(27));
     }
 
     #[test]
@@ -3335,23 +3466,24 @@ mod tests {
 
         assert_eq!(app.state.render_variant, RenderVariant::SideBySide);
         assert!(app.state.base_content.is_some());
-        let model = app.model();
-        let first_tail = model
-            .diff
-            .side_by_side_rows
-            .rows
-            .iter()
+        let active_document = app.state.active_document.as_ref().expect("active document");
+        let DiffDocument::SideBySide(document) = &active_document.document().diff else {
+            panic!("expected side-by-side document");
+        };
+        let first_tail = (0..document.len())
+            .map(RowIndex)
             .find(|row| {
-                row.base.as_ref().map(|cell| cell.line_number) == Some(27)
-                    && row.head.as_ref().map(|cell| cell.line_number) == Some(30)
+                document
+                    .source_at(*row)
+                    .is_some_and(|source| source.base == Some(27) && source.head == Some(30))
             })
             .expect("base 27 should be paired with head 30");
         assert_eq!(
-            first_tail.base.as_ref().map(|cell| cell.content.as_str()),
+            document.base().text_at(first_tail),
             Some("shared tail 27/30")
         );
         assert_eq!(
-            first_tail.head.as_ref().map(|cell| cell.content.as_str()),
+            document.head().text_at(first_tail),
             Some("shared tail 27/30")
         );
     }
@@ -4064,21 +4196,20 @@ mod tests {
         app.state.content_mode = ContentMode::Diff;
         app.state.render_variant = RenderVariant::Inline;
         app.state.pane_focus = PaneFocus::Diff;
-        let model = app.model();
-        let start_row = model
+        app.state.rebuild_active_document();
+        let active_document = app.state.active_document.as_ref().expect("active document");
+        let start_row = active_document
+            .document()
             .diff
-            .inline_rows
-            .rows
-            .iter()
-            .position(|row| row.old_lineno == Some(154))
-            .expect("base 154 should render");
-        let end_row = model
+            .row_for_source_line(CommentAnchorSide::Base, 154)
+            .expect("base 154 should render")
+            .0;
+        let end_row = active_document
+            .document()
             .diff
-            .inline_rows
-            .rows
-            .iter()
-            .position(|row| row.new_lineno == Some(188))
-            .expect("head 188 should render");
+            .row_for_source_line(CommentAnchorSide::Head, 188)
+            .expect("head 188 should render")
+            .0;
 
         app.apply_core_effects(
             &EmptyViewport,
@@ -5086,14 +5217,19 @@ mod tests {
         let mut nested = stored_comment(34, path);
         move_comment_head_range(&mut nested, 172, 175);
         app.state.comments = vec![broad, nested];
+        app.state.rebuild_active_document();
         app.state.diff_line_cursor = app
-            .model()
-            .diff
-            .inline_rows
-            .rows
-            .iter()
-            .position(|row| row.new_lineno == Some(172))
-            .expect("head 172 should render");
+            .state
+            .active_document
+            .as_ref()
+            .and_then(|document| {
+                document
+                    .document()
+                    .diff
+                    .row_for_source_line(CommentAnchorSide::Head, 172)
+            })
+            .expect("head 172 should render")
+            .0;
 
         app.state.selected_comment_id = None;
         let default_context = app.interaction_context();
