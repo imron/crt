@@ -3201,23 +3201,6 @@ mod tests {
     }
 
     #[test]
-    fn app_model_projects_current_file_comments() {
-        let mut app = App::new(
-            Config::default(),
-            test_context(),
-            vec![test_file("a.rs"), test_file("b.rs")],
-        );
-        app.state.comments = vec![stored_comment(1, "a.rs"), stored_comment(2, "b.rs")];
-        app.state.selected_file = 1;
-
-        let model = app.model();
-
-        assert_eq!(model.diff.comments.len(), 1);
-        assert_eq!(model.diff.comments[0].id, 2);
-        assert_eq!(model.diff.comments[0].line_start, 2);
-    }
-
-    #[test]
     fn active_diff_search_recomputes_after_file_change() {
         let mut app = App::new(
             Config::default(),

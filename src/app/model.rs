@@ -12,14 +12,13 @@ use crate::app::document::{
     VisibleSelection as DocumentVisibleSelection,
 };
 use crate::app::{
-    ActiveDocumentState, AppState, CommentAnchorCapture, FileListSectionFocus,
-    VisualSelection as StateVisualSelection, VisualSelectionMode,
+    ActiveDocumentState, AppState, FileListSectionFocus, VisualSelection as StateVisualSelection,
+    VisualSelectionMode,
 };
 use crate::config::DiffAlgorithm;
 use crate::core::TextAnchor;
 use crate::review_types::{
-    self, AnchorStatus, ChangeKind, ConnectionContext, ContentMode, LineKind, PaneFocus,
-    RenderVariant,
+    self, AnchorStatus, ChangeKind, ConnectionContext, ContentMode, PaneFocus, RenderVariant,
 };
 
 #[derive(Debug, Clone)]
@@ -115,13 +114,8 @@ pub struct DiffPanel {
     pub show_merge_base: bool,
     pub reviewed_diff_expanded: bool,
     pub is_binary: bool,
-    pub diff_hash: Option<String>,
-    pub hunks: Vec<DiffHunk>,
     pub scroll: usize,
     pub cursor: TextAnchor,
-    pub search_query: Option<String>,
-    pub pending_comment_anchor: Option<CommentAnchorCapture>,
-    pub comments: Vec<CommentAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,37 +143,10 @@ pub struct CommentItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiffHunk {
-    pub header: String,
-    pub old_start: u32,
-    pub old_lines: u32,
-    pub new_start: u32,
-    pub new_lines: u32,
-    pub lines: Vec<DiffLine>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiffLine {
-    pub kind: LineKind,
-    pub content: String,
-    pub old_lineno: Option<u32>,
-    pub new_lineno: Option<u32>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlameLine {
     pub hash: Rc<str>,
     pub author: Rc<str>,
     pub date: Rc<str>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommentAttachment {
-    pub id: i64,
-    pub line_start: i64,
-    pub line_end: i64,
-    pub resolved: bool,
-    pub anchor_status: AnchorStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -605,35 +572,6 @@ fn external_comment_row_model(
 
 fn diff_panel_model(state: &AppState) -> DiffPanel {
     let selected = state.selected_file_entry();
-    let hunks = selected
-        .map(|entry| {
-            entry
-                .diff
-                .hunks
-                .iter()
-                .map(|hunk| DiffHunk {
-                    header: hunk.header.clone(),
-                    old_start: hunk.old_start,
-                    old_lines: hunk.old_lines,
-                    new_start: hunk.new_start,
-                    new_lines: hunk.new_lines,
-                    lines: hunk
-                        .lines
-                        .iter()
-                        .map(|line| DiffLine {
-                            kind: line.kind,
-                            content: line.content.clone(),
-                            old_lineno: line.old_lineno,
-                            new_lineno: line.new_lineno,
-                        })
-                        .collect(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let comments = selected
-        .map(|entry| comment_attachments_for_current_view(state, &entry.change.path))
-        .unwrap_or_default();
     let document_scroll = state
         .active_document
         .as_ref()
@@ -663,88 +601,9 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
         show_merge_base: state.show_merge_base,
         reviewed_diff_expanded: state.reviewed_diff_expanded,
         is_binary: selected.is_some_and(|entry| entry.diff.is_binary),
-        diff_hash: selected.map(|entry| entry.diff.diff_hash.clone()),
-        hunks,
         scroll: document_scroll,
         cursor: document_cursor,
-        search_query: state.diff_search_query.clone(),
-        pending_comment_anchor: state.pending_comment_anchor.clone(),
-        comments,
     }
-}
-
-#[cfg(test)]
-fn comment_attachments_for_file(
-    comments: &[review_types::Comment],
-    file_path: &str,
-) -> Vec<CommentAttachment> {
-    comment_attachments_for_file_and_side(comments, file_path, None)
-}
-
-fn comment_attachments_for_current_view(
-    state: &AppState,
-    file_path: &str,
-) -> Vec<CommentAttachment> {
-    let side = match (state.content_mode, state.render_variant) {
-        (ContentMode::FullFile, RenderVariant::BaseVersion) => {
-            Some(review_types::CommentAnchorSide::Base)
-        }
-        (ContentMode::FullFile, RenderVariant::HeadVersion) => {
-            Some(review_types::CommentAnchorSide::Head)
-        }
-        _ => None,
-    };
-    comment_attachments_for_file_and_side(&state.comments, file_path, side)
-}
-
-fn comment_attachments_for_file_and_side(
-    comments: &[review_types::Comment],
-    file_path: &str,
-    side: Option<review_types::CommentAnchorSide>,
-) -> Vec<CommentAttachment> {
-    comments
-        .iter()
-        .filter(|comment| comment.file_path() == file_path)
-        .filter_map(|comment| {
-            let line_start = comment_anchor_line_start(comment, side)?;
-            let line_end = comment_anchor_line_end(comment, side)?;
-            Some(CommentAttachment {
-                id: comment.id,
-                line_start,
-                line_end,
-                resolved: comment.resolved,
-                anchor_status: comment.anchor_status(),
-            })
-        })
-        .collect()
-}
-
-fn comment_anchor_line_start(
-    comment: &review_types::Comment,
-    side: Option<review_types::CommentAnchorSide>,
-) -> Option<i64> {
-    comment
-        .anchor()
-        .segments
-        .iter()
-        .filter(|segment| segment.file_path == comment.file_path())
-        .filter(|segment| side.is_none_or(|side| segment.side == side))
-        .map(|segment| segment.line_start)
-        .min()
-}
-
-fn comment_anchor_line_end(
-    comment: &review_types::Comment,
-    side: Option<review_types::CommentAnchorSide>,
-) -> Option<i64> {
-    comment
-        .anchor()
-        .segments
-        .iter()
-        .filter(|segment| segment.file_path == comment.file_path())
-        .filter(|segment| side.is_none_or(|side| segment.side == side))
-        .map(|segment| segment.line_end)
-        .max()
 }
 
 fn comments_panel_model(state: &AppState) -> CommentsPanel {
@@ -1357,131 +1216,6 @@ mod tests {
     }
 
     #[test]
-    fn comment_attachment_uses_compound_anchor_span() {
-        let comment = compound_comment(
-            42,
-            "src/lib.rs",
-            vec![
-                anchor_segment(
-                    review_types::CommentAnchorSide::Base,
-                    "src/lib.rs",
-                    10,
-                    12,
-                    "base",
-                ),
-                anchor_segment(
-                    review_types::CommentAnchorSide::Head,
-                    "src/lib.rs",
-                    18,
-                    19,
-                    "head",
-                ),
-            ],
-        );
-
-        let attachments = comment_attachments_for_file(&[comment], "src/lib.rs");
-
-        assert_eq!(attachments.len(), 1);
-        assert_eq!(attachments[0].line_start, 10);
-        assert_eq!(attachments[0].line_end, 19);
-    }
-
-    #[test]
-    fn full_file_base_view_shows_base_segment_comment_markers() {
-        let mut app = App::new(
-            Config::default(),
-            test_context(),
-            vec![file(
-                "src/lib.rs",
-                review_types::ReviewStatus::Unreviewed,
-                Vec::new(),
-            )],
-        );
-        app.state.content_mode = ContentMode::FullFile;
-        app.state.render_variant = RenderVariant::BaseVersion;
-        app.state.base_content = Some("base one\nbase two\nbase three\n".to_string());
-        app.state.head_content = Some("head one\nhead two\nhead three\n".to_string());
-
-        let mut comment = stored_comment(7, "src/lib.rs", false);
-        comment
-            .replace_anchor(review_types::CommentAnchor {
-                segments: vec![review_types::CommentAnchorSegment {
-                    side: review_types::CommentAnchorSide::Base,
-                    file_path: "src/lib.rs".to_string(),
-                    line_start: 2,
-                    line_end: 2,
-                    char_start: None,
-                    char_end: None,
-                    anchor_text: "base two".to_string(),
-                    context_before: "base one".to_string(),
-                    context_after: "base three".to_string(),
-                    placement_status: review_types::AnchorPlacementStatus::Anchored,
-                    match_method: review_types::AnchorMatchMethod::ExactAtLine,
-                }],
-                aggregate_status: review_types::AnchorAggregateStatus::Anchored,
-            })
-            .expect("test comment anchor should be valid");
-        app.state.comments = vec![comment];
-
-        let model = app.model();
-
-        assert_eq!(model.diff.comments.len(), 1);
-    }
-
-    #[test]
-    fn paired_anchor_span_is_order_independent_when_head_precedes_base() {
-        let comment = review_types::Comment::new(review_types::CommentInit {
-            id: 43,
-            merge_base: "abc123".to_string(),
-            head_ref: "feature".to_string(),
-            created_head_commit: "head-commit".to_string(),
-            anchor: review_types::CommentAnchor {
-                segments: vec![
-                    review_types::CommentAnchorSegment {
-                        side: review_types::CommentAnchorSide::Head,
-                        file_path: "src/lib.rs".to_string(),
-                        line_start: 3,
-                        line_end: 4,
-                        char_start: None,
-                        char_end: None,
-                        anchor_text: "head".to_string(),
-                        context_before: String::new(),
-                        context_after: String::new(),
-                        placement_status: review_types::AnchorPlacementStatus::Anchored,
-                        match_method: review_types::AnchorMatchMethod::ExactAtLine,
-                    },
-                    review_types::CommentAnchorSegment {
-                        side: review_types::CommentAnchorSide::Base,
-                        file_path: "src/lib.rs".to_string(),
-                        line_start: 12,
-                        line_end: 14,
-                        char_start: None,
-                        char_end: None,
-                        anchor_text: "base".to_string(),
-                        context_before: String::new(),
-                        context_after: String::new(),
-                        placement_status: review_types::AnchorPlacementStatus::Anchored,
-                        match_method: review_types::AnchorMatchMethod::ExactAtLine,
-                    },
-                ],
-                aggregate_status: review_types::AnchorAggregateStatus::Anchored,
-            },
-            body: "compound".to_string(),
-            resolved: false,
-            created_at: "2026-06-28T00:00:00+10:00".to_string(),
-            updated_at: "2026-06-28T00:00:00+10:00".to_string(),
-            anchor_status: AnchorStatus::Anchored,
-        })
-        .expect("test comment anchor should be valid");
-
-        let attachments = comment_attachments_for_file(&[comment], "src/lib.rs");
-
-        assert_eq!(attachments.len(), 1);
-        assert_eq!(attachments[0].line_start, 3);
-        assert_eq!(attachments[0].line_end, 14);
-    }
-
-    #[test]
     fn model_projects_diff_content_cursor_and_search_highlights() {
         let mut app = App::new(
             Config::default(),
@@ -1514,12 +1248,8 @@ mod tests {
 
         assert_eq!(model.diff.file_id, Some("src/main.rs".to_string()));
         assert_eq!(model.diff.selected_file_index, Some(0));
-        assert_eq!(model.diff.diff_hash, Some("hash-src/main.rs".to_string()));
         assert_eq!(model.diff.scroll, 0);
         assert_eq!(model.diff.cursor, TextAnchor { line: 3, column: 7 });
-        assert_eq!(model.diff.hunks.len(), 1);
-        assert_eq!(model.diff.hunks[0].header, "@@ -1,2 +1,2 @@");
-        assert_eq!(model.diff.hunks[0].lines[1].kind, LineKind::Addition);
         assert_eq!(
             model
                 .active_document
@@ -1535,7 +1265,6 @@ mod tests {
                 .as_str()),
             Some("hash-src/main.rs")
         );
-        assert_eq!(model.diff.search_query, Some("run".to_string()));
         let active_document = model.active_document.as_ref().expect("active document");
         assert_eq!(
             active_document.document().diff.all_search_matches(),
