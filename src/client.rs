@@ -145,6 +145,7 @@ impl HttpClientConnection {
 struct InitArgs {
     worktree: String,
     base_ref: String,
+    root: bool,
 }
 
 /// Async client connected to a crt server.
@@ -311,18 +312,33 @@ impl Client {
 
     /// Initialize the connection. Must be called before any other method.
     pub async fn init(&self, worktree: &str, base_ref: &str) -> Result<InitResult> {
+        self.init_with_root(worktree, base_ref, false).await
+    }
+
+    pub async fn init_root(&self, worktree: &str) -> Result<InitResult> {
+        self.init_with_root(worktree, "", true).await
+    }
+
+    async fn init_with_root(
+        &self,
+        worktree: &str,
+        base_ref: &str,
+        root: bool,
+    ) -> Result<InitResult> {
         let result = self
             .call(
                 RpcMethod::Init,
                 review_types::InitParams {
                     worktree: worktree.to_string(),
                     base_ref: base_ref.to_string(),
+                    root,
                 },
             )
             .await?;
         *self.init_args.lock().await = Some(InitArgs {
             worktree: worktree.to_string(),
             base_ref: base_ref.to_string(),
+            root,
         });
         Ok(result)
     }
@@ -333,6 +349,7 @@ impl Client {
             review_types::InitParams {
                 worktree: init_args.worktree.clone(),
                 base_ref: init_args.base_ref.clone(),
+                root: init_args.root,
             },
         )
         .await

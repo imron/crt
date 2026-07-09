@@ -217,11 +217,21 @@ impl App {
         }
     }
 
-    pub async fn start_review(base: &str, reset: bool, standalone: bool) -> Result<ReviewStartup> {
+    pub async fn start_review(
+        base: Option<&str>,
+        root: bool,
+        reset: bool,
+        standalone: bool,
+    ) -> Result<ReviewStartup> {
         let socket_path = default_socket_path()?;
         let cwd = std::env::current_dir().context("Failed to determine current directory")?;
         let client = Client::connect_or_start(&socket_path, standalone).await?;
-        let init = client.init(&cwd.to_string_lossy(), base).await?;
+        let init = if root {
+            client.init_root(&cwd.to_string_lossy()).await?
+        } else {
+            let base = base.context("A base ref is required unless --root is specified")?;
+            client.init(&cwd.to_string_lossy(), base).await?
+        };
 
         if reset {
             let result = client.reset_reviews().await?;
@@ -1381,8 +1391,12 @@ impl AppState {
         self.base_content = None;
         if let Some(entry) = self.files.get(self.selected_file) {
             let path = entry.change.path.clone();
-            self.base_content =
-                diff::file_content(&self.context.worktree, &self.context.merge_base, &path);
+            self.base_content = diff::review_base_file_content(
+                &self.context.worktree,
+                &self.context.base_ref,
+                &self.context.merge_base,
+                &path,
+            );
         }
     }
 
@@ -1400,6 +1414,7 @@ impl AppState {
             let path = entry.change.path.clone();
             let (head, base) = diff::blame_pair(
                 &self.context.worktree,
+                &self.context.base_ref,
                 &self.context.merge_base,
                 &path,
                 self.show_blame,
@@ -1424,6 +1439,7 @@ impl AppState {
             let merge_base = self.context.merge_base.clone();
             if let Some(diff) = diff::diff_with_fallback(
                 &self.context.worktree,
+                &self.context.base_ref,
                 &diff_base,
                 &merge_base,
                 &path,
@@ -1451,6 +1467,7 @@ impl AppState {
             let merge_base = self.context.merge_base.clone();
             if let Some(diff) = diff::diff_with_fallback(
                 &self.context.worktree,
+                &self.context.base_ref,
                 &diff_base,
                 &merge_base,
                 &path,

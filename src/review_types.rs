@@ -7,6 +7,8 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+pub const ROOT_REVIEW_BASE_REF: &str = "--root";
+
 // ---------------------------------------------------------------------------
 // Git-originated types
 // ---------------------------------------------------------------------------
@@ -442,6 +444,8 @@ pub struct ConnectionContext {
 pub struct InitParams {
     pub worktree: String,
     pub base_ref: String,
+    #[serde(default)]
+    pub root: bool,
 }
 
 /// Parameters for `get_file_diff`.
@@ -1178,6 +1182,7 @@ mod tests {
         let params = InitParams {
             worktree: "/path/to/repo".to_string(),
             base_ref: "main".to_string(),
+            root: false,
         };
         let json = serde_json::to_string(&params).unwrap();
         let deserialized: InitParams = serde_json::from_str(&json).unwrap();

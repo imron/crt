@@ -225,6 +225,15 @@ fn init_params(worktree: &Path, base_ref: &str) -> serde_json::Value {
     params(review_types::InitParams {
         worktree: worktree.to_string_lossy().into_owned(),
         base_ref: base_ref.to_string(),
+        root: false,
+    })
+}
+
+fn init_root_params(worktree: &Path) -> serde_json::Value {
+    params(review_types::InitParams {
+        worktree: worktree.to_string_lossy().into_owned(),
+        base_ref: String::new(),
+        root: true,
     })
 }
 
@@ -370,6 +379,98 @@ async fn test_init_bad_base_ref() {
         msg.contains("nonexistent-xyz"),
         "error should mention the bad ref: {msg}"
     );
+}
+
+#[tokio::test]
+async fn test_init_root_rejects_base_ref() {
+    let server = TestServer::start().await;
+    let mut conn = server.connect().await;
+
+    let mut params = init_params(&server.repo_dir, "HEAD");
+    params["root"] = serde_json::Value::Bool(true);
+
+    let resp = conn.request(RpcMethod::Init, params).await;
+
+    assert!(resp["error"].is_object(), "should return error: {resp}");
+    assert!(
+        resp["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("--root cannot be combined"),
+        "unexpected error: {resp}"
+    );
+}
+
+#[tokio::test]
+async fn test_root_review_lists_initial_commit_files() {
+    let server = TestServer::start().await;
+    let root_commit = git_output(&server.repo_dir, &["rev-list", "--max-parents=0", "HEAD"]);
+    let mut conn = server.connect().await;
+
+    let resp = conn
+        .request(RpcMethod::Init, init_root_params(&server.repo_dir))
+        .await;
+    assert!(resp["error"].is_null(), "init failed: {resp}");
+    assert_eq!(resp["result"]["base_ref"], "--root");
+    assert_eq!(resp["result"]["merge_base"], root_commit);
+
+    let resp = conn
+        .request(RpcMethod::ListChangedFiles, empty_params())
+        .await;
+    assert!(resp["error"].is_null(), "list failed: {resp}");
+    let files = resp["result"]["files"].as_array().unwrap();
+    let file = files
+        .iter()
+        .find(|file| file["change"]["path"] == "file.txt")
+        .expect("initial file should be listed");
+    assert_eq!(file["change"]["kind"], "added");
+    assert!(
+        file["diff"]["hunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|hunk| hunk["lines"].as_array().unwrap())
+            .all(|line| line["kind"] == "addition")
+    );
+
+    let resp = conn
+        .request(
+            RpcMethod::GetFileDiff,
+            params(review_types::GetFileDiffParams {
+                file_path: "file.txt".to_string(),
+            }),
+        )
+        .await;
+    assert!(resp["error"].is_null(), "diff failed: {resp}");
+    assert!(
+        resp["result"]["diff"]["hunks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|hunk| hunk["lines"].as_array().unwrap())
+            .all(|line| line["kind"] == "addition")
+    );
+
+    let resp = conn
+        .request(
+            RpcMethod::MarkReviewed,
+            params(review_types::MarkReviewedParams {
+                file_path: "file.txt".to_string(),
+            }),
+        )
+        .await;
+    assert!(resp["error"].is_null(), "mark reviewed failed: {resp}");
+
+    let resp = conn
+        .request(RpcMethod::ListChangedFiles, empty_params())
+        .await;
+    assert!(resp["error"].is_null(), "list after review failed: {resp}");
+    let files = resp["result"]["files"].as_array().unwrap();
+    let file = files
+        .iter()
+        .find(|file| file["change"]["path"] == "file.txt")
+        .expect("initial file should still be listed");
+    assert_eq!(file["status"]["status"], "reviewed");
 }
 
 #[tokio::test]

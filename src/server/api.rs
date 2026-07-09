@@ -39,16 +39,31 @@ pub async fn handle_init(
 
     let worktree_path = PathBuf::from(&init_params.worktree);
     let base_ref = init_params.base_ref.clone();
+    if init_params.root && !base_ref.is_empty() {
+        return JsonRpcResponse::error(
+            id.clone(),
+            ERR_INVALID_PARAMS,
+            "--root cannot be combined with a base ref".to_string(),
+        );
+    }
 
     // Resolve repo context and merge-base via git module (blocking operation)
     let wt = worktree_path.clone();
     let br = base_ref.clone();
+    let root = init_params.root;
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let repo = git::Repo::open(&wt)?;
         let ctx = repo.context()?;
-        let review_base = repo.resolve_review_base(&br)?;
-        let merge_base = repo.merge_base(&br, "HEAD")?;
-        Ok((ctx, git::CommitId::new(merge_base), review_base))
+        let (review_base, merge_base) = if root {
+            let review_base = repo.resolve_root_review_base()?;
+            let merge_base = review_base.resolved_commit().clone();
+            (review_base, merge_base)
+        } else {
+            let review_base = repo.resolve_review_base(&br)?;
+            let merge_base = git::CommitId::new(repo.merge_base(&br, "HEAD")?);
+            (review_base, merge_base)
+        };
+        Ok((ctx, merge_base, review_base))
     })
     .await;
 
@@ -99,7 +114,11 @@ pub async fn handle_init(
     let ctx = ConnectionContext {
         repo_root: git_ctx.repo_root.clone(),
         worktree: worktree_path.clone(),
-        base_ref: base_ref.clone(),
+        base_ref: if init_params.root {
+            review_types::ROOT_REVIEW_BASE_REF.to_string()
+        } else {
+            base_ref.clone()
+        },
         review_base,
         merge_base: merge_base.clone(),
         head: git_ctx.head.clone(),
@@ -111,7 +130,11 @@ pub async fn handle_init(
         worktree: worktree_path.to_string_lossy().into_owned(),
         head_ref: git_ctx.head.display_name(),
         merge_base: merge_base.to_string(),
-        base_ref: base_ref.clone(),
+        base_ref: if init_params.root {
+            review_types::ROOT_REVIEW_BASE_REF.to_string()
+        } else {
+            base_ref.clone()
+        },
     };
 
     if let Some(old_ctx) = conn_ctx.as_ref() {
@@ -225,15 +248,26 @@ pub async fn handle_list_changed_files(
 
     let worktree = ctx.worktree.clone();
     let merge_base = ctx.merge_base.to_string();
+    let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
 
     // Git operations are blocking — run on the blocking thread pool.
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let repo = git::Repo::open(&worktree)?;
-        let changes = repo.list_changed_files_workdir(&merge_base)?;
+        let base = if root {
+            git::DiffBase::EmptyTree
+        } else {
+            git::DiffBase::Commit(&merge_base)
+        };
+        let changes = repo.list_changed_files_workdir_for_base(base)?;
 
         let mut files = Vec::new();
         for change in changes {
-            let diff = repo.diff_file_workdir(&merge_base, &change.path)?;
+            let diff = repo.diff_file_workdir_opts_for_base(
+                base,
+                &change.path,
+                crate::config::DiffAlgorithm::Patience,
+                false,
+            )?;
 
             let status = match reviews.get(&change.path) {
                 None => review_types::ReviewStatus::Unreviewed,
@@ -301,14 +335,25 @@ pub async fn handle_list_file_statuses(
 
     let worktree = ctx.worktree.clone();
     let merge_base = ctx.merge_base.to_string();
+    let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
 
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let repo = git::Repo::open(&worktree)?;
-        let changes = repo.list_changed_files_workdir(&merge_base)?;
+        let base = if root {
+            git::DiffBase::EmptyTree
+        } else {
+            git::DiffBase::Commit(&merge_base)
+        };
+        let changes = repo.list_changed_files_workdir_for_base(base)?;
 
         let mut files = Vec::new();
         for change in changes {
-            let diff = repo.diff_file_workdir(&merge_base, &change.path)?;
+            let diff = repo.diff_file_workdir_opts_for_base(
+                base,
+                &change.path,
+                crate::config::DiffAlgorithm::Patience,
+                false,
+            )?;
             let status = match reviews.get(&change.path) {
                 None => review_types::ReviewStatus::Unreviewed,
                 Some(review) if review.diff_hash == diff.diff_hash => {
@@ -554,11 +599,22 @@ pub async fn handle_get_file_diff(
 
     let worktree = ctx.worktree.clone();
     let merge_base = ctx.merge_base.to_string();
+    let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
     let file_path = diff_params.file_path;
 
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let repo = git::Repo::open(&worktree)?;
-        let diff = repo.diff_file_workdir(&merge_base, &file_path)?;
+        let base = if root {
+            git::DiffBase::EmptyTree
+        } else {
+            git::DiffBase::Commit(&merge_base)
+        };
+        let diff = repo.diff_file_workdir_opts_for_base(
+            base,
+            &file_path,
+            crate::config::DiffAlgorithm::Patience,
+            false,
+        )?;
         Ok(review_types::GetFileDiffResult { diff })
     })
     .await;
@@ -604,6 +660,7 @@ pub async fn handle_mark_reviewed(
     // Compute the current diff hash.
     let worktree = ctx.worktree.clone();
     let merge_base = ctx.merge_base.to_string();
+    let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
     let head_ref = ctx.head_scope_key();
     let file_path = p.file_path.clone();
 
@@ -613,7 +670,17 @@ pub async fn handle_mark_reviewed(
         let fp = file_path.clone();
         let result = tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
             let repo = git::Repo::open(&wt)?;
-            let diff = repo.diff_file_workdir(&mb, &fp)?;
+            let base = if root {
+                git::DiffBase::EmptyTree
+            } else {
+                git::DiffBase::Commit(&mb)
+            };
+            let diff = repo.diff_file_workdir_opts_for_base(
+                base,
+                &fp,
+                crate::config::DiffAlgorithm::Patience,
+                false,
+            )?;
             let head_oid = repo.resolve_commit("HEAD")?;
             Ok((diff.diff_hash, head_oid))
         })
@@ -1183,6 +1250,9 @@ async fn base_file_content(
     ctx: &ConnectionContext,
     file_path: &str,
 ) -> anyhow::Result<Option<(String, String)>> {
+    if matches!(ctx.review_base, git::ReviewBase::Root { .. }) {
+        return Ok(None);
+    }
     commit_file_content(ctx, &ctx.merge_base.to_string(), file_path).await
 }
 
@@ -2218,6 +2288,7 @@ pub async fn handle_search_codebase(
     let pattern = search_params.pattern.clone();
     let scope = search_params.scope.clone();
     let merge_base = ctx.merge_base.to_string();
+    let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
 
     // Get diff files if scope is "diff".
     let diff_files = if scope.as_deref() == Some("diff") {
@@ -2231,7 +2302,12 @@ pub async fn handle_search_codebase(
                 );
             }
         };
-        match repo.list_changed_files_workdir(&merge_base) {
+        let base = if root {
+            git::DiffBase::EmptyTree
+        } else {
+            git::DiffBase::Commit(&merge_base)
+        };
+        match repo.list_changed_files_workdir_for_base(base) {
             Ok(files) => Some(files.iter().map(|f| f.path.clone()).collect::<Vec<_>>()),
             Err(e) => {
                 return JsonRpcResponse::error(

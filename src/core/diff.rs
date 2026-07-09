@@ -21,6 +21,18 @@ pub fn file_content(worktree: &str, rev: &str, path: &str) -> Option<String> {
         .and_then(|repo| repo.file_content(rev, path).ok().flatten())
 }
 
+pub fn review_base_file_content(
+    worktree: &str,
+    base_ref: &str,
+    merge_base: &str,
+    path: &str,
+) -> Option<String> {
+    if base_ref == crate::review_types::ROOT_REVIEW_BASE_REF {
+        return None;
+    }
+    file_content(worktree, merge_base, path)
+}
+
 pub fn workdir_file_content(worktree: &str, path: &str) -> Option<String> {
     Repo::open(Path::new(worktree))
         .ok()
@@ -29,6 +41,7 @@ pub fn workdir_file_content(worktree: &str, path: &str) -> Option<String> {
 
 pub fn blame_pair(
     worktree: &str,
+    base_ref: &str,
     merge_base: &str,
     path: &str,
     enabled: bool,
@@ -42,12 +55,17 @@ pub fn blame_pair(
     };
 
     let head = repo.blame_file("HEAD", path).unwrap_or_default();
-    let base = repo.blame_file(merge_base, path).unwrap_or_default();
+    let base = if base_ref == crate::review_types::ROOT_REVIEW_BASE_REF {
+        Vec::new()
+    } else {
+        repo.blame_file(merge_base, path).unwrap_or_default()
+    };
     (head, base)
 }
 
 pub fn diff_with_fallback(
     worktree: &str,
+    base_ref: &str,
     diff_base: &str,
     merge_base: &str,
     path: &str,
@@ -55,10 +73,26 @@ pub fn diff_with_fallback(
     ignore_whitespace: bool,
 ) -> Option<DiffContent> {
     let repo = Repo::open(Path::new(worktree)).ok()?;
-    repo.diff_file_workdir_opts(diff_base, path, algorithm, ignore_whitespace)
+    let requested_base =
+        if base_ref == crate::review_types::ROOT_REVIEW_BASE_REF && diff_base == merge_base {
+            crate::git::DiffBase::EmptyTree
+        } else {
+            crate::git::DiffBase::Commit(diff_base)
+        };
+    repo.diff_file_workdir_opts_for_base(requested_base, path, algorithm, ignore_whitespace)
         .or_else(|_| {
             if diff_base != merge_base {
-                repo.diff_file_workdir_opts(merge_base, path, algorithm, ignore_whitespace)
+                let fallback_base = if base_ref == crate::review_types::ROOT_REVIEW_BASE_REF {
+                    crate::git::DiffBase::EmptyTree
+                } else {
+                    crate::git::DiffBase::Commit(merge_base)
+                };
+                repo.diff_file_workdir_opts_for_base(
+                    fallback_base,
+                    path,
+                    algorithm,
+                    ignore_whitespace,
+                )
             } else {
                 Err(anyhow::anyhow!("diff failed"))
             }
@@ -163,10 +197,31 @@ mod tests {
 
     #[test]
     fn blame_pair_returns_empty_when_disabled() {
-        let (head, base) = blame_pair("/path/that/does/not/exist", "base", "hello.rs", false);
+        let (head, base) = blame_pair(
+            "/path/that/does/not/exist",
+            "base",
+            "base",
+            "hello.rs",
+            false,
+        );
 
         assert!(head.is_empty());
         assert!(base.is_empty());
+    }
+
+    #[test]
+    fn review_base_file_content_is_empty_for_root_reviews() {
+        let dir = setup_test_repo();
+        let worktree = dir.path().to_str().unwrap();
+
+        let content = review_base_file_content(
+            worktree,
+            crate::review_types::ROOT_REVIEW_BASE_REF,
+            "base",
+            "hello.rs",
+        );
+
+        assert!(content.is_none());
     }
 
     #[test]
@@ -176,6 +231,7 @@ mod tests {
 
         let diff = diff_with_fallback(
             worktree,
+            "base",
             "missing-ref",
             "base",
             "hello.rs",

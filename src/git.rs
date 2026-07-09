@@ -83,12 +83,15 @@ pub enum ReviewBase {
         input: String,
         resolved_commit: CommitId,
     },
+    /// The initial commit reachable from HEAD, reviewed against the empty tree.
+    Root { resolved_commit: CommitId },
 }
 
 impl ReviewBase {
     pub fn input(&self) -> &str {
         match self {
             Self::Named { input, .. } | Self::Anonymous { input, .. } => input,
+            Self::Root { .. } => crate::review_types::ROOT_REVIEW_BASE_REF,
         }
     }
 
@@ -99,12 +102,29 @@ impl ReviewBase {
             }
             | Self::Anonymous {
                 resolved_commit, ..
-            } => resolved_commit,
+            }
+            | Self::Root { resolved_commit } => resolved_commit,
         }
     }
 
     pub fn is_migration_eligible(&self) -> bool {
         matches!(self, Self::Named { .. })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffBase<'a> {
+    Commit(&'a str),
+    EmptyTree,
+}
+
+impl<'a> DiffBase<'a> {
+    fn cli_ref(self) -> &'a str {
+        const EMPTY_TREE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+        match self {
+            DiffBase::Commit(refspec) => refspec,
+            DiffBase::EmptyTree => EMPTY_TREE_OID,
+        }
     }
 }
 
@@ -256,6 +276,41 @@ impl Repo {
         })
     }
 
+    pub fn resolve_root_review_base(&self) -> Result<ReviewBase> {
+        Ok(ReviewBase::Root {
+            resolved_commit: self.root_commit()?,
+        })
+    }
+
+    pub fn root_commit(&self) -> Result<CommitId> {
+        let mut revwalk = self.inner.revwalk().context("Failed to create revwalk")?;
+        revwalk
+            .push_head()
+            .context("Failed to add HEAD to revwalk")?;
+
+        let mut roots = Vec::new();
+        for oid in revwalk {
+            let oid = oid.context("Failed to walk repository history")?;
+            let commit = self
+                .inner
+                .find_commit(oid)
+                .context("Failed to read commit while finding root")?;
+            if commit.parent_count() == 0 {
+                roots.push(CommitId::new(oid.to_string()));
+            }
+        }
+        roots.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
+
+        match roots.len() {
+            0 => bail!("No root commit is reachable from HEAD"),
+            1 => Ok(roots.remove(0)),
+            _ => bail!(
+                "Multiple root commits are reachable from HEAD; \
+                 --root requires a single-root history"
+            ),
+        }
+    }
+
     fn named_ref_kind(&self, refspec: &str) -> Option<NamedRefKind> {
         let candidates = [
             (refspec.to_string(), NamedRefKind::Other),
@@ -323,7 +378,15 @@ impl Repo {
 
     /// List all files changed between `base_ref` and `head_ref`.
     pub fn list_changed_files(&self, base_ref: &str, head_ref: &str) -> Result<Vec<FileChange>> {
-        let base_tree = self.resolve_tree(base_ref)?;
+        self.list_changed_files_for_base(DiffBase::Commit(base_ref), head_ref)
+    }
+
+    pub fn list_changed_files_for_base(
+        &self,
+        base: DiffBase<'_>,
+        head_ref: &str,
+    ) -> Result<Vec<FileChange>> {
+        let base_tree = self.resolve_diff_base_tree(base)?;
         let head_tree = self.resolve_tree(head_ref)?;
 
         let mut diff_opts = git2::DiffOptions::new();
@@ -331,7 +394,7 @@ impl Repo {
 
         let diff = self
             .inner
-            .diff_tree_to_tree(Some(&base_tree), Some(&head_tree), Some(&mut diff_opts))
+            .diff_tree_to_tree(base_tree.as_ref(), Some(&head_tree), Some(&mut diff_opts))
             .context("Failed to compute diff between base and HEAD")?;
 
         // Enable rename detection
@@ -390,7 +453,14 @@ impl Repo {
     /// List files changed between a base ref and the working tree.
     /// Similar to `git diff <base_ref>` (includes both staged and unstaged).
     pub fn list_changed_files_workdir(&self, base_ref: &str) -> Result<Vec<FileChange>> {
-        let base_tree = self.resolve_tree(base_ref)?;
+        self.list_changed_files_workdir_for_base(DiffBase::Commit(base_ref))
+    }
+
+    pub fn list_changed_files_workdir_for_base(
+        &self,
+        base: DiffBase<'_>,
+    ) -> Result<Vec<FileChange>> {
+        let base_tree = self.resolve_diff_base_tree(base)?;
 
         let mut diff_opts = git2::DiffOptions::new();
         diff_opts.patience(true);
@@ -399,7 +469,7 @@ impl Repo {
         // both staged and unstaged changes are included).
         let diff = self
             .inner
-            .diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut diff_opts))
+            .diff_tree_to_workdir_with_index(base_tree.as_ref(), Some(&mut diff_opts))
             .context("Failed to compute diff between base and working tree")?;
 
         // Enable rename detection.
@@ -489,13 +559,30 @@ impl Repo {
         algorithm: crate::config::DiffAlgorithm,
         ignore_whitespace: bool,
     ) -> Result<DiffContent> {
-        let base_tree = self.resolve_tree(base_ref)?;
+        self.diff_file_opts_for_base(
+            DiffBase::Commit(base_ref),
+            head_ref,
+            file_path,
+            algorithm,
+            ignore_whitespace,
+        )
+    }
+
+    pub fn diff_file_opts_for_base(
+        &self,
+        base: DiffBase<'_>,
+        head_ref: &str,
+        file_path: &str,
+        algorithm: crate::config::DiffAlgorithm,
+        ignore_whitespace: bool,
+    ) -> Result<DiffContent> {
+        let base_tree = self.resolve_diff_base_tree(base)?;
         let head_tree = self.resolve_tree(head_ref)?;
 
         // Histogram requires shelling out to git CLI.
         if algorithm == crate::config::DiffAlgorithm::Histogram {
-            return self.diff_file_git_cli(
-                base_ref,
+            return self.diff_file_git_cli_for_base(
+                base,
                 head_ref,
                 file_path,
                 "histogram",
@@ -521,7 +608,7 @@ impl Repo {
 
         let diff = self
             .inner
-            .diff_tree_to_tree(Some(&base_tree), Some(&head_tree), Some(&mut diff_opts))
+            .diff_tree_to_tree(base_tree.as_ref(), Some(&head_tree), Some(&mut diff_opts))
             .context("Failed to compute diff")?;
 
         // Check for binary — need to inspect the actual file content.
@@ -569,12 +656,27 @@ impl Repo {
         algorithm: crate::config::DiffAlgorithm,
         ignore_whitespace: bool,
     ) -> Result<DiffContent> {
-        let base_tree = self.resolve_tree(base_ref)?;
+        self.diff_file_workdir_opts_for_base(
+            DiffBase::Commit(base_ref),
+            file_path,
+            algorithm,
+            ignore_whitespace,
+        )
+    }
+
+    pub fn diff_file_workdir_opts_for_base(
+        &self,
+        base: DiffBase<'_>,
+        file_path: &str,
+        algorithm: crate::config::DiffAlgorithm,
+        ignore_whitespace: bool,
+    ) -> Result<DiffContent> {
+        let base_tree = self.resolve_diff_base_tree(base)?;
 
         // Histogram requires shelling out to git CLI.
         if algorithm == crate::config::DiffAlgorithm::Histogram {
-            return self.diff_file_workdir_git_cli(
-                base_ref,
+            return self.diff_file_workdir_git_cli_for_base(
+                base,
                 file_path,
                 "histogram",
                 ignore_whitespace,
@@ -599,7 +701,7 @@ impl Repo {
 
         let diff = self
             .inner
-            .diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut diff_opts))
+            .diff_tree_to_workdir_with_index(base_tree.as_ref(), Some(&mut diff_opts))
             .context("Failed to compute diff against working tree")?;
 
         // Check for binary. For workdir diffs, the new file OID may be zero
@@ -650,9 +752,9 @@ impl Repo {
     }
 
     /// Compute a workdir diff by shelling out to `git` CLI (e.g. histogram).
-    fn diff_file_workdir_git_cli(
+    fn diff_file_workdir_git_cli_for_base(
         &self,
-        base_ref: &str,
+        base: DiffBase<'_>,
         file_path: &str,
         algorithm: &str,
         ignore_whitespace: bool,
@@ -670,7 +772,7 @@ impl Repo {
             cmd.arg("-w");
         }
         // No second ref — compares base to working tree.
-        cmd.args([base_ref, "--", file_path]);
+        cmd.args([base.cli_ref(), "--", file_path]);
 
         let output = cmd
             .output()
@@ -719,9 +821,9 @@ impl Repo {
     /// Compute a diff by shelling out to the `git` CLI for algorithms
     /// not supported by libgit2 (e.g. histogram). The output is parsed
     /// back via `git2::Diff::from_buffer`.
-    fn diff_file_git_cli(
+    fn diff_file_git_cli_for_base(
         &self,
-        base_ref: &str,
+        base: DiffBase<'_>,
         head_ref: &str,
         file_path: &str,
         algorithm: &str,
@@ -739,7 +841,7 @@ impl Repo {
         if ignore_whitespace {
             cmd.arg("-w");
         }
-        cmd.args([base_ref, head_ref, "--", file_path]);
+        cmd.args([base.cli_ref(), head_ref, "--", file_path]);
 
         let output = cmd
             .output()
@@ -773,6 +875,17 @@ impl Repo {
 
     /// Read the full content of a file at a given ref.
     pub fn file_content(&self, refspec: &str, file_path: &str) -> Result<Option<String>> {
+        self.file_content_for_base(DiffBase::Commit(refspec), file_path)
+    }
+
+    pub fn file_content_for_base(
+        &self,
+        base: DiffBase<'_>,
+        file_path: &str,
+    ) -> Result<Option<String>> {
+        let DiffBase::Commit(refspec) = base else {
+            return Ok(None);
+        };
         let tree = self.resolve_tree(refspec)?;
 
         let entry = match tree.get_path(Path::new(file_path)) {
@@ -824,6 +937,17 @@ impl Repo {
     /// Compute blame for a file at a given ref.
     /// Returns a Vec with one entry per line (1-indexed line numbers).
     pub fn blame_file(&self, refspec: &str, file_path: &str) -> Result<Vec<BlameLine>> {
+        self.blame_file_for_base(DiffBase::Commit(refspec), file_path)
+    }
+
+    pub fn blame_file_for_base(
+        &self,
+        base: DiffBase<'_>,
+        file_path: &str,
+    ) -> Result<Vec<BlameLine>> {
+        let DiffBase::Commit(refspec) = base else {
+            return Ok(Vec::new());
+        };
         let commit = self
             .inner
             .revparse_single(refspec)
@@ -908,6 +1032,13 @@ impl Repo {
             .with_context(|| format!("Could not resolve ref '{}'", refspec))?;
         obj.peel_to_tree()
             .with_context(|| format!("Ref '{}' does not point to a tree", refspec))
+    }
+
+    fn resolve_diff_base_tree(&self, base: DiffBase<'_>) -> Result<Option<git2::Tree<'_>>> {
+        match base {
+            DiffBase::Commit(refspec) => self.resolve_tree(refspec).map(Some),
+            DiffBase::EmptyTree => Ok(None),
+        }
     }
 }
 
@@ -1062,6 +1193,22 @@ mod tests {
                 String::from_utf8_lossy(&out.stderr)
             );
         }
+    }
+
+    fn git_output(path: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .unwrap();
+        if !out.status.success() {
+            panic!(
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
     #[test]
@@ -1221,6 +1368,7 @@ mod tests {
                 assert_eq!(kind, NamedRefKind::Tag);
             }
             ReviewBase::Anonymous { .. } => panic!("tag should be a named review base"),
+            ReviewBase::Root { .. } => panic!("tag should not be a root review base"),
         }
 
         match repo.resolve_review_base(&oid).unwrap() {
@@ -1232,12 +1380,54 @@ mod tests {
                 assert_eq!(resolved_commit.as_ref(), oid);
             }
             ReviewBase::Named { .. } => panic!("commit hash should be anonymous"),
+            ReviewBase::Root { .. } => panic!("commit hash should not be a root review base"),
         }
 
         assert!(matches!(
             repo.resolve_review_base("HEAD~1").unwrap(),
             ReviewBase::Anonymous { .. }
         ));
+    }
+
+    #[test]
+    fn root_review_base_uses_initial_commit_and_empty_tree_diff() {
+        let (dir, repo) = setup_test_repo();
+        let root = git_output(dir.path(), &["rev-list", "--max-parents=0", "HEAD"]);
+
+        match repo.resolve_root_review_base().unwrap() {
+            ReviewBase::Root { resolved_commit } => {
+                assert_eq!(resolved_commit.as_ref(), root);
+            }
+            _ => panic!("root review should resolve to root base"),
+        }
+
+        let changes = repo
+            .list_changed_files_for_base(DiffBase::EmptyTree, "HEAD")
+            .unwrap();
+        let paths: Vec<&str> = changes.iter().map(|change| change.path.as_str()).collect();
+        assert!(paths.contains(&"hello.rs"));
+        assert!(paths.contains(&"new_file.rs"));
+
+        let diff = repo
+            .diff_file_opts_for_base(
+                DiffBase::EmptyTree,
+                "HEAD",
+                "hello.rs",
+                crate::config::DiffAlgorithm::Patience,
+                false,
+            )
+            .unwrap();
+        assert!(
+            diff.hunks
+                .iter()
+                .flat_map(|hunk| &hunk.lines)
+                .all(|line| line.kind == LineKind::Addition)
+        );
+        assert!(
+            repo.file_content_for_base(DiffBase::EmptyTree, "hello.rs")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

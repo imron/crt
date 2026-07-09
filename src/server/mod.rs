@@ -26,7 +26,7 @@ use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
 
 use crate::db::Database;
-use crate::git::{CommitId, HeadIdentity, ReviewBase};
+use crate::git::{CommitId, DiffBase, HeadIdentity, ReviewBase};
 use crate::protocol::{
     ERR_INTERNAL, ERR_METHOD_NOT_FOUND, ERR_NOT_IMPLEMENTED, ERR_NOT_INITIALIZED, ERR_PARSE,
     JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Notification, RpcMethod,
@@ -62,6 +62,13 @@ impl ConnectionContext {
 
     pub fn head_scope_key(&self) -> String {
         self.head.scope_key()
+    }
+
+    pub fn diff_base(&self) -> DiffBase<'_> {
+        match self.review_base {
+            ReviewBase::Root { .. } => DiffBase::EmptyTree,
+            _ => DiffBase::Commit(self.merge_base_key()),
+        }
     }
 }
 
