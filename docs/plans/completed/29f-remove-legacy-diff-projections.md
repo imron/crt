@@ -26,7 +26,7 @@ Remove or shrink legacy structures that are no longer part of the active model:
 - TUI-owned hunk row projections;
 - TUI-owned rendered text as an app interaction dependency;
 - transitional comment projection APIs used by active rendering;
-- `AppViewport` methods that expose TUI-rendered semantic state to app update
+- viewport contracts that expose TUI-rendered semantic state to app update
   code.
 
 Some low-level row-building helpers may remain if document builders use them
@@ -69,7 +69,7 @@ Add regression checks for removed dependency paths:
 - Removed the legacy TUI diff renderer and the local `*` renderer toggle.
 - Removed TUI-owned rendered diff text, hunk row projections, and diff cache
   state from active app interaction paths.
-- Reduced `AppViewport` to viewport dimensions; cursor/search/hunk/comment
-  behavior now uses the active document APIs.
+- Reduced the viewport contract to `ViewportMetrics`; cursor/search/hunk and
+  comment behavior now uses the active document APIs.
 - Removed old `DiffPanel` row/search/comment projection fields that duplicated
   `ActiveDocument`.

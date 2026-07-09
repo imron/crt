@@ -120,5 +120,5 @@ Add renderer boundary tests for:
 - [x] Existing visual output remains equivalent.
 - [x] Existing diff, side-by-side, hunk, blame, and comment marker tests stay
       green or are replaced by document-render tests.
-- [x] The legacy renderer remains available behind the `*` toggle until 29f
-      removes it.
+- [x] The legacy renderer remained available behind the `*` toggle until 29f
+      removed it.

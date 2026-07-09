@@ -116,8 +116,8 @@ pub fn build_side_by_side_document(
 ) -> SideBySideDocument;
 ```
 
-The builders may initially reuse the existing `diff_rows` functions. This
-slice is about producing the new model, not deleting the old one.
+The builders now own document row construction directly. The old `diff_rows`
+module has been removed, and callers consume the document API.
 
 The builders should also populate `DocumentComments` for the constructed
 document. Later slices will migrate app update code to use those overlays, but
@@ -217,4 +217,5 @@ Add unit tests for:
       document layer.
 - [x] Existing rendering and update behavior is unchanged.
 - [x] No TUI code consumes the new document model yet.
-- [x] No legacy diff projection code is removed in this slice.
+- [x] The slice introduced the document model before later slices removed the
+      legacy diff projection code.

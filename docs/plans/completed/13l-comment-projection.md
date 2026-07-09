@@ -4,6 +4,13 @@
 
 Completed.
 
+## Completion Note
+
+The final implementation lives in the Stage 29 document model rather than a
+standalone `CommentProjection` type. `DocumentComments` and `DiffDocument`
+own marker projection, current-comment lookup, display spans, and comment
+navigation for the active view.
+
 ## Goal
 
 Introduce a single app-owned `CommentProjection` abstraction for all comment
