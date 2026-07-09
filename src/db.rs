@@ -203,7 +203,6 @@ impl Database {
 
     fn run_migrations(&self) -> Result<()> {
         self.ensure_schema_migrations_table()?;
-        self.bootstrap_legacy_migration_state()?;
 
         for migration in MIGRATIONS {
             if self.migration_applied(migration.version)? {
@@ -235,47 +234,6 @@ impl Database {
             )
             .context("Failed to create schema_migrations table")?;
         Ok(())
-    }
-
-    fn bootstrap_legacy_migration_state(&self) -> Result<()> {
-        if self.migration_count()? > 0 || !self.table_exists("file_reviews")? {
-            return Ok(());
-        }
-
-        self.mark_migration_applied(1, "initial")?;
-
-        if self.column_exists("file_reviews", "merge_base")? {
-            self.mark_migration_applied(2, "rename_base_ref_to_merge_base")?;
-        }
-        if self.column_exists("file_reviews", "reviewed_commit")? {
-            self.mark_migration_applied(3, "add_reviewed_commit")?;
-        }
-        if self.table_exists("anchor_versions")? && !self.column_exists("comments", "line_start")? {
-            self.mark_migration_applied(4, "split_comment_anchors")?;
-        }
-        if self.table_exists("comment_resolution_events")?
-            && !self.column_exists("comments", "resolved")?
-        {
-            self.mark_migration_applied(5, "comment_resolution_events")?;
-        }
-        if self.table_exists("anchor_segments")?
-            && self.column_exists("comments", "created_head_commit")?
-        {
-            self.mark_migration_applied(6, "compound_comment_anchors")?;
-        }
-        if self.table_exists("comment_resolution_anchor_segments")? {
-            self.mark_migration_applied(7, "comment_resolution_anchor_segments")?;
-        }
-
-        Ok(())
-    }
-
-    fn migration_count(&self) -> Result<i64> {
-        self.conn
-            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
-                row.get(0)
-            })
-            .context("Failed to count applied migrations")
     }
 
     fn migration_applied(&self, version: i64) -> Result<bool> {
@@ -1364,142 +1322,6 @@ mod tests {
             db.column_exists("comment_resolution_events", "resolved_patch_id")
                 .unwrap()
         );
-        assert!(db.migration_applied(8).unwrap());
-    }
-
-    #[test]
-    fn test_migrates_inline_comment_anchors() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("test.db");
-        {
-            let conn = Connection::open(&db_path).unwrap();
-            conn.execute_batch(
-                "
-                CREATE TABLE file_reviews (
-                    file_path       TEXT NOT NULL,
-                    merge_base      TEXT NOT NULL,
-                    head_ref        TEXT NOT NULL,
-                    diff_hash       TEXT NOT NULL,
-                    reviewed_at     TEXT NOT NULL,
-                    reviewed_commit TEXT NOT NULL DEFAULT '',
-                    PRIMARY KEY (merge_base, head_ref, file_path)
-                );
-
-                CREATE TABLE comments (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    merge_base      TEXT NOT NULL,
-                    head_ref        TEXT NOT NULL,
-                    file_path       TEXT NOT NULL,
-                    line_start      INTEGER NOT NULL,
-                    line_end        INTEGER NOT NULL,
-                    char_start      INTEGER,
-                    char_end        INTEGER,
-                    anchor_text     TEXT NOT NULL,
-                    context_before  TEXT NOT NULL DEFAULT '',
-                    context_after   TEXT NOT NULL DEFAULT '',
-                    body            TEXT NOT NULL,
-                    resolved        INTEGER NOT NULL DEFAULT 0,
-                    created_at      TEXT NOT NULL,
-                    updated_at      TEXT NOT NULL
-                );
-
-                INSERT INTO comments
-                    (id, merge_base, head_ref, file_path, line_start,
-                     line_end, char_start, char_end, anchor_text,
-                     context_before, context_after, body, resolved,
-                     created_at, updated_at)
-                VALUES
-                    (42, 'main', 'feat', 'src/lib.rs', 7, 8, 1, 4,
-                     'old anchor', 'before', 'after', 'body text', 1,
-                     '2026-06-27T12:00:00+10:00',
-                     '2026-06-27T12:01:00+10:00');
-                ",
-            )
-            .unwrap();
-        }
-
-        let db = Database::open(&db_path).unwrap();
-        assert!(db.get_comment(42).unwrap().is_none());
-
-        let count: i64 = db
-            .conn
-            .query_row(
-                "SELECT COUNT(*) FROM comment_resolution_events WHERE comment_id = 42",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn test_migrates_base_ref_schema_to_current_schema() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("test.db");
-        {
-            let conn = Connection::open(&db_path).unwrap();
-            conn.execute_batch(
-                "
-                CREATE TABLE file_reviews (
-                    file_path   TEXT NOT NULL,
-                    base_ref    TEXT NOT NULL,
-                    head_ref    TEXT NOT NULL,
-                    diff_hash   TEXT NOT NULL,
-                    reviewed_at TEXT NOT NULL,
-                    PRIMARY KEY (base_ref, head_ref, file_path)
-                );
-
-                CREATE TABLE comments (
-                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                    base_ref        TEXT NOT NULL,
-                    head_ref        TEXT NOT NULL,
-                    file_path       TEXT NOT NULL,
-                    line_start      INTEGER NOT NULL,
-                    line_end        INTEGER NOT NULL,
-                    char_start      INTEGER,
-                    char_end        INTEGER,
-                    anchor_text     TEXT NOT NULL,
-                    context_before  TEXT NOT NULL DEFAULT '',
-                    context_after   TEXT NOT NULL DEFAULT '',
-                    body            TEXT NOT NULL,
-                    resolved        INTEGER NOT NULL DEFAULT 0,
-                    created_at      TEXT NOT NULL,
-                    updated_at      TEXT NOT NULL
-                );
-
-                CREATE INDEX idx_comments_scope
-                    ON comments (base_ref, head_ref, file_path);
-
-                INSERT INTO file_reviews
-                    (file_path, base_ref, head_ref, diff_hash, reviewed_at)
-                VALUES
-                    ('src/lib.rs', 'main', 'feat', 'hash-1',
-                     '2026-06-27T12:00:00+10:00');
-
-                INSERT INTO comments
-                    (id, base_ref, head_ref, file_path, line_start,
-                     line_end, char_start, char_end, anchor_text,
-                     context_before, context_after, body, resolved,
-                     created_at, updated_at)
-                VALUES
-                    (7, 'main', 'feat', 'src/lib.rs', 3, 3, NULL, NULL,
-                     'anchor', '', '', 'legacy body', 0,
-                     '2026-06-27T12:00:00+10:00',
-                     '2026-06-27T12:01:00+10:00');
-                ",
-            )
-            .unwrap();
-        }
-
-        let db = Database::open(&db_path).unwrap();
-        let reviews = db.load_reviews("main", "feat").unwrap();
-        let review = reviews.get("src/lib.rs").unwrap();
-        assert_eq!(review.diff_hash, "hash-1");
-        assert_eq!(review.reviewed_commit, "");
-
-        assert!(db.get_comment(7).unwrap().is_none());
-
-        assert!(db.migration_applied(7).unwrap());
         assert!(db.migration_applied(8).unwrap());
     }
 
