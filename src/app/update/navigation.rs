@@ -1,7 +1,7 @@
 use super::comments;
 use super::cursor::clamp_cursor_and_scroll;
 use super::output::AppOutput;
-use super::viewport::AppViewport;
+use super::viewport::ViewportMetrics;
 use crate::app::document::RowIndex;
 use crate::app::{AppState, FileListSectionFocus, JumpLocation};
 use crate::core::command::Command;
@@ -11,7 +11,7 @@ use crate::review_types::{CommentAnchorSide, ContentMode, PaneFocus, RenderVaria
 
 pub fn navigate_to_search_match(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     m: &crate::review_types::SearchMatch,
 ) -> AppOutput {
     let mut update = AppOutput::handled();
@@ -22,7 +22,7 @@ pub fn navigate_to_search_match(
 
 pub fn navigate_to_definition(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     def: &crate::review_types::DefinitionLocation,
 ) -> AppOutput {
     let mut update = AppOutput::handled();
@@ -33,7 +33,7 @@ pub fn navigate_to_definition(
 
 pub fn navigate_to_location_target(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     update: &mut AppOutput,
     target: core_search::LocationTarget,
 ) {
@@ -196,7 +196,7 @@ pub fn toggle_diff_base(state: &mut AppState, update: &mut AppOutput) {
 }
 
 /// Pop the jump stack and restore the previous location.
-pub fn pop_jump_stack(state: &mut AppState, view: &impl AppViewport, update: &mut AppOutput) {
+pub fn pop_jump_stack(state: &mut AppState, view: &impl ViewportMetrics, update: &mut AppOutput) {
     if let Some(loc) = state.jump_stack.pop() {
         if loc.file_index != state.selected_file && loc.file_index < state.files.len() {
             let focus = state.focus_for_file(loc.file_index);
@@ -217,7 +217,7 @@ pub fn pop_jump_stack(state: &mut AppState, view: &impl AppViewport, update: &mu
 /// Request go-to-definition for the word under the cursor.
 pub fn request_go_to_definition(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     update: &mut AppOutput,
 ) {
     let word = extract_word_at_cursor(state, view);
@@ -233,14 +233,14 @@ pub fn request_go_to_definition(
 }
 
 /// Extract the identifier-like word under the current diff column cursor.
-pub fn extract_word_at_cursor(state: &AppState, view: &impl AppViewport) -> Option<String> {
+pub fn extract_word_at_cursor(state: &AppState, view: &impl ViewportMetrics) -> Option<String> {
     let content = content_for_word_extraction(state, view)?;
     word_at_char_offset(content, state.diff_col_cursor)
 }
 
 fn content_for_word_extraction<'a>(
     state: &'a AppState,
-    _view: &impl AppViewport,
+    _view: &impl ViewportMetrics,
 ) -> Option<&'a str> {
     state
         .active_document
@@ -278,7 +278,7 @@ fn is_identifier_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-pub fn cycle_view_mode(state: &mut AppState, view: &impl AppViewport) {
+pub fn cycle_view_mode(state: &mut AppState, view: &impl ViewportMetrics) {
     let target = current_diff_source_line(state);
 
     match (&state.content_mode, &state.render_variant) {
@@ -325,15 +325,15 @@ pub fn cycle_view_mode(state: &mut AppState, view: &impl AppViewport) {
     state.mark_model_changed();
 }
 
-pub fn jump_to_next_hunk(state: &mut AppState, view: &impl AppViewport) {
+pub fn jump_to_next_hunk(state: &mut AppState, view: &impl ViewportMetrics) {
     jump_to_document_hunk(state, view, Direction::Next);
 }
 
-pub fn jump_to_prev_hunk(state: &mut AppState, view: &impl AppViewport) {
+pub fn jump_to_prev_hunk(state: &mut AppState, view: &impl ViewportMetrics) {
     jump_to_document_hunk(state, view, Direction::Prev);
 }
 
-fn jump_to_document_hunk(state: &mut AppState, view: &impl AppViewport, direction: Direction) {
+fn jump_to_document_hunk(state: &mut AppState, view: &impl ViewportMetrics, direction: Direction) {
     let Some(active) = state.active_document.as_ref() else {
         return;
     };
@@ -361,7 +361,7 @@ fn jump_to_document_hunk(state: &mut AppState, view: &impl AppViewport, directio
     state.mark_model_changed();
 }
 
-pub fn navigate_file(state: &mut AppState, view: &impl AppViewport, dir: Direction) {
+pub fn navigate_file(state: &mut AppState, view: &impl ViewportMetrics, dir: Direction) {
     if state.file_list_section_focus == FileListSectionFocus::UnresolvedComments {
         navigate_unresolved_comment(state, view, dir);
         return;
@@ -385,7 +385,7 @@ pub fn navigate_file(state: &mut AppState, view: &impl AppViewport, dir: Directi
     }
 }
 
-fn navigate_unresolved_comment(state: &mut AppState, view: &impl AppViewport, dir: Direction) {
+fn navigate_unresolved_comment(state: &mut AppState, view: &impl ViewportMetrics, dir: Direction) {
     let targets = unresolved_comment_targets(state);
     if targets.is_empty() {
         state.selected_comment_id = None;
@@ -417,7 +417,7 @@ fn navigate_unresolved_comment(state: &mut AppState, view: &impl AppViewport, di
 
 pub fn navigate_unresolved_comment_from_cursor(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     dir: Direction,
 ) -> bool {
     let targets = unresolved_comment_targets(state);
@@ -459,7 +459,7 @@ pub fn selected_comment_visible_in_current_view(state: &AppState) -> bool {
         .is_none_or(|document| document.document().diff.comment_span(id).is_some())
 }
 
-fn activate_unresolved_comment(state: &mut AppState, view: &impl AppViewport, comment_id: i64) {
+fn activate_unresolved_comment(state: &mut AppState, view: &impl ViewportMetrics, comment_id: i64) {
     state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
     state.show_comments_panel = true;
     state.pending_delete_comment_id = None;
@@ -468,7 +468,7 @@ fn activate_unresolved_comment(state: &mut AppState, view: &impl AppViewport, co
 
 fn activate_unresolved_comment_target(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     target: UnresolvedCommentTarget,
     dir: Direction,
 ) {
@@ -662,7 +662,7 @@ mod tests {
             lines: Vec<String>,
         }
 
-        impl AppViewport for View {
+        impl ViewportMetrics for View {
             fn diff_content_height(&self) -> usize {
                 self.lines.len()
             }

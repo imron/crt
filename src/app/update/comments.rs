@@ -1,6 +1,6 @@
 use super::cursor::clamp_cursor_and_scroll;
 use super::output::AppOutput;
-use super::viewport::{AppViewport, active_diff_content_height};
+use super::viewport::{ViewportMetrics, active_diff_content_height};
 use crate::app::document::{RowIndex, RowSpan};
 use crate::app::{AppState, FileListSectionFocus};
 use crate::core::CommentsPanelEffect;
@@ -32,7 +32,7 @@ pub fn current_comment_id(state: &AppState) -> Option<i64> {
 
 pub fn apply_comments_panel_effect(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     update: &mut AppOutput,
     effect: CommentsPanelEffect,
 ) {
@@ -72,7 +72,7 @@ fn toggle_panel(state: &mut AppState, update: &mut AppOutput) {
     state.mark_model_changed();
 }
 
-fn toggle_selected_expanded_or_navigate(state: &mut AppState, view: &impl AppViewport) {
+fn toggle_selected_expanded_or_navigate(state: &mut AppState, view: &impl ViewportMetrics) {
     let Some(comment) = selected_comment(state).cloned() else {
         return;
     };
@@ -86,7 +86,7 @@ fn toggle_selected_expanded_or_navigate(state: &mut AppState, view: &impl AppVie
     }
 }
 
-fn navigate_to_selected(state: &mut AppState, view: &impl AppViewport) {
+fn navigate_to_selected(state: &mut AppState, view: &impl ViewportMetrics) {
     let Some(comment) = selected_comment(state).cloned() else {
         return;
     };
@@ -95,7 +95,7 @@ fn navigate_to_selected(state: &mut AppState, view: &impl AppViewport) {
 
 pub fn navigate_to_comment_id(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     comment_id: i64,
 ) -> bool {
     let Some(comment) = state
@@ -117,7 +117,11 @@ pub fn select_out_of_range_comment(state: &mut AppState, comment_id: i64) {
     state.mark_model_changed();
 }
 
-fn navigate_adjacent_comment(state: &mut AppState, view: &impl AppViewport, direction: Direction) {
+fn navigate_adjacent_comment(
+    state: &mut AppState,
+    view: &impl ViewportMetrics,
+    direction: Direction,
+) {
     if !state.show_comments_panel {
         state.show_comments_panel = true;
         state.mark_model_changed();
@@ -178,7 +182,11 @@ fn request_delete_current(state: &mut AppState, update: &mut AppOutput) {
     }
 }
 
-fn navigate_to_comment(state: &mut AppState, view: &impl AppViewport, comment: &Comment) -> bool {
+fn navigate_to_comment(
+    state: &mut AppState,
+    view: &impl ViewportMetrics,
+    comment: &Comment,
+) -> bool {
     let Some(file_index) = state
         .files
         .iter()
@@ -209,7 +217,7 @@ fn navigate_to_comment(state: &mut AppState, view: &impl AppViewport, comment: &
 
 fn scroll_to_comment(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     start_row: usize,
     end_row: usize,
 ) {

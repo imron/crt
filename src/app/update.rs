@@ -23,7 +23,7 @@ use crate::core::{
 use crate::review_types::PaneFocus;
 
 pub use output::{AppOutput, StatusUpdate};
-pub use viewport::AppViewport;
+pub use viewport::ViewportMetrics;
 
 pub fn interaction_context(state: &AppState) -> InteractionContext {
     InteractionContext {
@@ -50,7 +50,7 @@ pub fn interaction_context(state: &AppState) -> InteractionContext {
     }
 }
 
-pub fn prompt_submit_context(state: &AppState, view: &impl AppViewport) -> InteractionContext {
+pub fn prompt_submit_context(state: &AppState, view: &impl ViewportMetrics) -> InteractionContext {
     InteractionContext {
         fallback_word: navigation::extract_word_at_cursor(state, view),
         ..InteractionContext::default()
@@ -59,7 +59,7 @@ pub fn prompt_submit_context(state: &AppState, view: &impl AppViewport) -> Inter
 
 pub fn apply_core_effects(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     effects: Vec<CoreEffect>,
 ) -> AppOutput {
     state.ensure_active_document();
@@ -214,7 +214,7 @@ pub fn apply_core_effects(
 
 pub fn navigate_to_search_match(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     m: &crate::review_types::SearchMatch,
 ) -> AppOutput {
     navigation::navigate_to_search_match(state, view, m)
@@ -222,7 +222,7 @@ pub fn navigate_to_search_match(
 
 pub fn navigate_to_definition(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     def: &crate::review_types::DefinitionLocation,
 ) -> AppOutput {
     navigation::navigate_to_definition(state, view, def)

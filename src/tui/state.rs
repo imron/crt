@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use crate::app::model::{AppModel, FileList};
-use crate::app::{AppOutput, AppState, AppViewport, FileListSectionFocus, StatusUpdate};
+use crate::app::{AppOutput, AppState, FileListSectionFocus, StatusUpdate, ViewportMetrics};
 use crate::core::{AppTarget, ConnectionState, PaneId, PointerSemanticHit, PromptId, TextAnchor};
 use crate::review_types::PaneFocus;
 use ratatui::layout::Rect;
@@ -518,7 +518,7 @@ impl TuiState {
     }
 }
 
-impl AppViewport for TuiState {
+impl ViewportMetrics for TuiState {
     fn diff_content_height(&self) -> usize {
         self.diff_content_height
     }

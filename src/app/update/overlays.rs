@@ -1,13 +1,13 @@
 use super::navigation::navigate_to_location_target;
 use super::output::AppOutput;
-use super::viewport::AppViewport;
+use super::viewport::ViewportMetrics;
 use crate::app::AppState;
 use crate::core::search as core_search;
 use crate::core::{DefinitionResultsEffect, SearchResultsEffect};
 
 pub fn apply_search_results_effect(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     update: &mut AppOutput,
     effect: SearchResultsEffect,
 ) {
@@ -65,7 +65,7 @@ pub fn apply_search_results_effect(
 
 pub fn apply_definition_results_effect(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     update: &mut AppOutput,
     effect: DefinitionResultsEffect,
 ) {
