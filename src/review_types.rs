@@ -345,19 +345,6 @@ pub struct Comment {
     pub head_ref: String,
     pub created_head_commit: String,
     anchor: CommentAnchor,
-    file_path: String,
-    line_start: i64,
-    line_end: i64,
-    /// Character start within the line (None for full-line selections).
-    char_start: Option<i64>,
-    /// Character end within the line (None for full-line selections).
-    char_end: Option<i64>,
-    /// The exact lines the comment is attached to.
-    anchor_text: String,
-    /// Lines preceding the anchor in the diff.
-    context_before: String,
-    /// Lines following the anchor in the diff.
-    context_after: String,
     pub body: String,
     pub resolved: bool,
     pub created_at: String,
@@ -682,30 +669,15 @@ impl Comment {
             init.anchor.segments.clone(),
             init.anchor.aggregate_status,
         )?;
-        let projected =
-            projected_comment_segment(&init.anchor).ok_or(CommentAnchorValidationError::Empty)?;
-        let file_path = projected.file_path.clone();
-        let line_start = projected.line_start;
-        let line_end = projected.line_end;
-        let char_start = projected.char_start;
-        let char_end = projected.char_end;
-        let anchor_text = projected.anchor_text.clone();
-        let context_before = projected.context_before.clone();
-        let context_after = projected.context_after.clone();
+        if projected_comment_segment(&init.anchor).is_none() {
+            return Err(CommentAnchorValidationError::Empty);
+        }
         Ok(Self {
             id: init.id,
             merge_base: init.merge_base,
             head_ref: init.head_ref,
             created_head_commit: init.created_head_commit,
             anchor: init.anchor,
-            file_path,
-            line_start,
-            line_end,
-            char_start,
-            char_end,
-            anchor_text,
-            context_before,
-            context_after,
             body: init.body,
             resolved: init.resolved,
             created_at: init.created_at,
@@ -719,35 +691,49 @@ impl Comment {
     }
 
     pub fn file_path(&self) -> &str {
-        &self.file_path
+        self.projected_segment()
+            .map(|segment| segment.file_path.as_str())
+            .unwrap_or("")
     }
 
     pub fn line_start(&self) -> i64 {
-        self.line_start
+        self.projected_segment()
+            .map(|segment| segment.line_start)
+            .unwrap_or(0)
     }
 
     pub fn line_end(&self) -> i64 {
-        self.line_end
+        self.projected_segment()
+            .map(|segment| segment.line_end)
+            .unwrap_or(0)
     }
 
     pub fn char_start(&self) -> Option<i64> {
-        self.char_start
+        self.projected_segment()
+            .and_then(|segment| segment.char_start)
     }
 
     pub fn char_end(&self) -> Option<i64> {
-        self.char_end
+        self.projected_segment()
+            .and_then(|segment| segment.char_end)
     }
 
     pub fn anchor_text(&self) -> &str {
-        &self.anchor_text
+        self.projected_segment()
+            .map(|segment| segment.anchor_text.as_str())
+            .unwrap_or("")
     }
 
     pub fn context_before(&self) -> &str {
-        &self.context_before
+        self.projected_segment()
+            .map(|segment| segment.context_before.as_str())
+            .unwrap_or("")
     }
 
     pub fn context_after(&self) -> &str {
-        &self.context_after
+        self.projected_segment()
+            .map(|segment| segment.context_after.as_str())
+            .unwrap_or("")
     }
 
     pub fn anchor_status(&self) -> AnchorStatus {
@@ -763,16 +749,9 @@ impl Comment {
         anchor: CommentAnchor,
     ) -> Result<(), CommentAnchorValidationError> {
         CommentAnchor::try_with_aggregate_status(anchor.segments.clone(), anchor.aggregate_status)?;
-        let projected =
-            projected_comment_segment(&anchor).ok_or(CommentAnchorValidationError::Empty)?;
-        self.file_path = projected.file_path.clone();
-        self.line_start = projected.line_start;
-        self.line_end = projected.line_end;
-        self.char_start = projected.char_start;
-        self.char_end = projected.char_end;
-        self.anchor_text = projected.anchor_text.clone();
-        self.context_before = projected.context_before.clone();
-        self.context_after = projected.context_after.clone();
+        if projected_comment_segment(&anchor).is_none() {
+            return Err(CommentAnchorValidationError::Empty);
+        }
         self.anchor = anchor;
         Ok(())
     }
@@ -781,41 +760,22 @@ impl Comment {
     ///
     /// This is the bridge between the database layer and the model layer.
     pub fn from_stored(stored: &crate::db::StoredComment) -> Self {
-        let mut comment = Self {
+        Self {
             id: stored.id,
             merge_base: stored.merge_base.clone(),
             head_ref: stored.head_ref.clone(),
             created_head_commit: stored.created_head_commit.clone(),
             anchor: stored.anchor.clone(),
-            file_path: stored.file_path.clone(),
-            line_start: stored.line_start,
-            line_end: stored.line_end,
-            char_start: stored.char_start,
-            char_end: stored.char_end,
-            anchor_text: stored.anchor_text.clone(),
-            context_before: stored.context_before.clone(),
-            context_after: stored.context_after.clone(),
             body: stored.body.clone(),
             resolved: stored.resolved,
             created_at: stored.created_at.clone(),
             updated_at: stored.updated_at.clone(),
             anchor_status: stored.anchor_status,
-        };
-        comment.project_from_anchor();
-        comment
+        }
     }
 
-    fn project_from_anchor(&mut self) {
-        if let Some(projected) = projected_comment_segment(&self.anchor) {
-            self.file_path = projected.file_path.clone();
-            self.line_start = projected.line_start;
-            self.line_end = projected.line_end;
-            self.char_start = projected.char_start;
-            self.char_end = projected.char_end;
-            self.anchor_text = projected.anchor_text.clone();
-            self.context_before = projected.context_before.clone();
-            self.context_after = projected.context_after.clone();
-        }
+    fn projected_segment(&self) -> Option<&CommentAnchorSegment> {
+        projected_comment_segment(&self.anchor)
     }
 }
 
@@ -1151,14 +1111,14 @@ mod tests {
                 }],
                 aggregate_status: AnchorAggregateStatus::Anchored,
             },
-            file_path: "src/lib.rs".to_string(),
-            line_start: 10,
-            line_end: 12,
-            char_start: None,
-            char_end: None,
-            anchor_text: "fn foo() {}".to_string(),
-            context_before: "// before".to_string(),
-            context_after: "// after".to_string(),
+            file_path: "stale.rs".to_string(),
+            line_start: 1,
+            line_end: 1,
+            char_start: Some(99),
+            char_end: Some(100),
+            anchor_text: "stale".to_string(),
+            context_before: "stale before".to_string(),
+            context_after: "stale after".to_string(),
             body: "Fix this".to_string(),
             resolved: false,
             created_at: "2026-03-29T14:00:00+10:00".to_string(),
@@ -1170,7 +1130,14 @@ mod tests {
         let comment = Comment::from_stored(&stored);
 
         assert_eq!(comment.id, 42);
-        assert_eq!(comment.file_path, "src/lib.rs");
+        assert_eq!(comment.file_path(), "src/lib.rs");
+        assert_eq!(comment.line_start(), 10);
+        assert_eq!(comment.line_end(), 12);
+        assert_eq!(comment.char_start(), None);
+        assert_eq!(comment.char_end(), None);
+        assert_eq!(comment.anchor_text(), "fn foo() {}");
+        assert_eq!(comment.context_before(), "// before");
+        assert_eq!(comment.context_after(), "// after");
         assert_eq!(comment.body, "Fix this");
         assert_eq!(comment.anchor_status, AnchorStatus::Anchored);
         assert!(!comment.resolved);
