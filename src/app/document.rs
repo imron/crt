@@ -275,6 +275,15 @@ impl DiffDocument {
         }
     }
 
+    pub fn source_lines(&self) -> Vec<DocumentSourceLine> {
+        match self {
+            Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
+                document.source_lines()
+            }
+            Self::SideBySide(document) => document.source_lines(),
+        }
+    }
+
     fn refresh_overlays(
         &mut self,
         file_path: &str,
@@ -509,6 +518,17 @@ impl SideBySideDocument {
             lines.extend(self.selected_row_text(RowIndex(row), selection));
         }
         lines.join("\n")
+    }
+
+    pub fn source_lines(&self) -> Vec<DocumentSourceLine> {
+        (0..self.len())
+            .map(|row| {
+                source_line_from_side_by_side_document_rows(
+                    self.base.row(RowIndex(row)),
+                    self.head.row(RowIndex(row)),
+                )
+            })
+            .collect()
     }
 
     fn selected_row_text(&self, row: RowIndex, selection: VisibleSelection) -> Vec<String> {
@@ -786,6 +806,13 @@ impl Document {
             .join("\n")
     }
 
+    pub fn source_lines(&self) -> Vec<DocumentSourceLine> {
+        self.rows
+            .iter()
+            .map(source_line_from_document_row)
+            .collect()
+    }
+
     fn selected_row_text(&self, row: RowIndex, selection: VisibleSelection) -> Option<String> {
         let content = self.content_row(row)?;
         let span = selection.normalized_span_for(row, content.text.as_str())?;
@@ -877,6 +904,87 @@ impl SourceLocation {
             CommentAnchorSide::Head => self.head,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentSourceLine {
+    pub entries: Vec<DocumentSourceLineEntry>,
+    pub content: String,
+    pub is_change: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentSourceLineEntry {
+    pub side: CommentAnchorSide,
+    pub line_number: i64,
+    pub content: String,
+}
+
+fn source_line_from_document_row(row: &DocumentRow) -> DocumentSourceLine {
+    let DocumentRow::Content(content) = row else {
+        return DocumentSourceLine {
+            entries: Vec::new(),
+            content: String::new(),
+            is_change: false,
+        };
+    };
+    DocumentSourceLine {
+        entries: source_entries_from_content(content),
+        content: content.text.clone(),
+        is_change: content.kind != LineKind::Context,
+    }
+}
+
+fn source_line_from_side_by_side_document_rows(
+    base: Option<&DocumentRow>,
+    head: Option<&DocumentRow>,
+) -> DocumentSourceLine {
+    let rows = [base, head];
+    let entries = rows
+        .into_iter()
+        .flatten()
+        .flat_map(|row| match row {
+            DocumentRow::Content(content) => source_entries_from_content(content),
+            DocumentRow::Spacer => Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    let content = rows
+        .into_iter()
+        .flatten()
+        .filter_map(|row| match row {
+            DocumentRow::Content(content) => Some(content.text.as_str()),
+            DocumentRow::Spacer => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let is_change = rows.into_iter().flatten().any(|row| match row {
+        DocumentRow::Content(content) => content.kind != LineKind::Context,
+        DocumentRow::Spacer => false,
+    });
+    DocumentSourceLine {
+        entries,
+        content,
+        is_change,
+    }
+}
+
+fn source_entries_from_content(content: &ContentRow) -> Vec<DocumentSourceLineEntry> {
+    let mut entries = Vec::new();
+    if let Some(line_number) = content.source.base {
+        entries.push(DocumentSourceLineEntry {
+            side: CommentAnchorSide::Base,
+            line_number: i64::from(line_number),
+            content: content.text.clone(),
+        });
+    }
+    if let Some(line_number) = content.source.head {
+        entries.push(DocumentSourceLineEntry {
+            side: CommentAnchorSide::Head,
+            line_number: i64::from(line_number),
+            content: content.text.clone(),
+        });
+    }
+    entries
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -2805,6 +2913,16 @@ mod tests {
             .kind()
     }
 
+    fn source_entry_for(
+        line: &DocumentSourceLine,
+        side: CommentAnchorSide,
+    ) -> &DocumentSourceLineEntry {
+        line.entries
+            .iter()
+            .find(|entry| entry.side == side)
+            .unwrap_or_else(|| panic!("missing {side:?} entry in {line:?}"))
+    }
+
     fn document_comment(id: i64, start: usize, end: usize) -> DocumentComment {
         DocumentComment {
             id,
@@ -3007,6 +3125,76 @@ mod tests {
     }
 
     #[test]
+    fn document_source_lines_preserve_source_entries_and_spacers() {
+        let document = Document::new(
+            vec![
+                DocumentRow::Content(ContentRow {
+                    gutter: Gutter {
+                        text: "1 1".to_string(),
+                    },
+                    kind: LineKind::Context,
+                    text: "same".to_string(),
+                    blame: None,
+                    source: SourceLocation::paired(Some(1), Some(1)),
+                    changed_spans: Vec::new(),
+                }),
+                DocumentRow::Content(ContentRow {
+                    gutter: Gutter {
+                        text: "2  ".to_string(),
+                    },
+                    kind: LineKind::Deletion,
+                    text: "old".to_string(),
+                    blame: None,
+                    source: SourceLocation::single(CommentAnchorSide::Base, 2),
+                    changed_spans: Vec::new(),
+                }),
+                DocumentRow::Spacer,
+            ],
+            Vec::new(),
+        );
+
+        let source_lines = document.source_lines();
+
+        assert_eq!(source_lines.len(), 3);
+        assert_eq!(source_lines[0].content, "same");
+        assert!(!source_lines[0].is_change);
+        assert_eq!(
+            source_entry_for(&source_lines[0], CommentAnchorSide::Base),
+            &DocumentSourceLineEntry {
+                side: CommentAnchorSide::Base,
+                line_number: 1,
+                content: "same".to_string()
+            }
+        );
+        assert_eq!(
+            source_entry_for(&source_lines[0], CommentAnchorSide::Head),
+            &DocumentSourceLineEntry {
+                side: CommentAnchorSide::Head,
+                line_number: 1,
+                content: "same".to_string()
+            }
+        );
+        assert_eq!(source_lines[1].content, "old");
+        assert!(source_lines[1].is_change);
+        assert_eq!(
+            source_lines[1].entries,
+            vec![DocumentSourceLineEntry {
+                side: CommentAnchorSide::Base,
+                line_number: 2,
+                content: "old".to_string()
+            }]
+        );
+        assert_eq!(
+            source_lines[2],
+            DocumentSourceLine {
+                entries: Vec::new(),
+                content: String::new(),
+                is_change: false
+            }
+        );
+    }
+
+    #[test]
     fn unified_replacement_rows_precompute_word_level_changed_spans() {
         let document = build_unified_document(&input(
             key(ContentMode::Diff, RenderVariant::Inline),
@@ -3072,6 +3260,71 @@ mod tests {
             vec![ColumnSpan {
                 start: ColumnIndex(6),
                 end: ColumnIndex(11)
+            }]
+        );
+    }
+
+    #[test]
+    fn side_by_side_source_lines_are_aligned_from_both_documents() {
+        let hunk = replacement_hunk();
+        let document = build_side_by_side_document(&input(
+            key(ContentMode::Diff, RenderVariant::SideBySide),
+            &[hunk],
+            Some("one\nold\nfour\n"),
+            Some("one\nnew one\nnew two\nfour\n"),
+            &[],
+        ))
+        .expect("valid side-by-side document");
+
+        let source_lines = document.source_lines();
+
+        assert_eq!(source_lines.len(), 4);
+        assert_eq!(source_lines[0].content, "one\none");
+        assert!(!source_lines[0].is_change);
+        assert_eq!(
+            source_entry_for(&source_lines[0], CommentAnchorSide::Base),
+            &DocumentSourceLineEntry {
+                side: CommentAnchorSide::Base,
+                line_number: 1,
+                content: "one".to_string()
+            }
+        );
+        assert_eq!(
+            source_entry_for(&source_lines[0], CommentAnchorSide::Head),
+            &DocumentSourceLineEntry {
+                side: CommentAnchorSide::Head,
+                line_number: 1,
+                content: "one".to_string()
+            }
+        );
+
+        assert_eq!(source_lines[1].content, "old\nnew one");
+        assert!(source_lines[1].is_change);
+        assert_eq!(
+            source_entry_for(&source_lines[1], CommentAnchorSide::Base),
+            &DocumentSourceLineEntry {
+                side: CommentAnchorSide::Base,
+                line_number: 2,
+                content: "old".to_string()
+            }
+        );
+        assert_eq!(
+            source_entry_for(&source_lines[1], CommentAnchorSide::Head),
+            &DocumentSourceLineEntry {
+                side: CommentAnchorSide::Head,
+                line_number: 2,
+                content: "new one".to_string()
+            }
+        );
+
+        assert_eq!(source_lines[2].content, "new two");
+        assert!(source_lines[2].is_change);
+        assert_eq!(
+            source_lines[2].entries,
+            vec![DocumentSourceLineEntry {
+                side: CommentAnchorSide::Head,
+                line_number: 3,
+                content: "new two".to_string()
             }]
         );
     }
