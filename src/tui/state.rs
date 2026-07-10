@@ -60,8 +60,6 @@ pub struct LastPointerClick {
 }
 
 pub struct TuiState {
-    /// Whether inline comments are visible in the diff pane.
-    pub show_comments: bool,
     /// Number of columns occupied by line-number gutters in the TUI diff pane.
     pub diff_gutter_cols: usize,
     /// Column where semantic diff text starts in the rendered TUI diff pane.
@@ -132,7 +130,6 @@ impl Default for InputMode {
 impl Default for TuiState {
     fn default() -> Self {
         Self {
-            show_comments: false,
             diff_gutter_cols: 0,
             diff_content_start_col: 0,
             diff_content_height: 0,
@@ -443,9 +440,6 @@ impl TuiState {
         self.apply_status_update(output.status);
         self.should_suspend |= output.should_suspend;
         self.should_quit |= output.should_quit;
-        if let Some(show_comments) = output.show_comments {
-            self.show_comments = show_comments;
-        }
     }
 
     #[cfg(test)]
@@ -557,7 +551,6 @@ mod tests {
     fn tui_state_keeps_terminal_presentation_state() {
         let state = TuiState::new();
 
-        assert!(!state.show_comments);
         assert_eq!(state.file_list_area, Rect::default());
         assert_eq!(state.diff_area, Rect::default());
     }
@@ -623,14 +616,12 @@ mod tests {
         output.status = Some(StatusUpdate::Set("Searching...".to_string()));
         output.should_suspend = true;
         output.should_quit = true;
-        output.show_comments = Some(true);
 
         state.apply_app_output(output);
 
         assert!(state.has_status_message());
         assert!(state.should_suspend);
         assert!(state.should_quit);
-        assert!(state.show_comments);
     }
 
     #[test]
