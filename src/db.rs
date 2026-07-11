@@ -874,7 +874,7 @@ impl Database {
         let preferred =
             preferred_segment(&stored_segments).context("Comment anchor has no segments")?;
 
-        let anchor_status = legacy_anchor_status(&anchor);
+        let anchor_status = aggregate_anchor_status(&anchor);
         Ok(StoredComment {
             id: core.id,
             merge_base: core.merge_base,
@@ -968,7 +968,7 @@ fn preferred_segment(segments: &[StoredAnchorSegment]) -> Option<PreferredSegmen
         })
 }
 
-fn legacy_anchor_status(anchor: &CommentAnchor) -> AnchorStatus {
+fn aggregate_anchor_status(anchor: &CommentAnchor) -> AnchorStatus {
     match anchor.aggregate_status {
         AnchorAggregateStatus::Anchored => {
             if anchor

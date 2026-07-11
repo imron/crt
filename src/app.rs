@@ -1095,7 +1095,7 @@ pub struct AppState {
     pub search_results: Option<SearchResults>,
     /// Active definition lookup results overlay state.
     pub definition_results: Option<DefinitionResults>,
-    /// Core interaction entrypoint used by the TUI adapter for migrated input.
+    /// Core interaction entrypoint used by UI adapters.
     pub core_interaction: CoreInteractionEngine,
 }
 

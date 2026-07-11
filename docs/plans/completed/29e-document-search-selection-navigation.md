@@ -135,6 +135,6 @@ migration and glue:
 - Diff search, hunk navigation, word extraction, mode switching, selected text
   extraction, and comment anchor capture now use active document APIs.
 - `AppState.visual_selection` stores document positions. `TextAnchor` remains
-  an input-boundary type for TUI/core events and legacy model projection.
-- Legacy viewport methods and compatibility projections were removed in 29f;
-  active migrated behavior no longer depends on rendered TUI text.
+  an input-boundary type for TUI/core events.
+- Previous viewport methods and transition projections were removed in 29f;
+  active behavior no longer depends on rendered TUI text.

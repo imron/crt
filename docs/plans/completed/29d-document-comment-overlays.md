@@ -113,8 +113,8 @@ Document-level marker, precedence, span, and navigation behavior is covered in
 - Updated comments panel lookup, current-comment context, direct comment
   navigation, and same-file unresolved navigation to use active document
   comment APIs first.
-- Kept narrow compatibility fallbacks for pure model/update snapshots that are
-  created before an active document exists.
+- Active comment lookup and navigation now use active document comment APIs.
+  Test setup that needs comment semantics builds an active document explicitly.
 - Comment create, edit, resolve, unresolve, delete, and reload paths now
   refresh document overlays after changing `AppState.comments`.
 - Adjusted document navigation so explicit selected comments drive ordered

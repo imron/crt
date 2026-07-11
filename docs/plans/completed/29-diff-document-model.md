@@ -7,9 +7,8 @@ Complete.
 ## Completion Note
 
 Stage 29 is implemented. The active diff pane is backed by `ActiveDocument`
-and `DiffDocument`, the TUI renders `RenderLine` values, and the old diff row
-builder, comment projection fallback, and legacy renderer path have been
-removed.
+and `DiffDocument`, the TUI renders `RenderLine` values, and the previous diff
+row builder, comment projection fallback, and renderer path have been removed.
 
 ## Goal
 
@@ -727,9 +726,8 @@ This plan should be implemented in focused subplans:
 - `29f-remove-legacy-diff-projections.md`: remove obsolete projections and
   TUI-owned semantic reconstruction.
 
-Until 29f is complete, the TUI may keep a local `*` toggle between the legacy
-renderer and the document renderer. The final state should remove the toggle
-and render only from `DiffDocument`.
+29f is complete: the local `*` renderer toggle has been removed, and the TUI
+renders only from `DiffDocument`.
 
 The first implementation should prefer correctness and clear ownership over
 micro-optimized incremental updates. Once behavior is equivalent, comment,

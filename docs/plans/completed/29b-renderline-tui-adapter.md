@@ -73,9 +73,8 @@ Update TUI diff rendering so:
 - ratatui-specific styling remains in the TUI;
 - semantic runs and line kinds come from the document.
 
-During migration, keep the document renderer behind the TUI-local `*` toggle.
-It should become the only renderer when 29f removes the legacy diff
-projection/rendering path.
+29f is complete: the document renderer is now the only diff renderer, and the
+TUI-local `*` renderer toggle has been removed.
 
 ## Design Requirements
 
@@ -90,12 +89,8 @@ projection/rendering path.
 
 ## Cache Rules
 
-The current TUI diff cache can remain temporarily, but its key should move
-toward document identity plus terminal width. It should not require raw hunks
-or old diff row models once this slice is complete.
-
-If cache migration is too large for this slice, keep the old cache behind the
-new document render adapter and defer deletion to 29f.
+No TUI diff cache remains on the active render path. Rendering reads the active
+document model directly.
 
 ## Tests
 
@@ -120,5 +115,5 @@ Add renderer boundary tests for:
 - [x] Existing visual output remains equivalent.
 - [x] Existing diff, side-by-side, hunk, blame, and comment marker tests stay
       green or are replaced by document-render tests.
-- [x] The legacy renderer remained available behind the `*` toggle until 29f
-      removed it.
+- [x] The previous renderer remained available behind the `*` toggle until
+      29f removed it.
