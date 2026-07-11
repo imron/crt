@@ -234,7 +234,7 @@ fn scroll_to_comment(
         return;
     }
 
-    let content_height = active_diff_content_height(state, view);
+    let content_height = active_diff_content_height(state);
     if content_height == 0 {
         return;
     }

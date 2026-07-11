@@ -180,10 +180,6 @@ mod tests {
     }
 
     impl ViewportMetrics for View {
-        fn diff_content_height(&self) -> usize {
-            self.lines.len()
-        }
-
         fn diff_view_height(&self) -> usize {
             self.lines.len()
         }
