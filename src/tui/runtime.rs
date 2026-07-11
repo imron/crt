@@ -269,19 +269,20 @@ impl Tui {
         let tui_state = &mut self.tui_state;
         self.terminal
             .draw(|frame| render::draw(frame, &model, tui_state, styles))?;
-        let before = (
-            self.app.state.diff_line_cursor,
-            self.app.state.diff_scroll,
-            self.app.state.file_list_scroll,
+        let file_list_row = self.tui_state.selected_file_list_row(
+            self.app.state.file_list_section_focus,
+            self.app.state.selected_file,
+            self.app.state.selected_comment_id,
         );
-        self.tui_state.clamp_cursor_and_scroll(&mut self.app.state);
-        self.tui_state.clamp_file_list_scroll(&mut self.app.state);
-        let after = (
-            self.app.state.diff_line_cursor,
-            self.app.state.diff_scroll,
-            self.app.state.file_list_scroll,
+        let diff_changed = self.app.state.clamp_diff_viewport(
+            self.tui_state.diff_content_height,
+            self.tui_state.diff_view_height,
         );
-        if before != after {
+        let file_list_changed = self
+            .app
+            .state
+            .clamp_file_list_viewport(file_list_row, self.tui_state.file_list_visible_rows());
+        if diff_changed || file_list_changed {
             self.app.state.mark_model_changed();
         }
         if self.app.refresh_active_diff_search(&self.tui_state) {

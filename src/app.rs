@@ -1255,6 +1255,49 @@ impl AppState {
         }
     }
 
+    pub fn clamp_diff_viewport(
+        &mut self,
+        rendered_line_count: usize,
+        visible_line_count: usize,
+    ) -> bool {
+        let before = (self.diff_line_cursor, self.diff_scroll);
+        let max = rendered_line_count.saturating_sub(1);
+        self.diff_line_cursor = self.diff_line_cursor.min(max);
+        if self.diff_line_cursor < self.diff_scroll {
+            self.diff_scroll = self.diff_line_cursor;
+        }
+        if visible_line_count > 0
+            && self.diff_line_cursor >= self.diff_scroll.saturating_add(visible_line_count)
+        {
+            self.diff_scroll = self
+                .diff_line_cursor
+                .saturating_sub(visible_line_count.saturating_sub(1));
+        }
+        self.diff_scroll = self.diff_scroll.min(max);
+        before != (self.diff_line_cursor, self.diff_scroll)
+    }
+
+    pub fn clamp_file_list_viewport(
+        &mut self,
+        selected_row: Option<usize>,
+        visible_rows: usize,
+    ) -> bool {
+        let Some(selected_row) = selected_row else {
+            return false;
+        };
+        if visible_rows == 0 {
+            return false;
+        }
+
+        let before = self.file_list_scroll;
+        if selected_row < self.file_list_scroll {
+            self.file_list_scroll = selected_row;
+        } else if selected_row >= self.file_list_scroll.saturating_add(visible_rows) {
+            self.file_list_scroll = selected_row.saturating_sub(visible_rows).saturating_add(1);
+        }
+        before != self.file_list_scroll
+    }
+
     /// The currently selected file, if any.
     pub fn selected_file_entry(&self) -> Option<&FileEntry> {
         self.files.get(self.selected_file)
@@ -1648,6 +1691,55 @@ mod tests {
             head_ref: "feature".to_string(),
             merge_base: "abc123".to_string(),
         }
+    }
+
+    fn empty_state() -> AppState {
+        AppState::new(
+            crate::config::DiffAlgorithm::Myers,
+            test_context(),
+            Vec::new(),
+            40,
+        )
+    }
+
+    #[test]
+    fn app_clamps_diff_cursor_and_scroll_from_rendered_viewport_counts() {
+        let mut state = empty_state();
+        state.diff_line_cursor = 50;
+        state.diff_scroll = 45;
+
+        assert!(state.clamp_diff_viewport(30, 10));
+        assert_eq!(state.diff_line_cursor, 29);
+        assert_eq!(state.diff_scroll, 29);
+
+        state.diff_line_cursor = 5;
+        state.diff_scroll = 20;
+        assert!(state.clamp_diff_viewport(30, 10));
+        assert_eq!(state.diff_line_cursor, 5);
+        assert_eq!(state.diff_scroll, 5);
+
+        state.diff_line_cursor = 18;
+        state.diff_scroll = 5;
+        assert!(state.clamp_diff_viewport(30, 10));
+        assert_eq!(state.diff_line_cursor, 18);
+        assert_eq!(state.diff_scroll, 9);
+    }
+
+    #[test]
+    fn app_clamps_file_list_scroll_from_selected_rendered_row() {
+        let mut state = empty_state();
+        state.file_list_scroll = 10;
+
+        assert!(state.clamp_file_list_viewport(Some(4), 5));
+        assert_eq!(state.file_list_scroll, 4);
+
+        state.file_list_scroll = 4;
+        assert!(state.clamp_file_list_viewport(Some(12), 5));
+        assert_eq!(state.file_list_scroll, 8);
+
+        assert!(!state.clamp_file_list_viewport(None, 5));
+        assert!(!state.clamp_file_list_viewport(Some(20), 0));
+        assert_eq!(state.file_list_scroll, 8);
     }
 
     fn setup_content_repo(path: &str, base_content: &str, head_content: &str) -> tempfile::TempDir {

@@ -101,8 +101,6 @@ pub enum ReviewStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffPanel {
-    pub selected_file_index: Option<usize>,
-    pub file_id: Option<String>,
     pub path: Option<String>,
     pub review_status: Option<ReviewStatus>,
     pub content_mode: ContentMode,
@@ -588,8 +586,6 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
     );
 
     DiffPanel {
-        selected_file_index: selected.map(|_| state.selected_file),
-        file_id: selected.map(|entry| entry.change.path.clone()),
         path: selected.map(|entry| entry.change.path.clone()),
         review_status: selected.map(|entry| ReviewStatus::from(&entry.status)),
         content_mode: state.content_mode,
@@ -1246,8 +1242,6 @@ mod tests {
 
         let model = app.model();
 
-        assert_eq!(model.diff.file_id, Some("src/main.rs".to_string()));
-        assert_eq!(model.diff.selected_file_index, Some(0));
         assert_eq!(model.diff.scroll, 0);
         assert_eq!(model.diff.cursor, TextAnchor { line: 3, column: 7 });
         assert_eq!(
