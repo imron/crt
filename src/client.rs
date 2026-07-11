@@ -419,6 +419,16 @@ impl Client {
         self.call(RpcMethod::ResetReviews, EmptyParams {}).await
     }
 
+    pub async fn set_merge_base(&self, refspec: &str) -> Result<review_types::SetMergeBaseResult> {
+        self.call(
+            RpcMethod::SetMergeBase,
+            review_types::SetMergeBaseParams {
+                refspec: refspec.to_string(),
+            },
+        )
+        .await
+    }
+
     // -----------------------------------------------------------------------
     // Comments
     // -----------------------------------------------------------------------

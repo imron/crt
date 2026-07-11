@@ -60,6 +60,7 @@ rpc_methods! {
     MarkReviewed => "mark_reviewed",
     UnmarkReviewed => "unmark_reviewed",
     ResetReviews => "reset_reviews",
+    SetMergeBase => "set_merge_base",
     CreateComment => "create_comment",
     ListComments => "list_comments",
     GetComment => "get_comment",

@@ -692,6 +692,7 @@ impl App {
             Command::SearchAll { pattern } => self.run_search(pattern, false).await,
             Command::SearchDiff { pattern } => self.run_search(pattern, true).await,
             Command::FindDefinition { symbol } => self.run_definition_lookup(symbol).await,
+            Command::SetMergeBase(Some(refspec)) => self.set_merge_base(refspec).await,
             Command::ViewFile { path, line_number } => Some(StatusUpdate::Set(format!(
                 "File not in diff: {path} {line_number}"
             ))),
@@ -699,9 +700,32 @@ impl App {
             | Command::SetBlame(_)
             | Command::SetComments(_)
             | Command::SetWhitespaceIgnored(_)
+            | Command::SetMergeBase(None)
             | Command::Unknown { .. } => {
                 Some(StatusUpdate::Set("Unsupported pending command".to_string()))
             }
+        }
+    }
+
+    async fn set_merge_base(&mut self, refspec: String) -> Option<StatusUpdate> {
+        let client = match self.client() {
+            Ok(client) => client,
+            Err(e) => return Some(StatusUpdate::Set(format!("Failed to set merge base: {e}"))),
+        };
+
+        let context = match client.set_merge_base(&refspec).await {
+            Ok(result) => result.context,
+            Err(e) => return Some(StatusUpdate::Set(format!("Failed to set merge base: {e}"))),
+        };
+
+        self.state.context = context;
+        self.state.clear_transient_interaction_state();
+        match self.reload_file_snapshot().await {
+            Some(status) => Some(status),
+            None => Some(StatusUpdate::Set(format!(
+                "Merge base set to {}",
+                self.state.context.merge_base
+            ))),
         }
     }
 

@@ -575,6 +575,18 @@ pub struct ResetReviewsResult {
     pub cleared: u64,
 }
 
+/// Parameters for changing the current session merge-base.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetMergeBaseParams {
+    pub refspec: String,
+}
+
+/// Result of `set_merge_base`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetMergeBaseResult {
+    pub context: ConnectionContext,
+}
+
 /// Result of `create_comment`, `get_comment`, `update_comment`,
 /// `resolve_comment`, `unresolve_comment`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
