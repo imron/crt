@@ -1161,6 +1161,44 @@ async fn test_comment_reanchors_unresolved_only() {
 }
 
 #[tokio::test]
+async fn test_file_specific_comment_list_follows_worktree_rename() {
+    let server = TestServer::start().await;
+    std::fs::write(server.repo_dir.join("file.txt"), "hello\nworld\n").unwrap();
+    let mut conn = server.connect_and_init().await;
+
+    let create = conn
+        .request(
+            RpcMethod::CreateComment,
+            create_comment_params("file.txt", 2, "world", "hello", "check this"),
+        )
+        .await;
+    assert!(create["error"].is_null(), "create failed: {create}");
+
+    std::fs::rename(
+        server.repo_dir.join("file.txt"),
+        server.repo_dir.join("renamed.txt"),
+    )
+    .unwrap();
+    run_git(&server.repo_dir, &["add", "-A"]);
+
+    let list = conn
+        .request(
+            RpcMethod::ListComments,
+            list_comments_params("renamed.txt", false),
+        )
+        .await;
+    assert!(list["error"].is_null(), "list failed: {list}");
+    let comments = list["result"]["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0]["file_path"], "renamed.txt");
+    assert_eq!(comments[0]["line_start"], 2);
+    assert_eq!(
+        comments[0]["anchor"]["segments"][0]["file_path"],
+        "renamed.txt"
+    );
+}
+
+#[tokio::test]
 async fn test_explicit_commit_base_does_not_migrate_reviews() {
     let server = TestServer::start().await;
     let head_ref = git_output(&server.repo_dir, &["branch", "--show-current"]);
