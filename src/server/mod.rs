@@ -53,6 +53,8 @@ pub struct ConnectionContext {
     pub merge_base: CommitId,
     pub head: HeadIdentity,
     pub db_path: PathBuf,
+    /// Diff algorithm used for review hashing and file diffs on this connection.
+    pub diff_algorithm: crate::config::DiffAlgorithm,
 }
 
 impl ConnectionContext {

@@ -462,6 +462,10 @@ pub struct InitParams {
     pub base_ref: String,
     #[serde(default)]
     pub root: bool,
+    /// Preferred diff algorithm for server-side review hashing and file diffs.
+    /// Older clients omit this and the server falls back to patience.
+    #[serde(default)]
+    pub diff_algorithm: Option<String>,
 }
 
 /// Parameters for `get_file_diff`.
@@ -1191,6 +1195,7 @@ mod tests {
             worktree: "/path/to/repo".to_string(),
             base_ref: "main".to_string(),
             root: false,
+            diff_algorithm: None,
         };
         let json = serde_json::to_string(&params).unwrap();
         let deserialized: InitParams = serde_json::from_str(&json).unwrap();

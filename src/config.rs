@@ -155,20 +155,27 @@ impl DiffAlgorithm {
             Self::Histogram => "histogram",
         }
     }
+
+    /// Parse a wire/config algorithm name.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.to_lowercase().as_str() {
+            "myers" => Some(Self::Myers),
+            "patience" => Some(Self::Patience),
+            "minimal" => Some(Self::Minimal),
+            "histogram" => Some(Self::Histogram),
+            _ => None,
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for DiffAlgorithm {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
-        match s.to_lowercase().as_str() {
-            "myers" => Ok(Self::Myers),
-            "patience" => Ok(Self::Patience),
-            "minimal" => Ok(Self::Minimal),
-            "histogram" => Ok(Self::Histogram),
-            _ => Err(serde::de::Error::custom(format!(
+        Self::parse(&s).ok_or_else(|| {
+            serde::de::Error::custom(format!(
                 "unknown diff algorithm: {s} (expected myers, patience, minimal, or histogram)"
-            ))),
-        }
+            ))
+        })
     }
 }
 
