@@ -211,7 +211,13 @@ pub fn active_document_key(state: &AppState) -> Option<DocumentKey> {
     let entry = state.selected_file_entry()?;
     Some(DocumentKey {
         file_id: entry.change.path.clone(),
-        diff_hash: entry.diff.diff_hash.clone(),
+        // Prefer algorithm-independent file identity; fall back to patch hash
+        // for tests/fixtures that only populate diff_hash.
+        diff_hash: if !entry.diff.content_id.is_empty() {
+            entry.diff.content_id.clone()
+        } else {
+            entry.diff.diff_hash.clone()
+        },
         content_mode: state.content_mode,
         render_variant: state.render_variant,
         diff_algorithm: state.diff_algorithm,
@@ -779,6 +785,7 @@ mod tests {
                 hunks,
                 is_binary: false,
                 diff_hash: format!("hash-{path}"),
+                content_id: String::new(),
             },
         }
     }

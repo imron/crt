@@ -242,16 +242,18 @@ to search the codebase for definition patterns.
 
 There is no concept of a "review session" that can be started or
 completed. Review state is simply a mapping of
-`(merge_base, head_ref, file_path) -> (diff_hash, reviewed_at)`. Running
-`crt <base>` always shows the current state.
+`(merge_base, head_ref, file_path) -> (content_id, reviewed_at)`.
+`content_id` is an algorithm-independent pair of git blob OIDs
+(`v1:{base_blob}:{workdir_blob}`). Running `crt <base>` always shows the
+current state.
 
 **Why:**
 
 - A feature branch is a living thing until it's merged. There's no
   meaningful "complete" state while work is ongoing.
-- The diff-hash approach naturally handles the lifecycle: as the branch
-  evolves, files with changed diffs are automatically flagged for
-  re-review.
+- Content identity naturally handles the lifecycle: as the branch
+  evolves, files whose base/workdir blobs change are automatically
+  flagged for re-review, independent of display diff algorithm.
 - If you want a fresh start, `crt <base> --reset` clears all stored
   state for the current `(merge_base, head_ref)` scope.
 - After the branch is merged, you simply never run `crt <base>` for it
@@ -610,7 +612,8 @@ CREATE TABLE file_reviews (
     file_path   TEXT NOT NULL,
     merge_base  TEXT NOT NULL,          -- commit hash of common ancestor
     head_ref    TEXT NOT NULL,
-    diff_hash   TEXT NOT NULL,
+    diff_hash   TEXT NOT NULL,          -- legacy; cleared on new writes
+    content_id  TEXT NOT NULL,          -- v1:{base_blob}:{workdir_blob}
     reviewed_at TEXT NOT NULL,
     PRIMARY KEY (merge_base, head_ref, file_path)
 );

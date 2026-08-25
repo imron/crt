@@ -26,7 +26,11 @@ pub struct StoredReview {
     pub file_path: String,
     pub merge_base: String,
     pub head_ref: String,
+    /// Legacy patch-hash field. New writes store empty string; kept for
+    /// rows that have not been restamped to [`Self::content_id`].
     pub diff_hash: String,
+    /// Algorithm-independent review identity (`v1:{base_blob}:{end_blob}`).
+    pub content_id: String,
     pub reviewed_at: String,
     /// The HEAD commit OID at the time the file was reviewed.
     pub reviewed_commit: String,
@@ -183,6 +187,12 @@ const MIGRATIONS: &[Migration] = &[
         up: include_str!("../migrations/0008_ensure_resolution_patch_id.up.sql"),
         down: include_str!("../migrations/0008_ensure_resolution_patch_id.down.sql"),
     },
+    Migration {
+        version: 9,
+        name: "add_content_id",
+        up: include_str!("../migrations/0009_add_content_id.up.sql"),
+        down: include_str!("../migrations/0009_add_content_id.down.sql"),
+    },
 ];
 
 impl Database {
@@ -214,6 +224,7 @@ impl Database {
             self.record_migration(migration)?;
         }
         self.repair_comment_resolution_patch_id_column()?;
+        self.repair_file_reviews_content_id_column()?;
         Ok(())
     }
 
@@ -300,6 +311,24 @@ impl Database {
         Ok(())
     }
 
+    fn repair_file_reviews_content_id_column(&self) -> Result<()> {
+        if !self.table_exists("file_reviews")?
+            || self.column_exists("file_reviews", "content_id")?
+        {
+            return Ok(());
+        }
+
+        self.conn
+            .execute_batch(
+                "
+                ALTER TABLE file_reviews
+                    ADD COLUMN content_id TEXT NOT NULL DEFAULT '';
+                ",
+            )
+            .context("Failed to add missing content_id column")?;
+        Ok(())
+    }
+
     // -----------------------------------------------------------------------
     // Review operations
     // -----------------------------------------------------------------------
@@ -310,17 +339,32 @@ impl Database {
         merge_base: &str,
         head_ref: &str,
         file_path: &str,
-        diff_hash: &str,
+        content_id: &str,
         reviewed_commit: &str,
     ) -> Result<StoredReview> {
         let now = now_iso8601();
+        // diff_hash is legacy; new writes clear it so status uses content_id.
+        let diff_hash = "";
         self.conn
             .execute(
-                "INSERT INTO file_reviews (merge_base, head_ref, file_path, diff_hash, reviewed_at, reviewed_commit)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "INSERT INTO file_reviews
+                    (merge_base, head_ref, file_path, diff_hash, content_id, reviewed_at, reviewed_commit)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT (merge_base, head_ref, file_path)
-                 DO UPDATE SET diff_hash = ?4, reviewed_at = ?5, reviewed_commit = ?6",
-                params![merge_base, head_ref, file_path, diff_hash, now, reviewed_commit],
+                 DO UPDATE SET
+                    diff_hash = ?4,
+                    content_id = ?5,
+                    reviewed_at = ?6,
+                    reviewed_commit = ?7",
+                params![
+                    merge_base,
+                    head_ref,
+                    file_path,
+                    diff_hash,
+                    content_id,
+                    now,
+                    reviewed_commit
+                ],
             )
             .context("Failed to store review")?;
 
@@ -329,9 +373,30 @@ impl Database {
             merge_base: merge_base.to_string(),
             head_ref: head_ref.to_string(),
             diff_hash: diff_hash.to_string(),
+            content_id: content_id.to_string(),
             reviewed_at: now,
             reviewed_commit: reviewed_commit.to_string(),
         })
+    }
+
+    /// Update only the content_id (and clear legacy diff_hash) without
+    /// changing reviewed_at / reviewed_commit. Used when restamping legacy rows.
+    pub fn update_review_content_id(
+        &self,
+        merge_base: &str,
+        head_ref: &str,
+        file_path: &str,
+        content_id: &str,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE file_reviews
+                 SET content_id = ?4, diff_hash = ''
+                 WHERE merge_base = ?1 AND head_ref = ?2 AND file_path = ?3",
+                params![merge_base, head_ref, file_path, content_id],
+            )
+            .context("Failed to update review content_id")?;
+        Ok(())
     }
 
     /// Load all reviews for a `(merge_base, head_ref)` pair.
@@ -344,7 +409,8 @@ impl Database {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT file_path, merge_base, head_ref, diff_hash, reviewed_at, reviewed_commit
+                "SELECT file_path, merge_base, head_ref, diff_hash, content_id,
+                        reviewed_at, reviewed_commit
                  FROM file_reviews
                  WHERE merge_base = ?1 AND head_ref = ?2",
             )
@@ -357,8 +423,9 @@ impl Database {
                     merge_base: row.get(1)?,
                     head_ref: row.get(2)?,
                     diff_hash: row.get(3)?,
-                    reviewed_at: row.get(4)?,
-                    reviewed_commit: row.get(5)?,
+                    content_id: row.get(4)?,
+                    reviewed_at: row.get(5)?,
+                    reviewed_commit: row.get(6)?,
                 })
             })
             .context("Failed to load reviews")?;
@@ -399,7 +466,8 @@ impl Database {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT file_path, merge_base, head_ref, diff_hash, reviewed_at, reviewed_commit
+                "SELECT file_path, merge_base, head_ref, diff_hash, content_id,
+                        reviewed_at, reviewed_commit
                  FROM file_reviews
                  WHERE head_ref = ?1
                  ORDER BY reviewed_at DESC",
@@ -413,8 +481,9 @@ impl Database {
                     merge_base: row.get(1)?,
                     head_ref: row.get(2)?,
                     diff_hash: row.get(3)?,
-                    reviewed_at: row.get(4)?,
-                    reviewed_commit: row.get(5)?,
+                    content_id: row.get(4)?,
+                    reviewed_at: row.get(5)?,
+                    reviewed_commit: row.get(6)?,
                 })
             })
             .context("Failed to load reviews by head_ref")?;
@@ -1337,7 +1406,8 @@ mod tests {
 
         let review = &reviews["src/main.rs"];
         assert_eq!(review.file_path, "src/main.rs");
-        assert_eq!(review.diff_hash, "abc123");
+        assert_eq!(review.content_id, "abc123");
+        assert!(review.diff_hash.is_empty());
         assert_eq!(review.reviewed_commit, "deadbeef");
         assert!(!review.reviewed_at.is_empty());
     }
@@ -1353,7 +1423,7 @@ mod tests {
 
         let reviews = db.load_reviews("main", "feature-a").unwrap();
         assert_eq!(reviews.len(), 1);
-        assert_eq!(reviews["src/main.rs"].diff_hash, "hash2");
+        assert_eq!(reviews["src/main.rs"].content_id, "hash2");
     }
 
     #[test]
@@ -1368,8 +1438,8 @@ mod tests {
         let reviews_a = db.load_reviews("main", "feature-a").unwrap();
         let reviews_b = db.load_reviews("main", "feature-b").unwrap();
 
-        assert_eq!(reviews_a["src/main.rs"].diff_hash, "hash-a");
-        assert_eq!(reviews_b["src/main.rs"].diff_hash, "hash-b");
+        assert_eq!(reviews_a["src/main.rs"].content_id, "hash-a");
+        assert_eq!(reviews_b["src/main.rs"].content_id, "hash-b");
     }
 
     #[test]
@@ -2164,12 +2234,12 @@ mod tests {
 
         let old_reviews = &old_scope.unwrap().1;
         assert_eq!(old_reviews.len(), 2);
-        assert_eq!(old_reviews["src/main.rs"].diff_hash, "hash1");
-        assert_eq!(old_reviews["src/lib.rs"].diff_hash, "hash2");
+        assert_eq!(old_reviews["src/main.rs"].content_id, "hash1");
+        assert_eq!(old_reviews["src/lib.rs"].content_id, "hash2");
 
         let new_reviews = &new_scope.unwrap().1;
         assert_eq!(new_reviews.len(), 1);
-        assert_eq!(new_reviews["src/main.rs"].diff_hash, "hash3");
+        assert_eq!(new_reviews["src/main.rs"].content_id, "hash3");
     }
 
     #[test]

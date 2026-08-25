@@ -213,6 +213,7 @@ mod tests {
                     }],
                     is_binary: false,
                     diff_hash: "diff".to_string(),
+                    content_id: String::new(),
                 },
             }],
             40,

@@ -330,7 +330,8 @@ impl Client {
     }
 
     /// Initialize a review session, optionally requesting a specific server-side
-    /// diff algorithm so review hashes match the client's display algorithm.
+    /// display diff algorithm for `get_file_diff`. Review status uses
+    /// algorithm-independent `content_id` values.
     pub async fn init_with_options(
         &self,
         worktree: &str,
