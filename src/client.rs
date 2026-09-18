@@ -457,6 +457,13 @@ impl Client {
         self.call(RpcMethod::CreateComment, params).await
     }
 
+    pub async fn create_line_comment(
+        &self,
+        params: review_types::CreateLineCommentParams,
+    ) -> Result<review_types::CommentResult> {
+        self.call(RpcMethod::CreateLineComment, params).await
+    }
+
     pub async fn list_comments(
         &self,
         file_path: Option<&str>,

@@ -682,6 +682,9 @@ async fn dispatch_initialized(
         RpcMethod::CreateComment => {
             api::handle_create_comment(&request.params, id, ctx, db, &state.notify_tx).await
         }
+        RpcMethod::CreateLineComment => {
+            api::handle_create_line_comment(&request.params, id, ctx, db, &state.notify_tx).await
+        }
         RpcMethod::ListComments => api::handle_list_comments(&request.params, id, ctx, db).await,
         RpcMethod::GetComment => api::handle_get_comment(&request.params, id, ctx, db).await,
         RpcMethod::UpdateComment => {

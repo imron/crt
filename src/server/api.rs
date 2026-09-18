@@ -897,8 +897,6 @@ pub async fn handle_create_comment(
         }
     };
 
-    let merge_base = ctx.merge_base.to_string();
-    let head_ref = ctx.head_scope_key();
     let file_path = match p.anchor.segments.first() {
         Some(segment) => segment.file_path.clone(),
         None => {
@@ -919,12 +917,111 @@ pub async fn handle_create_comment(
             );
         }
     };
+    store_comment(id, ctx, db, notify_tx, file_path, p.body, anchor).await
+}
+
+pub async fn handle_create_line_comment(
+    params: &serde_json::Value,
+    id: &serde_json::Value,
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    notify_tx: &broadcast::Sender<Notification>,
+) -> JsonRpcResponse {
+    let p: review_types::CreateLineCommentParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INVALID_PARAMS,
+                format!("Invalid params: {e}"),
+            );
+        }
+    };
+
+    if p.body.trim().is_empty() {
+        return JsonRpcResponse::error(
+            id.clone(),
+            ERR_INVALID_PARAMS,
+            "Comment body must not be empty".to_string(),
+        );
+    }
+
+    let side = p.side.unwrap_or(review_types::CommentAnchorSide::Head);
+    let line_end = p.line_end.unwrap_or(p.line_start);
+    let (Ok(start_index), Ok(end_line)) = (
+        usize::try_from(p.line_start.saturating_sub(1)),
+        usize::try_from(line_end),
+    ) else {
+        return JsonRpcResponse::error(
+            id.clone(),
+            ERR_INVALID_PARAMS,
+            format!(
+                "Invalid line range {}..{line_end}; lines are 1-based",
+                p.line_start
+            ),
+        );
+    };
+    if end_line <= start_index {
+        return JsonRpcResponse::error(
+            id.clone(),
+            ERR_INVALID_PARAMS,
+            format!(
+                "line_end ({line_end}) must not be before line_start ({})",
+                p.line_start
+            ),
+        );
+    }
+
+    let content = match anchor_side_content(ctx, side, &p.file_path).await {
+        Ok(Some(content)) => content,
+        Ok(None) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INVALID_PARAMS,
+                format!(
+                    "'{}' has no readable content on the {} side of this review",
+                    p.file_path,
+                    anchor_side_label(side)
+                ),
+            );
+        }
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INTERNAL,
+                format!("Failed to read '{}': {e:#}", p.file_path),
+            );
+        }
+    };
+
+    let anchor = match line_anchor(side, &p.file_path, &content, start_index, end_line) {
+        Ok(anchor) => anchor,
+        Err(e) => {
+            return JsonRpcResponse::error(id.clone(), ERR_INVALID_PARAMS, e.to_string());
+        }
+    };
+
+    store_comment(id, ctx, db, notify_tx, p.file_path, p.body, anchor).await
+}
+
+/// Persist a prepared comment, notify listeners, and build the response.
+async fn store_comment(
+    id: &serde_json::Value,
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    notify_tx: &broadcast::Sender<Notification>,
+    file_path: String,
+    body: String,
+    anchor: NewCommentAnchor,
+) -> JsonRpcResponse {
+    let merge_base = ctx.merge_base.to_string();
+    let head_ref = ctx.head_scope_key();
     let new = NewComment {
         merge_base: merge_base.clone(),
         head_ref: head_ref.clone(),
         created_head_commit: ctx.head.resolved_commit().to_string(),
         file_path,
-        body: p.body,
+        body,
         anchor,
     };
 
@@ -951,6 +1048,81 @@ pub async fn handle_create_comment(
     });
 
     comment_response(id, stored)
+}
+
+/// Build a single-segment anchor covering `[start_index, end_line)` of
+/// `content`, capturing the anchor text and surrounding context lines.
+fn line_anchor(
+    side: review_types::CommentAnchorSide,
+    file_path: &str,
+    content: &str,
+    start_index: usize,
+    end_line: usize,
+) -> Result<NewCommentAnchor, LineRangeOutOfFile> {
+    let lines = content_lines(content);
+    if start_index >= lines.len() || end_line > lines.len() {
+        return Err(LineRangeOutOfFile {
+            line_start: start_index.saturating_add(1),
+            line_end: end_line,
+            total_lines: lines.len(),
+        });
+    }
+
+    let (context_before, context_after) = context_around(&lines, start_index, end_line);
+    let segment = segment_from_parts(
+        side,
+        file_path,
+        hash_content(content),
+        usize_to_i64_saturating(start_index + 1),
+        usize_to_i64_saturating(end_line),
+        None,
+        None,
+        lines[start_index..end_line].join("\n"),
+        context_before,
+        context_after,
+        review_types::AnchorStatus::Anchored,
+    );
+
+    Ok(NewCommentAnchor {
+        aggregate_status: aggregate_status_for_new_segments(std::slice::from_ref(&segment)),
+        segments: vec![segment],
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LineRangeOutOfFile {
+    line_start: usize,
+    line_end: usize,
+    total_lines: usize,
+}
+
+impl std::fmt::Display for LineRangeOutOfFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Line range {}..{} is outside the file, which has {} line(s)",
+            self.line_start, self.line_end, self.total_lines
+        )
+    }
+}
+
+async fn anchor_side_content(
+    ctx: &ConnectionContext,
+    side: review_types::CommentAnchorSide,
+    file_path: &str,
+) -> anyhow::Result<Option<String>> {
+    let content = match side {
+        review_types::CommentAnchorSide::Head => current_file_content(ctx, file_path).await?,
+        review_types::CommentAnchorSide::Base => base_file_content(ctx, file_path).await?,
+    };
+    Ok(content.map(|(content, _)| content))
+}
+
+fn anchor_side_label(side: review_types::CommentAnchorSide) -> &'static str {
+    match side {
+        review_types::CommentAnchorSide::Head => "head",
+        review_types::CommentAnchorSide::Base => "base",
+    }
 }
 
 pub async fn handle_list_comments(
@@ -4244,6 +4416,81 @@ mod tests {
     #[test]
     fn squash_history_matrix_covers_all_anchor_shapes() {
         assert_history_matrix(HistoryTopology::Squash);
+    }
+
+    #[test]
+    fn line_anchor_captures_selected_lines_and_context() {
+        let content = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n";
+        let anchor = line_anchor(
+            review_types::CommentAnchorSide::Head,
+            "src/lib.rs",
+            content,
+            3,
+            5,
+        )
+        .expect("line range is inside the file");
+
+        assert_eq!(
+            anchor.aggregate_status,
+            review_types::AnchorAggregateStatus::Anchored
+        );
+        assert_eq!(anchor.segments.len(), 1);
+        let segment = &anchor.segments[0];
+        assert_eq!(segment.side, review_types::CommentAnchorSide::Head);
+        assert_eq!(segment.file_path, "src/lib.rs");
+        assert_eq!(segment.line_start, 4);
+        assert_eq!(segment.line_end, 5);
+        assert_eq!(segment.anchor_text, "four\nfive");
+        assert_eq!(segment.context_before, "one\ntwo\nthree");
+        assert_eq!(segment.context_after, "six\nseven\neight");
+        assert_eq!(
+            segment.placement_status,
+            review_types::AnchorPlacementStatus::Anchored
+        );
+        assert_eq!(
+            segment.match_method,
+            review_types::AnchorMatchMethod::ExactAtLine
+        );
+    }
+
+    #[test]
+    fn line_anchor_records_side_and_content_hash() {
+        let content = "alpha\nbeta\n";
+        let anchor = line_anchor(
+            review_types::CommentAnchorSide::Base,
+            "src/lib.rs",
+            content,
+            0,
+            1,
+        )
+        .expect("line range is inside the file");
+
+        let segment = &anchor.segments[0];
+        assert_eq!(segment.side, review_types::CommentAnchorSide::Base);
+        assert_eq!(segment.anchor_text, "alpha");
+        assert_eq!(segment.file_blob_sha, hash_content(content));
+    }
+
+    #[test]
+    fn line_anchor_rejects_range_past_end_of_file() {
+        let content = "one\ntwo\n";
+        let error = line_anchor(
+            review_types::CommentAnchorSide::Head,
+            "src/lib.rs",
+            content,
+            1,
+            9,
+        )
+        .expect_err("line range runs past the end of the file");
+
+        assert_eq!(
+            error,
+            LineRangeOutOfFile {
+                line_start: 2,
+                line_end: 9,
+                total_lines: 2,
+            }
+        );
     }
 
     #[test]
