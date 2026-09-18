@@ -351,25 +351,26 @@ Status markers:
 - `~` — previously reviewed, but diff has changed since (needs re-review)
 - `✓` — reviewed, diff unchanged
 
+A `●` to the left of the review marker means the file has unresolved
+comments. To the right, `+`, `-`, and `R` mark added, deleted, and renamed
+files; renames also show `new ← old`.
+
 ### Diff / File View Pane
 
-The right pane has two independent display axes:
+The right pane has two independent display axes.
 
-**Content mode** (toggled with `f`):
-- **Diff mode** (default): shows the diff for the selected file
-  (`base..HEAD`).
-- **Full-file mode**: shows the complete file content, not just the diff.
+**View mode** cycles with `s`:
 
-**Render variant** (toggled with `s`, context-sensitive):
-- In diff mode: **inline** (unified diff) or **side-by-side**.
-- In full-file mode: **HEAD version** or **base version**.
+```
+diff  →  full file (HEAD)  →  full file (base)  →  diff
+```
 
-This gives four possible view states:
+**Render variant** toggles with `i`, and only applies in diff mode:
+**inline** (unified diff) or **side-by-side**.
 
-| Mode      | `s` variant 1     | `s` variant 2     |
-| --------- | ------------------ | ------------------ |
-| Diff      | Inline (default)   | Side-by-side       |
-| Full file | HEAD version       | Base version       |
+The diff base toggles with `m`, for files that have been reviewed before:
+the diff is shown either from the merge base (default) or from the commit
+the file was last reviewed at.
 
 When an **unreviewed** file is selected, the diff pane shows its diff.
 
@@ -391,59 +392,113 @@ Comments can be unresolved from the panel.
 
 ## Keybindings
 
-### Global (work from any pane)
+Press `?` in the TUI for the same list. Note that `j`/`k` and the other
+cursor motions always drive the diff cursor; the file list is navigated
+with `Ctrl-n` / `Ctrl-p` rather than with `j`/`k`.
+
+### Review
 
 | Key              | Action                                              |
 | ---------------- | --------------------------------------------------- |
+| `a` / `A`        | Toggle the current file between approved and unapproved |
+| `u`              | Undo the last review action                         |
 | `Ctrl-n`         | Next file (cycles unreviewed first, then reviewed)  |
 | `Ctrl-p`         | Previous file (same cycle order)                    |
-| `r`              | Mark current file as reviewed; auto-advance to next unreviewed file |
-| `c`              | Toggle inline comment visibility in diff pane       |
-| `Tab`            | Switch focus between file list and diff pane        |
-| `1`              | Toggle file list pane visibility                    |
-| `2`              | Toggle diff pane visibility                         |
-| `s`              | Toggle view variant (inline/side-by-side in diff mode; HEAD/base in full-file mode) |
-| `f`              | Toggle diff mode / full-file mode                   |
-| `q`              | Quit                                                |
-| `Ctrl-]`         | Go to definition of symbol under cursor             |
-| `Ctrl-t`         | Jump back (return from go-to-definition)            |
-| `:`              | Enter command mode                                  |
+| `Ctrl-Shift-n`   | Next file-list section                              |
+| `Ctrl-Shift-p`   | Previous file-list section                          |
 
-### File List Pane (when focused)
+### Comments
 
 | Key              | Action                                              |
 | ---------------- | --------------------------------------------------- |
-| `j` / `k`        | Move cursor down / up through file list             |
-| `Enter`          | Select file and switch focus to diff pane           |
-| `g`              | Jump to first file                                  |
-| `G`              | Jump to last file                                   |
-
-### Diff Pane (when focused)
-
-| Key              | Action                                              |
-| ---------------- | --------------------------------------------------- |
-| `j` / `k`        | Scroll down / up one line                           |
-| `Space`          | Scroll down one page                                |
-| `Ctrl-u`         | Scroll up half a page                               |
-| `Ctrl-d`         | Scroll down half a page                             |
-| `g`              | Jump to top of diff                                 |
-| `G`              | Jump to bottom of diff                              |
-| `/`              | Search in diff                                      |
-| `n`              | Next search result                                  |
-| `N`              | Previous search result                              |
-| `Enter`          | Expand reviewed file diff / create comment after selection |
+| `c` / `Space`    | Comment on the current line or selection            |
 | `V`              | Line selection mode (select lines for commenting)   |
 | `v`              | Character selection mode (select within lines)      |
+| `Escape`         | Cancel the active selection                         |
+| `Shift-C`        | Toggle the comments panel                           |
+| `e`              | Edit the current comment                            |
+| `r`              | Resolve or unresolve the current comment            |
+| `d`              | Delete the current comment                          |
+| `}` / `{`        | Next / previous unresolved comment                  |
+
+`r` and `d` act on a comment only while one is current; otherwise `d`
+cycles the diff algorithm.
+
+### View
+
+| Key              | Action                                              |
+| ---------------- | --------------------------------------------------- |
+| `s`              | Cycle: diff → full file (HEAD) → full file (base)    |
+| `i`              | Toggle inline / side-by-side (diff mode only)        |
+| `m`              | Toggle diff base: merge base / since last review     |
+| `d`              | Cycle diff algorithm                                |
+| `Ctrl-w`         | Toggle whitespace-insensitive diffing               |
+| `Ctrl-b`         | Toggle blame annotations                            |
+| `Tab`            | Switch focus between panes                          |
+| `1`              | Toggle file list pane visibility                    |
+| `2`              | Toggle diff pane visibility                         |
+
+### Movement
+
+| Key              | Action                                              |
+| ---------------- | --------------------------------------------------- |
+| `j` / `k`        | Move the cursor down / up one line                  |
+| `h` / `l`        | Move the cursor left / right one column             |
+| `Ctrl-d` / `Ctrl-u` | Half-page down / up                              |
+| `Ctrl-e` / `Ctrl-y` | Scroll down / up one line                        |
+| `g` / `G`        | Jump to top / bottom                                |
+| `H` / `M` / `L`  | Cursor to top / middle / bottom of the viewport     |
+| `0` / `$`        | Start / end of line                                 |
+| `w` / `b`        | Word forward / back                                 |
+| `W` / `B`        | Big-word forward / back                             |
+| `]` / `[`        | Next / previous diff hunk                           |
+| `Enter`          | Activate the selection in the focused pane          |
+
+### Search and navigation
+
+| Key              | Action                                              |
+| ---------------- | --------------------------------------------------- |
+| `/`              | Search the rendered diff                            |
+| `n` / `N`        | Next / previous search match                        |
+| `Escape`         | Clear the active diff search                        |
+| `Ctrl-]`         | Go to definition of the symbol under the cursor     |
+| `Ctrl-t`         | Jump back (pop the jump stack)                      |
+| `:`              | Enter command mode                                  |
+
+### Session
+
+| Key              | Action                                              |
+| ---------------- | --------------------------------------------------- |
+| `?`              | Toggle the help overlay                             |
+| `q`              | Quit                                                |
+| `Ctrl-c`         | Press twice to quit                                 |
+| `Ctrl-z`         | Suspend                                             |
+
+### Mouse
+
+| Action           | Effect                                              |
+| ---------------- | --------------------------------------------------- |
+| Click            | Select a file / set pane focus                      |
+| Double-click     | Select the word under the pointer (auto-copy)       |
+| Drag             | Select text (auto-copy)                             |
+| Drag pane border | Resize the file list pane                           |
+| Scroll           | Scroll the diff pane                                |
 
 ### Command Mode
 
-| Command                | Action                                        |
-| ---------------------- | --------------------------------------------- |
-| `:gr <regex>`          | Search across the whole codebase using regex   |
-| `:grd <regex>`         | Search across files in the diff only           |
-| `:apply-comments`      | Write review markers into worktree files       |
-| `:clear-comments`      | Remove review markers from worktree files      |
-| `:q`                   | Quit                                           |
+| Command                   | Action                                     |
+| ------------------------- | ------------------------------------------ |
+| `:gr <regex>`             | Search across the whole codebase           |
+| `:grd <regex>`            | Search across files in the diff only       |
+| `:gd [symbol]`            | Go to definition; defaults to word at cursor |
+| `:set blame` / `noblame`  | Show or hide blame annotations             |
+| `:set comments` / `nocomments` | Show or hide inline comments          |
+| `:set whitespace` / `nowhitespace` | Honour or ignore whitespace       |
+| `:set mergebase[=<ref>]`  | Re-scope to a new merge base (alias `mb`)  |
+| `:q` / `:quit`            | Quit                                       |
+
+`:apply-comments` and `:clear-comments` are planned, alongside the file
+marker support described below.
 
 ## Server API
 
