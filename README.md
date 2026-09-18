@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/crt.png" alt="crt" width="200">
+</p>
+
 # crt
 
 `crt` is a code review tool for humans (or agents) to review code written by
