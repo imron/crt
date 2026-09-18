@@ -322,13 +322,164 @@ fn draw_status_bar(
 // Help overlay
 // ---------------------------------------------------------------------------
 
+/// One rendered row of a help column.
+enum HelpRow {
+    /// A bold section heading.
+    Section(&'static str),
+    /// A binding and what it does.
+    Bind(&'static str, &'static str),
+    /// A line that needs no description column.
+    Note(&'static str),
+    Blank,
+}
+
+/// Width of one help column, including its leading indent.
+const HELP_COLUMN_WIDTH: usize = 38;
+/// Width of the binding field within a column.
+const HELP_BIND_WIDTH: usize = 15;
+
+const HELP_LEFT: &[HelpRow] = &[
+    HelpRow::Section("Review"),
+    HelpRow::Bind("a / A", "Approve / unapprove"),
+    HelpRow::Bind("u", "Undo review action"),
+    HelpRow::Bind("Ctrl-n / p", "Next / previous file"),
+    HelpRow::Bind("Ctrl-Shift-n/p", "Next / prev section"),
+    HelpRow::Blank,
+    HelpRow::Section("Comments"),
+    HelpRow::Bind("c / Space", "Comment line/select"),
+    HelpRow::Bind("V / v", "Line / char select"),
+    HelpRow::Bind("Esc", "Cancel selection"),
+    HelpRow::Bind("Shift-C", "Comments panel"),
+    HelpRow::Bind("e", "Edit comment"),
+    HelpRow::Bind("r", "Resolve / unresolve"),
+    HelpRow::Bind("d", "Delete comment"),
+    HelpRow::Bind("} / {", "Next / prev comment"),
+    HelpRow::Blank,
+    HelpRow::Section("View"),
+    HelpRow::Bind("s", "Diff / HEAD / base"),
+    HelpRow::Bind("i", "Inline / side-by-side"),
+    HelpRow::Bind("m", "Base: review / merge"),
+    HelpRow::Bind("d", "Cycle diff algorithm"),
+    HelpRow::Bind("Ctrl-w", "Ignore whitespace"),
+    HelpRow::Bind("Ctrl-b", "Blame annotations"),
+    HelpRow::Bind("1 / 2", "File list / diff pane"),
+    HelpRow::Bind("Tab", "Switch pane focus"),
+    HelpRow::Blank,
+    HelpRow::Section("Mouse"),
+    HelpRow::Bind("Click", "Select file / pane"),
+    HelpRow::Bind("Double-click", "Select word (copies)"),
+    HelpRow::Bind("Drag", "Select text (copies)"),
+    HelpRow::Bind("Drag border", "Resize file list"),
+    HelpRow::Bind("Scroll", "Scroll diff pane"),
+];
+
+const HELP_RIGHT: &[HelpRow] = &[
+    HelpRow::Section("Movement"),
+    HelpRow::Bind("j / k", "Down / up one line"),
+    HelpRow::Bind("h / l", "Left / right column"),
+    HelpRow::Bind("Ctrl-d / u", "Half-page down / up"),
+    HelpRow::Bind("Ctrl-e / y", "Scroll down / up"),
+    HelpRow::Bind("g / G", "Top / bottom"),
+    HelpRow::Bind("H / M / L", "Top / mid / bottom"),
+    HelpRow::Bind("0 / $", "Line start / end"),
+    HelpRow::Bind("w / b", "Word forward / back"),
+    HelpRow::Bind("W / B", "Big-word fwd / back"),
+    HelpRow::Bind("] / [", "Next / prev hunk"),
+    HelpRow::Bind("Enter", "Activate selection"),
+    HelpRow::Blank,
+    HelpRow::Section("Search"),
+    HelpRow::Bind("/", "Search rendered diff"),
+    HelpRow::Bind("n / N", "Next / prev match"),
+    HelpRow::Bind("Esc", "Clear diff search"),
+    HelpRow::Bind("Ctrl-]", "Go to definition"),
+    HelpRow::Bind("Ctrl-t", "Jump back"),
+    HelpRow::Blank,
+    HelpRow::Section("Commands"),
+    HelpRow::Bind(":", "Command mode"),
+    HelpRow::Bind(":gr <regex>", "Search all files"),
+    HelpRow::Bind(":grd <regex>", "Search diff files"),
+    HelpRow::Bind(":gd [symbol]", "Go to definition"),
+    HelpRow::Bind(":q", "Quit"),
+    HelpRow::Note(":set blame|comments|whitespace"),
+    HelpRow::Note(":set mergebase[=<ref>]"),
+    HelpRow::Blank,
+    HelpRow::Section("Session"),
+    HelpRow::Bind("?", "Toggle this help"),
+    HelpRow::Bind("q", "Quit"),
+    HelpRow::Bind("Ctrl-c", "Press twice to quit"),
+    HelpRow::Bind("Ctrl-z", "Suspend"),
+];
+
+impl HelpRow {
+    /// Render this row's text, padded to the column width.
+    fn text(&self, pad: bool) -> String {
+        let raw = match self {
+            Self::Section(title) => format!(" {title}"),
+            Self::Bind(keys, action) => {
+                format!("  {keys:<HELP_BIND_WIDTH$}{action}")
+            }
+            Self::Note(text) => format!("  {text}"),
+            Self::Blank => String::new(),
+        };
+        if pad {
+            format!("{raw:<HELP_COLUMN_WIDTH$}")
+        } else {
+            raw
+        }
+    }
+
+    fn is_section(&self) -> bool {
+        matches!(self, Self::Section(_))
+    }
+}
+
+/// Lay the two help columns out side by side.
+fn help_lines(text_style: Style) -> Vec<Line<'static>> {
+    let section_style = text_style.add_modifier(Modifier::BOLD);
+    let rows = HELP_LEFT.len().max(HELP_RIGHT.len());
+    (0..rows)
+        .map(|row| {
+            let mut spans = Vec::with_capacity(2);
+            if let Some(left) = HELP_LEFT.get(row) {
+                let style = if left.is_section() {
+                    section_style
+                } else {
+                    text_style
+                };
+                spans.push(Span::styled(left.text(HELP_RIGHT.len() > row), style));
+            }
+            if let Some(right) = HELP_RIGHT.get(row) {
+                if HELP_LEFT.get(row).is_none() {
+                    spans.push(Span::raw(" ".repeat(HELP_COLUMN_WIDTH)));
+                }
+                let style = if right.is_section() {
+                    section_style
+                } else {
+                    text_style
+                };
+                spans.push(Span::styled(right.text(false), style));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
 fn draw_help_overlay(frame: &mut Frame, styles: &StyleConfig) {
     let hs = &styles.help;
     let area = frame.area();
 
-    // Center the help box, capped at reasonable dimensions.
-    let help_width = 56u16.min(area.width.saturating_sub(4));
-    let help_height = 40u16.min(area.height.saturating_sub(2));
+    let text_style = Style::default().fg(*hs.text_fg);
+    let help_text = help_lines(text_style);
+
+    // Size the box to the content, but never larger than the terminal.
+    let content_width = u16::try_from(HELP_COLUMN_WIDTH * 2).unwrap_or(u16::MAX);
+    let content_height = u16::try_from(help_text.len()).unwrap_or(u16::MAX);
+    let help_width = content_width
+        .saturating_add(2)
+        .min(area.width.saturating_sub(2));
+    let help_height = content_height
+        .saturating_add(2)
+        .min(area.height.saturating_sub(2));
     let x = (area.width.saturating_sub(help_width)) / 2;
     let y = (area.height.saturating_sub(help_height)) / 2;
     let help_area = Rect::new(x, y, help_width, help_height);
@@ -343,70 +494,6 @@ fn draw_help_overlay(frame: &mut Frame, styles: &StyleConfig) {
         }
     }
 
-    let help_text = vec![
-        Line::from(Span::styled(
-            " Keyboard Shortcuts ",
-            Style::default()
-                .fg(*hs.border_fg)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            " Global",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from("  q             Quit"),
-        Line::from("  ?             Toggle this help"),
-        Line::from("  Tab           Switch pane focus"),
-        Line::from("  Ctrl-n / p    Next / previous file"),
-        Line::from("  j/k h/l       Move line / column"),
-        Line::from("  Space         Page down"),
-        Line::from("  Ctrl-d/u/e/y  Half-page down/up; scroll down/up"),
-        Line::from("  g/G H/M/L     Top/bottom; view top/mid/bottom"),
-        Line::from("  0/$ w/b W/B    Line start/end; word/big-word"),
-        Line::from("  ] / [         Next / previous diff hunk"),
-        Line::from("  } / {         Next / previous comment"),
-        Line::from("  c             Comment current diff line"),
-        Line::from("  Shift-C       Toggle comments panel"),
-        Line::from("  e             Edit current comment"),
-        Line::from("  r / d         Resolve or delete current comment"),
-        Line::from("  A / a         Toggle approved / unapproved"),
-        Line::from("  i             Toggle inline / side-by-side"),
-        Line::from("  s             Cycle: diff / HEAD / base"),
-        Line::from("  d             Cycle diff algorithm"),
-        Line::from("  m             Toggle merge base / since review"),
-        Line::from("  Ctrl-w        Toggle ignore whitespace"),
-        Line::from("  Ctrl-b        Toggle blame annotations"),
-        Line::from("  1 / 2         Toggle file list / diff pane"),
-        Line::from("  Ctrl-c        Press twice to quit"),
-        Line::from("  Enter         Expand reviewed / focus diff"),
-        Line::from(""),
-        Line::from(Span::styled(
-            " Navigation & Search",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from("  :             Enter command mode"),
-        Line::from("  :gr <regex>   Search all files"),
-        Line::from("  :grd <regex>  Search diff files only"),
-        Line::from("  :gd [symbol]  Go to definition"),
-        Line::from("  :q            Quit"),
-        Line::from("  /             Search rendered diff"),
-        Line::from("  n / N         Next / previous search match"),
-        Line::from("  Esc           Clear active diff search"),
-        Line::from("  Ctrl-]        Go to definition (word)"),
-        Line::from("  Ctrl-t        Jump back (pop stack)"),
-        Line::from(""),
-        Line::from(Span::styled(
-            " Mouse",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from("  Click         Select file / set focus"),
-        Line::from("  Double-click  Select word (auto-copy)"),
-        Line::from("  Drag          Select text (auto-copy)"),
-        Line::from("  Drag border   Resize file list pane"),
-        Line::from("  Scroll        Scroll diff pane"),
-    ];
-
     // Clear the area first so no old content bleeds through.
     frame.render_widget(Clear, help_area);
 
@@ -418,7 +505,7 @@ fn draw_help_overlay(frame: &mut Frame, styles: &StyleConfig) {
                 .title(" Help ")
                 .title_bottom(" ? / q / Esc to close "),
         )
-        .style(Style::default().fg(*hs.text_fg).bg(*hs.bg));
+        .style(text_style.bg(*hs.bg));
 
     frame.render_widget(help, help_area);
 }
@@ -847,6 +934,71 @@ fn truncate_line(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn help_rows_fit_inside_their_column() {
+        for row in HELP_LEFT.iter().chain(HELP_RIGHT.iter()) {
+            let text = row.text(false);
+            assert!(
+                text.chars().count() <= HELP_COLUMN_WIDTH,
+                "help row overflows its column: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn help_columns_align_and_cover_every_row() {
+        let lines = help_lines(Style::default());
+
+        assert_eq!(lines.len(), HELP_LEFT.len().max(HELP_RIGHT.len()));
+        for (row, line) in lines.iter().enumerate() {
+            let rendered = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            // Every right-hand entry starts at the same column.
+            if let Some(right) = HELP_RIGHT.get(row) {
+                let expected = right.text(false);
+                if !expected.is_empty() {
+                    assert!(
+                        rendered[HELP_COLUMN_WIDTH..].starts_with(&expected),
+                        "row {row} right column misaligned: {rendered:?}"
+                    );
+                }
+            }
+            assert!(
+                rendered.chars().count() <= HELP_COLUMN_WIDTH * 2,
+                "row {row} is wider than the overlay: {rendered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn help_covers_the_bindings_that_are_easy_to_miss() {
+        let rendered = help_lines(Style::default())
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect::<String>();
+
+        for needle in [
+            "a / A",
+            "u",
+            "Ctrl-Shift-n/p",
+            "c / Space",
+            "V / v",
+            "Shift-C",
+            "Ctrl-z",
+            ":set mergebase",
+        ] {
+            assert!(
+                rendered.contains(needle),
+                "help overlay is missing {needle:?}"
+            );
+        }
+        // Space creates a comment; it is not a page-down key.
+        assert!(!rendered.contains("Page down"));
+    }
 
     #[test]
     fn comment_cursor_position_accounts_for_wrapped_rows() {
