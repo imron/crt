@@ -370,9 +370,10 @@ diff  →  full file (HEAD)  →  full file (base)  →  diff
 **Render variant** toggles with `i`, and only applies in diff mode:
 **inline** (unified diff) or **side-by-side**.
 
-The diff base toggles with `m`, for files that have been reviewed before:
-the diff is shown either from the merge base (default) or from the commit
-the file was last reviewed at.
+The diff base toggles with `m`, for files that have been reviewed before.
+By default the diff runs from the commit the file was last reviewed at, so
+only changes since that review are shown; `m` switches to the full diff
+from the merge base.
 
 When an **unreviewed** file is selected, the diff pane shows its diff.
 
