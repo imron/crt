@@ -76,7 +76,8 @@ transform the tool from a diff viewer into a review environment.
 - [x] `Ctrl-]` on a symbol finds and navigates to its definition.
 - [x] Multiple definition matches show a picker.
 - [x] `Ctrl-t` returns to the previous location. Multiple levels work.
-- [x] Navigating to a file not in the diff shows a status message (read-only file view deferred).
+- [x] Navigating to a file not in the diff shows a status message
+      (read-only file view deferred).
 - [x] `:` opens a command input line.
 - [x] `:gr <regex>` searches the codebase and shows results.
 - [x] `:grd <regex>` searches only files in the diff.
@@ -92,7 +93,8 @@ transform the tool from a diff viewer into a review environment.
   → **Decision (v1)**: all patterns are tried regardless of extension.
 - Should search results persist (stay open as a panel) or close after
   jumping to a result?
-  → **Decision**: results close after jumping (Enter). Can reopen with another search.
+  → **Decision**: results close after jumping (Enter). Can reopen with
+  another search.
 - Should `:gr` results show context lines (1-2 lines above/below the
   match)?
   → **Deferred**: v1 shows single matching line only.

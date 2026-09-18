@@ -153,9 +153,9 @@ When a client connects, it sends an `init` request:
 
 ```
 client → server:  init { worktree: "/path/to/agent-worktree", base_ref: "main" }
-server resolves:  repo_root   → /path/to/repo     (via git commondir)
-                  head_ref    → "feature-a"        (branch at HEAD of worktree)
-                  merge_base  → abc123...          (git merge-base main feature-a)
+server resolves:  repo_root   → /path/to/repo  (via git commondir)
+                  head_ref    → "feature-a"    (branch at HEAD of worktree)
+                  merge_base  → abc123...      (merge-base main feature-a)
                   db_path     → /path/to/repo/.crt/reviews.db
 server → client:  ok { repo_root, head_ref, merge_base, base_ref }
 ```
@@ -293,20 +293,22 @@ the new diff — if the code moved, the comment follows it.
 
 Comments survive rebases via an append-only history model:
 
-- `comments` table: stable logical record (id, scope, file_path, body, resolved, timestamps).
-- `anchor_versions` table: append-only snapshots with `file_blob_sha` (exact file content),
-  line/char ranges, `anchor_text`, `context_before`/`context_after`, and `AnchorStatus`.
-- `v_current_anchors` view (GROUP BY `comment_id` + MAX(`created_at`), covering index) exposes
-  the single latest version per comment.
+- `comments` table: stable logical record (id, scope, file_path, body,
+  resolved, timestamps).
+- `anchor_versions` table: append-only snapshots with `file_blob_sha` (exact
+  file content), line/char ranges, `anchor_text`,
+  `context_before`/`context_after`, and `AnchorStatus`.
+- `v_current_anchors` view (GROUP BY `comment_id` + MAX(`created_at`),
+  covering index) exposes the single latest version per comment.
 
-On creation the first `anchor_versions` row records the exact `file_blob_sha` the
-selection was made against plus its context.
+On creation the first `anchor_versions` row records the exact
+`file_blob_sha` the selection was made against plus its context.
 
-Only **unresolved** comments are re-anchored. The server runs the four-step match
-against current file content and `INSERT`s a new version row with fresh context
-and the current `file_blob_sha`. The view automatically reflects the latest
-attachment. Resolved comments are never re-anchored; their last recorded version
-is the historical record.
+Only **unresolved** comments are re-anchored. The server runs the four-step
+match against current file content and `INSERT`s a new version row with
+fresh context and the current `file_blob_sha`. The view automatically
+reflects the latest attachment. Resolved comments are never re-anchored;
+their last recorded version is the historical record.
 
 For unresolved comments, re-anchoring proceeds as:
 
@@ -550,7 +552,7 @@ src/
     api.rs          -- JSON-RPC method implementations
     notify.rs       -- Push notifications to connected clients
   client.rs         -- Client connection (Unix socket), request/response
-  app.rs            -- App-owned state, configuration, model projection, and reducers
+  app.rs            -- App-owned state, config, projection, reducers
   app/
     model.rs        -- UI-agnostic AppModel projection
     update.rs       -- Private app-owned reducer implementation
@@ -569,7 +571,7 @@ src/
     diff.rs         -- Diff/content/blame services
     navigation.rs   -- Navigation and cursor rules
     search.rs       -- Search/definition result shaping
-  git.rs            -- Git operations via git2 (diffs, blobs, worktree resolution)
+  git.rs            -- Git operations via git2 (diffs, blobs, worktrees)
   db.rs             -- SQLite operations (reviews, comments, anchoring)
   review_types.rs   -- Shared review/session data types
   search.rs         -- Codebase search (:gr) and go-to-definition (Ctrl-])
@@ -643,7 +645,8 @@ share state (same merge-base).
 ## CLI
 
 ```
-crt <base>                    TUI — review base..HEAD (connects to server or starts embedded)
+crt <base>                    TUI — review base..HEAD (connects to a
+                              server, or starts an embedded one)
 crt <base> --reset            Clear all review state for (base, current branch)
 crt server                    Start persistent server (~/.crt/server.sock)
 crt mcp-server                Start MCP adapter (stdio, connects to server)
@@ -672,21 +675,21 @@ choose the session for scoped tools.
 
 ### Tools
 
-| Tool                  | Description                                      |
-| --------------------- | ------------------------------------------------ |
-| `list_review_sessions`  | Active review sessions registered by connected crt clients. |
-| `select_review_session` | Select an active session for scoped review tools. |
-| `list_changed_files`    | Files changed in the selected review scope, including review status and diff metadata. |
-| `get_file_diff`         | Diff content for a specific file (base..HEAD).   |
-| `search_codebase`       | Regex search across the worktree or changed files. |
-| `find_definition`       | Best-effort symbol definition lookup.            |
-| `list_review_comments`  | Review comments in the selected scope, filtered by file/resolution status. |
-| `get_comment_detail`    | Full context for a specific review comment.       |
-| `resolve_comment`       | Mark a review comment resolved.                   |
-| `unresolve_comment`     | Mark a review comment unresolved.                 |
-| `mark_file_reviewed`    | Mark a changed file reviewed.                     |
-| `unmark_file_reviewed`  | Clear a changed file's reviewed state.            |
-| `list_review_summary`   | High-level overview: files changed, review progress, and comment counts. |
+| Tool                    | Description                                    |
+| ----------------------- | ---------------------------------------------- |
+| `list_review_sessions`  | Active review sessions from connected clients. |
+| `select_review_session` | Select a session for the scoped tools.         |
+| `list_changed_files`    | Changed files, with review and diff metadata.  |
+| `get_file_diff`         | Diff content for one file (base..HEAD).        |
+| `search_codebase`       | Regex search across the worktree or the diff.  |
+| `find_definition`       | Best-effort symbol definition lookup.          |
+| `list_review_comments`  | Comments in scope, filtered by file/status.    |
+| `get_comment_detail`    | Full context for one review comment.           |
+| `resolve_comment`       | Mark a review comment resolved.                |
+| `unresolve_comment`     | Mark a review comment unresolved.              |
+| `mark_file_reviewed`    | Mark a changed file reviewed.                  |
+| `unmark_file_reviewed`  | Clear a changed file's reviewed state.         |
+| `list_review_summary`   | Files changed, review progress, comment counts. |
 
 ## File Markers
 

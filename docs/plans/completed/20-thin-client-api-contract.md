@@ -132,7 +132,8 @@ This stage adopts a stricter model:
 
 ## Acceptance Criteria
 
-- [x] Core interaction API is documented and committed in code as interfaces/types.
+- [x] Core interaction API is documented and committed in code as
+      interfaces/types.
 - [x] A complete `InputEvent` list exists for current TUI actions.
 - [x] Prompt handshake contract is documented and represented in code types.
 - [x] Initial `RenderModel + InteractionMap` scaffolding was documented.
