@@ -11,7 +11,8 @@ use sha2::{Digest, Sha256};
 
 // Re-export model types so existing callers (e.g. `git::ChangeKind`) still work.
 pub use crate::review_types::{
-    ChangeKind, DiffContent, DiffHunk, DiffLine, FileChange, FileVersion, LineKind,
+    ChangeKind, DiffContent, DiffHunk, DiffLine, FileChange, FileVersion, LineKind, NULL_BLOB_OID,
+    encode_content_id, is_content_id,
 };
 
 /// Diff preferences read from the user's git config.
@@ -598,6 +599,9 @@ impl Repo {
                 continue;
             };
 
+            let content_id =
+                self.review_content_id_for_base(base, &change.path, change.old_path.as_deref())?;
+
             let is_binary = self.delta_is_binary(&delta);
             if is_binary {
                 files.push((
@@ -606,6 +610,7 @@ impl Repo {
                         hunks: Vec::new(),
                         is_binary: true,
                         diff_hash: hash_bytes(b"<binary>"),
+                        content_id,
                     },
                 ));
                 continue;
@@ -616,6 +621,7 @@ impl Repo {
                 .context("Missing patch for bulk workdir diff delta")?;
             let mut content = parse_patch(&mut patch, include_hunk_lines)?.content;
             content.is_binary = false;
+            content.content_id = content_id;
             files.push((change, content));
         }
 
@@ -688,6 +694,9 @@ impl Repo {
                 continue;
             };
 
+            let content_id =
+                self.review_content_id_for_base(base, &change.path, change.old_path.as_deref())?;
+
             if self.delta_is_binary(&delta) {
                 files.push((
                     change,
@@ -697,6 +706,7 @@ impl Repo {
                         deletions: 0,
                         is_binary: true,
                         diff_hash: hash_bytes(b"<binary>"),
+                        content_id,
                     },
                 ));
                 continue;
@@ -714,6 +724,7 @@ impl Repo {
                     deletions: parsed.deletions,
                     is_binary: false,
                     diff_hash: parsed.content.diff_hash,
+                    content_id,
                 },
             ));
         }
@@ -860,16 +871,27 @@ impl Repo {
             new_binary || old_binary
         });
 
+        let content_id = match base {
+            DiffBase::EmptyTree => {
+                self.review_content_id_between_commits(None, head_ref, file_path, None)?
+            }
+            DiffBase::Commit(commit) => {
+                self.review_content_id_between_commits(Some(commit), head_ref, file_path, None)?
+            }
+        };
+
         if is_binary {
             return Ok(DiffContent {
                 hunks: Vec::new(),
                 is_binary: true,
                 diff_hash: hash_bytes(b"<binary>"),
+                content_id,
             });
         }
 
         let mut result = parse_diff(&diff)?;
         result.is_binary = is_binary;
+        result.content_id = content_id;
         Ok(result)
     }
 
@@ -964,16 +986,20 @@ impl Repo {
             old_binary || new_binary
         });
 
+        let content_id = self.review_content_id_for_workdir_path(base, file_path)?;
+
         if is_binary {
             return Ok(DiffContent {
                 hunks: Vec::new(),
                 is_binary: true,
                 diff_hash: hash_bytes(b"<binary>"),
+                content_id,
             });
         }
 
         let mut result = parse_diff(&diff)?;
         result.is_binary = is_binary;
+        result.content_id = content_id;
         Ok(result)
     }
 
@@ -1004,11 +1030,14 @@ impl Repo {
             .output()
             .context("Failed to run git diff (is git on PATH?)")?;
 
+        let content_id = self.review_content_id_for_workdir_path(base, file_path)?;
+
         if !output.status.success() && output.stdout.is_empty() {
             return Ok(DiffContent {
                 hunks: Vec::new(),
                 is_binary: false,
                 diff_hash: hash_bytes(b""),
+                content_id,
             });
         }
 
@@ -1018,13 +1047,16 @@ impl Repo {
                 hunks: Vec::new(),
                 is_binary: true,
                 diff_hash: hash_bytes(b"<binary>"),
+                content_id,
             });
         }
 
         let diff =
             git2::Diff::from_buffer(&output.stdout).context("Failed to parse git diff output")?;
 
-        parse_diff(&diff)
+        let mut result = parse_diff(&diff)?;
+        result.content_id = content_id;
+        Ok(result)
     }
 
     /// Read the content of a file from the working tree on disk.
@@ -1073,12 +1105,22 @@ impl Repo {
             .output()
             .context("Failed to run git diff (is git on PATH?)")?;
 
+        let content_id = match base {
+            DiffBase::EmptyTree => {
+                self.review_content_id_between_commits(None, head_ref, file_path, None)?
+            }
+            DiffBase::Commit(commit) => {
+                self.review_content_id_between_commits(Some(commit), head_ref, file_path, None)?
+            }
+        };
+
         if !output.status.success() && output.stdout.is_empty() {
             // Non-zero exit with no output typically means no diff.
             return Ok(DiffContent {
                 hunks: Vec::new(),
                 is_binary: false,
                 diff_hash: hash_bytes(b""),
+                content_id,
             });
         }
 
@@ -1089,6 +1131,7 @@ impl Repo {
                 hunks: Vec::new(),
                 is_binary: true,
                 diff_hash: hash_bytes(b"<binary>"),
+                content_id,
             });
         }
 
@@ -1096,7 +1139,9 @@ impl Repo {
         let diff =
             git2::Diff::from_buffer(&output.stdout).context("Failed to parse git diff output")?;
 
-        parse_diff(&diff)
+        let mut result = parse_diff(&diff)?;
+        result.content_id = content_id;
+        Ok(result)
     }
 
     /// Read the full content of a file at a given ref.
@@ -1146,6 +1191,88 @@ impl Repo {
             Ok(entry) => Ok(Some(entry.id().to_string())),
             Err(_) => Ok(None), // File doesn't exist at this commit
         }
+    }
+
+    /// Git blob OID of a workdir file without writing to the object database.
+    ///
+    /// Returns `Ok(None)` if the path is missing or not a regular file.
+    pub fn file_blob_hash_workdir(&self, file_path: &str) -> Result<Option<String>> {
+        let worktree = self.inner.workdir().unwrap_or_else(|| self.inner.path());
+        let full_path = worktree.join(file_path);
+        if !full_path.is_file() {
+            return Ok(None);
+        }
+        let oid = git2::Oid::hash_file(git2::ObjectType::Blob, &full_path)
+            .with_context(|| format!("Failed to hash workdir blob for {file_path}"))?;
+        Ok(Some(oid.to_string()))
+    }
+
+    /// Review content identity for a path: `v1:{base_blob}:{workdir_blob}`.
+    ///
+    /// `base_path` is the path used to look up the base blob (for renames,
+    /// pass the old path). The workdir side always uses `path`.
+    /// Missing sides use [`NULL_BLOB_OID`].
+    pub fn review_content_id_for_base(
+        &self,
+        base: DiffBase<'_>,
+        path: &str,
+        base_path: Option<&str>,
+    ) -> Result<String> {
+        let base_lookup = base_path.unwrap_or(path);
+        let base_oid = match base {
+            DiffBase::EmptyTree => NULL_BLOB_OID.to_string(),
+            DiffBase::Commit(commit) => self
+                .file_blob_hash(commit, base_lookup)?
+                .unwrap_or_else(|| NULL_BLOB_OID.to_string()),
+        };
+        let workdir_oid = self
+            .file_blob_hash_workdir(path)?
+            .unwrap_or_else(|| NULL_BLOB_OID.to_string());
+        Ok(encode_content_id(&base_oid, &workdir_oid))
+    }
+
+    /// Like [`Self::review_content_id_for_base`], but discovers rename
+    /// `old_path` from the workdir change list so mark/list/restamp share
+    /// the same base blob for renames.
+    pub fn review_content_id_for_workdir_path(
+        &self,
+        base: DiffBase<'_>,
+        path: &str,
+    ) -> Result<String> {
+        let base_path = self.workdir_change_base_path(base, path)?;
+        self.review_content_id_for_base(base, path, base_path.as_deref())
+    }
+
+    /// For a workdir path, return the base-side path when the change is a
+    /// rename (`old_path`); otherwise `None` (use `path` as base lookup).
+    fn workdir_change_base_path(&self, base: DiffBase<'_>, path: &str) -> Result<Option<String>> {
+        let changes = self.list_changed_files_workdir_for_base(base)?;
+        Ok(changes
+            .into_iter()
+            .find(|change| change.path == path)
+            .and_then(|change| change.old_path))
+    }
+
+    /// Review content identity from two commits (e.g. restamp from
+    /// `merge_base` + `reviewed_commit`). Missing sides use [`NULL_BLOB_OID`].
+    pub fn review_content_id_between_commits(
+        &self,
+        base_commit: Option<&str>,
+        end_commit: &str,
+        path: &str,
+        base_path: Option<&str>,
+    ) -> Result<String> {
+        let base_lookup = base_path.unwrap_or(path);
+        let base_oid = match base_commit {
+            None => NULL_BLOB_OID.to_string(),
+            Some(commit) => self
+                .file_blob_hash(commit, base_lookup)?
+                .unwrap_or_else(|| NULL_BLOB_OID.to_string()),
+        };
+        let end_oid = self
+            .file_blob_hash(end_commit, path)?
+            .unwrap_or_else(|| NULL_BLOB_OID.to_string());
+        Ok(encode_content_id(&base_oid, &end_oid))
     }
 
     /// Check whether a commit OID exists in the object store.
@@ -1343,6 +1470,7 @@ fn parse_diff(diff: &git2::Diff<'_>) -> Result<DiffContent> {
         hunks,
         is_binary: false,
         diff_hash: format!("{:x}", hasher.finalize()),
+        content_id: String::new(),
     })
 }
 
@@ -1377,6 +1505,7 @@ fn parse_patch(patch: &mut git2::Patch<'_>, include_hunk_lines: bool) -> Result<
             hunks,
             is_binary: false,
             diff_hash: format!("{:x}", hasher.finalize()),
+            content_id: String::new(),
         },
         hunk_count,
         additions,
@@ -1473,6 +1602,7 @@ fn summarize_diff_content(diff: &DiffContent) -> crate::review_types::DiffSummar
         deletions,
         is_binary: diff.is_binary,
         diff_hash: diff.diff_hash.clone(),
+        content_id: diff.content_id.clone(),
     }
 }
 
@@ -1677,6 +1807,97 @@ mod tests {
         let diff1 = repo.diff_file("base", "HEAD", "hello.rs").unwrap();
         let diff2 = repo.diff_file("base", "HEAD", "hello.rs").unwrap();
         assert_eq!(diff1.diff_hash, diff2.diff_hash);
+        assert_eq!(diff1.content_id, diff2.content_id);
+        assert!(crate::review_types::is_content_id(&diff1.content_id));
+    }
+
+    #[test]
+    fn review_content_id_is_algorithm_independent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        run_git(path, &["init"]);
+        run_git(path, &["config", "user.email", "test@test.com"]);
+        run_git(path, &["config", "user.name", "Test"]);
+        std::fs::write(path.join("f.rs"), "a\nb\nc\nd\ne\n").unwrap();
+        run_git(path, &["add", "."]);
+        run_git(path, &["commit", "-m", "base"]);
+        run_git(path, &["tag", "base"]);
+        std::fs::write(path.join("f.rs"), "a\nX\nc\nY\ne\n").unwrap();
+
+        let repo = Repo::open(path).unwrap();
+        let base = DiffBase::Commit("base");
+        let patience = repo
+            .diff_file_workdir_opts_for_base(
+                base,
+                "f.rs",
+                crate::config::DiffAlgorithm::Patience,
+                false,
+            )
+            .unwrap();
+        let myers = repo
+            .diff_file_workdir_opts_for_base(
+                base,
+                "f.rs",
+                crate::config::DiffAlgorithm::Myers,
+                false,
+            )
+            .unwrap();
+        assert_eq!(patience.content_id, myers.content_id);
+        assert!(crate::review_types::is_content_id(&patience.content_id));
+
+        // Content identity changes when workdir bytes change.
+        std::fs::write(path.join("f.rs"), "a\nX\nc\nY\ne\nZ\n").unwrap();
+        let changed = repo.review_content_id_for_base(base, "f.rs", None).unwrap();
+        assert_ne!(patience.content_id, changed);
+    }
+
+    #[test]
+    fn review_content_id_for_rename_matches_bulk_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        run_git(path, &["init"]);
+        run_git(path, &["config", "user.email", "test@test.com"]);
+        run_git(path, &["config", "user.name", "Test"]);
+        // Keep content similar enough for git rename detection.
+        std::fs::write(path.join("old.rs"), "fn value() {\n    1\n}\n").unwrap();
+        run_git(path, &["add", "."]);
+        run_git(path, &["commit", "-m", "base"]);
+        run_git(path, &["tag", "base"]);
+        // Rename + small content edit.
+        std::fs::write(path.join("new.rs"), "fn value() {\n    2\n}\n").unwrap();
+        std::fs::remove_file(path.join("old.rs")).unwrap();
+        run_git(path, &["add", "-A"]);
+
+        let repo = Repo::open(path).unwrap();
+        let base = DiffBase::Commit("base");
+        let bulk = repo
+            .summarize_all_files_workdir_for_base(
+                base,
+                crate::config::DiffAlgorithm::Patience,
+                false,
+            )
+            .unwrap();
+        let (change, summary) = bulk
+            .iter()
+            .find(|(c, _)| c.path == "new.rs")
+            .expect("renamed file in bulk list");
+        assert_eq!(change.kind, ChangeKind::Renamed);
+        assert_eq!(change.old_path.as_deref(), Some("old.rs"));
+
+        // Path-only lookup treats base as missing (wrong for renames).
+        let path_only = repo
+            .review_content_id_for_base(base, "new.rs", None)
+            .unwrap();
+        assert_ne!(path_only, summary.content_id);
+
+        // Rename-aware mark path must match list/status.
+        let mark_id = repo
+            .review_content_id_for_workdir_path(base, "new.rs")
+            .unwrap();
+        assert_eq!(mark_id, summary.content_id);
+        assert!(crate::review_types::is_content_id(&mark_id));
+        let (base_oid, _) = crate::review_types::parse_content_id(&mark_id).unwrap();
+        assert_ne!(base_oid, crate::review_types::NULL_BLOB_OID);
     }
 
     #[test]
@@ -1722,6 +1943,12 @@ mod tests {
                 "hash mismatch for {}",
                 change.path
             );
+            assert_eq!(
+                diff.content_id, single.content_id,
+                "content_id mismatch for {}",
+                change.path
+            );
+            assert!(crate::review_types::is_content_id(&diff.content_id));
             assert_eq!(diff.hunks.len(), single.hunks.len());
         }
 
@@ -1736,6 +1963,7 @@ mod tests {
         assert_eq!(summary_only.len(), 3);
         for ((_, full), (_, summary)) in bulk.iter().zip(summary_only.iter()) {
             assert_eq!(full.diff_hash, summary.diff_hash);
+            assert_eq!(full.content_id, summary.content_id);
             assert!(summary.hunks.is_empty());
         }
     }

@@ -1,0 +1,2 @@
+-- SQLite cannot drop columns portably; content_id is left in place on
+-- downgrade. New code treats an empty content_id as "not restamped".

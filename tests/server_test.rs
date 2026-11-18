@@ -602,6 +602,12 @@ async fn test_list_file_statuses_returns_compact_review_state() {
             .is_some_and(|s| !s.is_empty())
     );
     assert!(
+        file["diff"]["content_id"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("v1:")),
+        "expected content_id on status entry: {file}"
+    );
+    assert!(
         file["diff"].get("lines").is_none(),
         "compact status response should not include hunk lines: {file}"
     );
@@ -636,6 +642,121 @@ async fn test_client_list_file_statuses_uses_compact_contract() {
     assert_eq!(file.diff.deletions, 0);
     assert!(!file.diff.is_binary);
     assert!(!file.diff.diff_hash.is_empty());
+    assert!(
+        crt::review_types::is_content_id(&file.diff.content_id),
+        "expected v1 content_id, got {}",
+        file.diff.content_id
+    );
+}
+
+#[tokio::test]
+async fn test_review_status_uses_content_id_independent_of_diff_algorithm() {
+    let server = TestServer::start().await;
+    // Multi-line edit so myers/patience can rearrange hunks differently.
+    std::fs::write(server.repo_dir.join("file.txt"), "a\nb\nc\nd\ne\nf\ng\n").unwrap();
+    run_git(&server.repo_dir, &["add", "-A"]);
+    run_git(&server.repo_dir, &["commit", "-m", "base content"]);
+    std::fs::write(server.repo_dir.join("file.txt"), "a\nX\nc\nY\ne\nZ\ng\n").unwrap();
+
+    let patience = Client::connect(&server.socket_path).await.unwrap();
+    patience
+        .init_with_options(
+            &server.repo_dir.to_string_lossy(),
+            "HEAD",
+            false,
+            Some(crt::config::DiffAlgorithm::Patience),
+        )
+        .await
+        .unwrap();
+    patience.mark_reviewed("file.txt").await.unwrap();
+
+    let statuses = patience.list_file_statuses().await.unwrap();
+    let entry = &statuses.files[0];
+    assert!(matches!(
+        entry.status,
+        crt::review_types::ReviewStatus::Reviewed { .. }
+    ));
+    let content_id = entry.diff.content_id.clone();
+    assert!(crt::review_types::is_content_id(&content_id));
+
+    let myers = Client::connect(&server.socket_path).await.unwrap();
+    myers
+        .init_with_options(
+            &server.repo_dir.to_string_lossy(),
+            "HEAD",
+            false,
+            Some(crt::config::DiffAlgorithm::Myers),
+        )
+        .await
+        .unwrap();
+    let myers_statuses = myers.list_file_statuses().await.unwrap();
+    let myers_entry = &myers_statuses.files[0];
+    assert_eq!(myers_entry.diff.content_id, content_id);
+    assert!(matches!(
+        myers_entry.status,
+        crt::review_types::ReviewStatus::Reviewed { .. }
+    ));
+
+    // Edit the file → content_id changes → status becomes Changed.
+    std::fs::write(
+        server.repo_dir.join("file.txt"),
+        "a\nX\nc\nY\ne\nZ\ng\nextra\n",
+    )
+    .unwrap();
+    let after = patience.list_file_statuses().await.unwrap();
+    assert!(matches!(
+        after.files[0].status,
+        crt::review_types::ReviewStatus::Changed { .. }
+    ));
+    assert_ne!(after.files[0].diff.content_id, content_id);
+}
+
+#[tokio::test]
+async fn test_mark_reviewed_rename_stays_reviewed() {
+    let server = TestServer::start().await;
+    std::fs::write(server.repo_dir.join("old.txt"), "hello\n").unwrap();
+    run_git(&server.repo_dir, &["add", "-A"]);
+    run_git(&server.repo_dir, &["commit", "-m", "add old"]);
+    // Rename + small edit so git detects a rename.
+    std::fs::write(server.repo_dir.join("new.txt"), "hello\nworld\n").unwrap();
+    std::fs::remove_file(server.repo_dir.join("old.txt")).unwrap();
+    run_git(&server.repo_dir, &["add", "-A"]);
+
+    let client = Client::connect(&server.socket_path).await.unwrap();
+    client
+        .init(&server.repo_dir.to_string_lossy(), "HEAD")
+        .await
+        .unwrap();
+
+    let before = client.list_file_statuses().await.unwrap();
+    let renamed = before
+        .files
+        .iter()
+        .find(|f| f.change.path == "new.txt")
+        .expect("renamed file present");
+    assert_eq!(renamed.change.old_path.as_deref(), Some("old.txt"));
+    assert!(matches!(
+        renamed.status,
+        crt::review_types::ReviewStatus::Unreviewed
+    ));
+
+    client.mark_reviewed("new.txt").await.unwrap();
+
+    let after = client.list_file_statuses().await.unwrap();
+    let renamed = after
+        .files
+        .iter()
+        .find(|f| f.change.path == "new.txt")
+        .expect("renamed file still present");
+    assert!(
+        matches!(
+            renamed.status,
+            crt::review_types::ReviewStatus::Reviewed { .. }
+        ),
+        "rename should stay reviewed after mark; status={:?} content_id={}",
+        renamed.status,
+        renamed.diff.content_id
+    );
 }
 
 #[tokio::test]

@@ -631,6 +631,7 @@ mod tests {
                 hunks: Vec::new(),
                 is_binary: false,
                 diff_hash: format!("hash-{path}"),
+                content_id: String::new(),
             },
         }
     }

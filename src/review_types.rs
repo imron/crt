@@ -70,8 +70,38 @@ pub struct DiffHunk {
 pub struct DiffContent {
     pub hunks: Vec<DiffHunk>,
     pub is_binary: bool,
-    /// Stable SHA-256 hash of the diff content.
+    /// Stable SHA-256 hash of the rendered patch text (algorithm-dependent).
+    /// Used for display/cache identity of hunk bodies, not review status.
     pub diff_hash: String,
+    /// Algorithm-independent review identity: `v1:{base_blob}:{workdir_blob}`.
+    /// See [`encode_content_id`].
+    #[serde(default)]
+    pub content_id: String,
+}
+
+/// Null git blob OID used when a file is missing on one side of a review pair.
+pub const NULL_BLOB_OID: &str = "0000000000000000000000000000000000000000";
+
+/// Encode a review content identity from base and workdir (or end-state) blob
+/// OIDs. Both sides are git blob object IDs; missing files use
+/// [`NULL_BLOB_OID`].
+pub fn encode_content_id(base_oid: &str, workdir_oid: &str) -> String {
+    format!("v1:{base_oid}:{workdir_oid}")
+}
+
+/// True when `value` is a v1 content id (`v1:{base}:{workdir}`).
+pub fn is_content_id(value: &str) -> bool {
+    parse_content_id(value).is_some()
+}
+
+/// Parse a v1 content id into `(base_oid, workdir_oid)`.
+pub fn parse_content_id(value: &str) -> Option<(&str, &str)> {
+    let rest = value.strip_prefix("v1:")?;
+    let (base, workdir) = rest.split_once(':')?;
+    if base.is_empty() || workdir.is_empty() || workdir.contains(':') {
+        return None;
+    }
+    Some((base, workdir))
 }
 
 /// Which version of a file to read.
@@ -128,8 +158,11 @@ pub struct DiffSummary {
     pub additions: usize,
     pub deletions: usize,
     pub is_binary: bool,
-    /// Stable SHA-256 hash of the diff content.
+    /// Stable SHA-256 hash of the rendered patch text (algorithm-dependent).
     pub diff_hash: String,
+    /// Algorithm-independent review identity: `v1:{base_blob}:{workdir_blob}`.
+    #[serde(default)]
+    pub content_id: String,
 }
 
 /// Review state for a changed file without the full diff payload.
@@ -1124,6 +1157,7 @@ mod tests {
                 }],
                 is_binary: false,
                 diff_hash: "abc123".to_string(),
+                content_id: String::new(),
             },
         };
 

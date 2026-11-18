@@ -748,10 +748,10 @@ impl App {
     /// already-loaded full diffs when the hash is unchanged.
     fn merge_file_statuses(&mut self, files: Vec<FileEntry>) {
         let selected_path = review::selected_path(&self.state.files, self.state.selected_file);
-        let previous_hash = self
+        let previous_content_id = self
             .state
             .selected_file_entry()
-            .map(|entry| entry.diff.diff_hash.clone());
+            .map(|entry| entry.diff.content_id.clone());
 
         let files = preserve_loaded_diffs(&self.state.files, files);
         let file_set_changed = file_path_set_changed(&self.state.files, &files);
@@ -761,16 +761,16 @@ impl App {
             review::restore_selection_by_path(&self.state.files, selected_path.as_deref());
         self.state.file_list_section_focus = self.state.focus_for_file(self.state.selected_file);
 
-        let selected_hash = self
+        let selected_content_id = self
             .state
             .selected_file_entry()
-            .map(|entry| entry.diff.diff_hash.clone());
+            .map(|entry| entry.diff.content_id.clone());
         let selected_needs_diff = self
             .state
             .selected_file_entry()
             .is_some_and(|entry| entry.diff.hunks.is_empty());
 
-        if file_set_changed || previous_hash != selected_hash || selected_needs_diff {
+        if file_set_changed || previous_content_id != selected_content_id || selected_needs_diff {
             self.state.on_file_changed();
         } else {
             self.state.mark_model_changed();
@@ -1135,11 +1135,14 @@ fn file_entry_from_status(entry: FileStatusEntry) -> FileEntry {
             hunks: Vec::new(),
             is_binary: entry.diff.is_binary,
             diff_hash: entry.diff.diff_hash,
+            content_id: entry.diff.content_id,
         },
     }
 }
 
-/// Keep previously loaded full hunk bodies when the file's hash is unchanged.
+/// Keep previously loaded full hunk bodies when file content identity is
+/// unchanged. `content_id` is algorithm-independent; display algorithm is
+/// tracked separately on the document key.
 fn preserve_loaded_diffs(previous: &[FileEntry], mut next: Vec<FileEntry>) -> Vec<FileEntry> {
     let previous_by_path: HashMap<&str, &FileEntry> = previous
         .iter()
@@ -1150,8 +1153,14 @@ fn preserve_loaded_diffs(previous: &[FileEntry], mut next: Vec<FileEntry>) -> Ve
             continue;
         }
         if let Some(prev) = previous_by_path.get(entry.change.path.as_str()) {
-            if !prev.diff.hunks.is_empty() && prev.diff.diff_hash == entry.diff.diff_hash {
-                entry.diff = prev.diff.clone();
+            let same_content =
+                !prev.diff.content_id.is_empty() && prev.diff.content_id == entry.diff.content_id;
+            if !prev.diff.hunks.is_empty() && same_content {
+                // Preserve hunk bodies; keep the status snapshot's content_id
+                // and leave display patch hash as previously loaded.
+                let mut preserved = prev.diff.clone();
+                preserved.content_id = entry.diff.content_id.clone();
+                entry.diff = preserved;
             }
         }
     }
@@ -1703,7 +1712,7 @@ impl AppState {
     /// Load the selected file's full diff from the worktree.
     ///
     /// When `force` is false this is only used for empty hunk bodies. The
-    /// server-provided review hash is preserved so status/cache comparisons
+    /// server-provided `content_id` is preserved so review-status cache keys
     /// stay stable even when the display algorithm differs.
     fn load_selected_file_diff(&mut self, force: bool) {
         let Some(entry) = self.files.get(self.selected_file) else {
@@ -1714,7 +1723,7 @@ impl AppState {
         }
 
         let path = entry.change.path.clone();
-        let review_hash = entry.diff.diff_hash.clone();
+        let content_id = entry.diff.content_id.clone();
         let diff_base = self.effective_diff_base().to_string();
         let merge_base = self.context.merge_base.clone();
         let Some(mut diff) = diff::diff_with_fallback(
@@ -1729,9 +1738,10 @@ impl AppState {
             return;
         };
 
-        // Keep the review-identity hash from the status snapshot when present.
-        if !review_hash.is_empty() {
-            diff.diff_hash = review_hash;
+        // Prefer the status snapshot content_id when present so cache and
+        // status comparisons stay aligned with the server review identity.
+        if !content_id.is_empty() {
+            diff.content_id = content_id;
         }
 
         if let Some(entry) = self.files.get_mut(self.selected_file) {
@@ -2021,6 +2031,7 @@ mod tests {
                 hunks: Vec::new(),
                 is_binary: false,
                 diff_hash: format!("hash-{path}"),
+                content_id: String::new(),
             },
         }
     }
@@ -2081,6 +2092,7 @@ mod tests {
                 }],
                 is_binary: false,
                 diff_hash: format!("hash-{path}"),
+                content_id: String::new(),
             },
         }
     }
@@ -2129,6 +2141,7 @@ mod tests {
                 }],
                 is_binary: false,
                 diff_hash: format!("hash-{path}"),
+                content_id: String::new(),
             },
         }
     }
@@ -2171,6 +2184,7 @@ mod tests {
                 }],
                 is_binary: false,
                 diff_hash: format!("hash-{path}"),
+                content_id: String::new(),
             },
         }
     }
@@ -2219,6 +2233,7 @@ mod tests {
                 }],
                 is_binary: false,
                 diff_hash: format!("hash-{path}"),
+                content_id: String::new(),
             },
         }
     }
@@ -2273,6 +2288,7 @@ mod tests {
                 }],
                 is_binary: false,
                 diff_hash: format!("hash-{path}"),
+                content_id: String::new(),
             },
         }
     }
@@ -2309,6 +2325,7 @@ mod tests {
                 }],
                 is_binary: false,
                 diff_hash: format!("hash-{path}"),
+                content_id: String::new(),
             },
         }
     }
@@ -2355,6 +2372,7 @@ mod tests {
                 }],
                 is_binary: false,
                 diff_hash: format!("hash-{path}"),
+                content_id: String::new(),
             },
         }
     }
@@ -2391,6 +2409,7 @@ mod tests {
                 }],
                 is_binary: false,
                 diff_hash: format!("hash-{path}"),
+                content_id: String::new(),
             },
         }
     }
@@ -2450,6 +2469,7 @@ mod tests {
                 ],
                 is_binary: false,
                 diff_hash: format!("hash-{path}"),
+                content_id: String::new(),
             },
         }
     }
@@ -4330,6 +4350,7 @@ mod tests {
                     hunks: vec![hunk],
                     is_binary: false,
                     diff_hash: "hash-context".to_string(),
+                    content_id: String::new(),
                 },
             }],
         );

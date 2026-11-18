@@ -206,35 +206,142 @@ async fn load_reviews_with_migration(
             .map_err(|e| format!("Failed to load reviews: {e:#}"))?
     };
 
-    if !reviews.is_empty() {
+    let reviews = if reviews.is_empty() {
+        match try_migrate_reviews(ctx, db, notify_tx).await {
+            Ok(Some(migrated)) => migrated,
+            Ok(None) => reviews,
+            Err(e) => {
+                eprintln!("Warning: rebase migration failed: {e:#}");
+                reviews
+            }
+        }
+    } else {
+        reviews
+    };
+
+    // Upgrade legacy patch-hash rows to content_id when possible.
+    restamp_legacy_content_ids(ctx, db, reviews)
+        .await
+        .map_err(|e| format!("Failed to restamp review content ids: {e:#}"))
+}
+
+/// Repair stored review identities:
+/// - Upgrade legacy patch-hash rows when `reviewed_commit` still matches workdir.
+/// - Rewrite v1 content_ids whose workdir end-state still matches but the full
+///   pair is wrong (e.g. renames that stored a null base blob because
+///   `mark_reviewed` did not pass `old_path`).
+async fn restamp_legacy_content_ids(
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    mut reviews: std::collections::HashMap<String, crate::db::StoredReview>,
+) -> anyhow::Result<std::collections::HashMap<String, crate::db::StoredReview>> {
+    if reviews.is_empty() {
         return Ok(reviews);
     }
 
-    match try_migrate_reviews(ctx, db, notify_tx).await {
-        Ok(Some(migrated)) => Ok(migrated),
-        Ok(None) => Ok(reviews),
-        Err(e) => {
-            eprintln!("Warning: rebase migration failed: {e:#}");
-            Ok(reviews)
+    let worktree = ctx.worktree.clone();
+    let merge_base = ctx.merge_base.to_string();
+    let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
+    let head_ref = ctx.head_scope_key();
+    let candidates: Vec<(String, String, String)> = reviews
+        .iter()
+        .map(|(path, review)| {
+            (
+                path.clone(),
+                review.content_id.clone(),
+                review.reviewed_commit.clone(),
+            )
+        })
+        .collect();
+
+    let restamped =
+        tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<(String, String)>> {
+            let repo = git::Repo::open(&worktree)?;
+            let base = if root {
+                git::DiffBase::EmptyTree
+            } else {
+                git::DiffBase::Commit(&merge_base)
+            };
+            let mut out = Vec::new();
+            for (path, stored_content_id, reviewed_commit) in candidates {
+                let current_id = repo.review_content_id_for_workdir_path(base, &path)?;
+                if !review_types::is_content_id(&current_id) {
+                    continue;
+                }
+
+                if review_types::is_content_id(&stored_content_id) {
+                    if stored_content_id == current_id {
+                        continue;
+                    }
+                    // Same workdir end blob as stored → keep Reviewed but fix the
+                    // pair (rename base path, etc.).
+                    let Some((_, stored_end)) = review_types::parse_content_id(&stored_content_id)
+                    else {
+                        continue;
+                    };
+                    let Some((_, current_end)) = review_types::parse_content_id(&current_id) else {
+                        continue;
+                    };
+                    if stored_end == current_end {
+                        out.push((path, current_id));
+                    }
+                    continue;
+                }
+
+                // Legacy row: only upgrade when reviewed_commit blob still matches
+                // workdir end-state.
+                if reviewed_commit.is_empty() || !repo.commit_exists(&reviewed_commit) {
+                    continue;
+                }
+                let reviewed_blob = repo.file_blob_hash(&reviewed_commit, &path)?;
+                let workdir_blob = repo.file_blob_hash_workdir(&path)?;
+                if reviewed_blob == workdir_blob {
+                    out.push((path, current_id));
+                }
+            }
+            Ok(out)
+        })
+        .await??;
+
+    if restamped.is_empty() {
+        return Ok(reviews);
+    }
+
+    let merge_base = ctx.merge_base.to_string();
+    {
+        let db_guard = db.lock().await;
+        for (path, content_id) in &restamped {
+            db_guard.update_review_content_id(&merge_base, &head_ref, path, content_id)?;
+            if let Some(review) = reviews.get_mut(path) {
+                review.content_id = content_id.clone();
+                review.diff_hash.clear();
+            }
         }
     }
+
+    Ok(reviews)
 }
 
-fn review_status_for_diff(
+fn review_status_for_content(
     reviews: &std::collections::HashMap<String, crate::db::StoredReview>,
     path: &str,
-    diff_hash: &str,
+    content_id: &str,
 ) -> review_types::ReviewStatus {
     match reviews.get(path) {
         None => review_types::ReviewStatus::Unreviewed,
-        Some(review) if review.diff_hash == diff_hash => review_types::ReviewStatus::Reviewed {
-            at: review.reviewed_at.clone(),
-            reviewed_commit: if review.reviewed_commit.is_empty() {
-                None
-            } else {
-                Some(review.reviewed_commit.clone())
-            },
-        },
+        Some(review)
+            if review_types::is_content_id(&review.content_id)
+                && review.content_id == content_id =>
+        {
+            review_types::ReviewStatus::Reviewed {
+                at: review.reviewed_at.clone(),
+                reviewed_commit: if review.reviewed_commit.is_empty() {
+                    None
+                } else {
+                    Some(review.reviewed_commit.clone())
+                },
+            }
+        }
         Some(review) => review_types::ReviewStatus::Changed {
             at: review.reviewed_at.clone(),
             reviewed_commit: if review.reviewed_commit.is_empty() {
@@ -260,9 +367,8 @@ pub async fn handle_list_changed_files(
     let worktree = ctx.worktree.clone();
     let merge_base = ctx.merge_base.to_string();
     let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
-    // Review hashing always uses patience so list endpoints stay on the fast
-    // bulk git2 path. Display algorithm is applied client-side when loading a
-    // selected file.
+    // Diff bodies use patience for a stable bulk git2 path. Review status
+    // compares content_id (base+workdir blob OIDs), not the patch hash.
     let algorithm = crate::config::DiffAlgorithm::Patience;
 
     // Git operations are blocking — run on the blocking thread pool.
@@ -277,7 +383,7 @@ pub async fn handle_list_changed_files(
 
         let mut files = Vec::with_capacity(file_diffs.len());
         for (change, diff) in file_diffs {
-            let status = review_status_for_diff(&reviews, &change.path, &diff.diff_hash);
+            let status = review_status_for_content(&reviews, &change.path, &diff.content_id);
             files.push(review_types::FileEntry {
                 change,
                 status,
@@ -323,7 +429,7 @@ pub async fn handle_list_file_statuses(
     let worktree = ctx.worktree.clone();
     let merge_base = ctx.merge_base.to_string();
     let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
-    // Keep review-status hashing on patience for bulk performance.
+    // Stats still use patience for bulk git2; status uses content_id.
     let algorithm = crate::config::DiffAlgorithm::Patience;
 
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
@@ -338,7 +444,7 @@ pub async fn handle_list_file_statuses(
 
         let mut files = Vec::with_capacity(file_diffs.len());
         for (change, diff) in file_diffs {
-            let status = review_status_for_diff(&reviews, &change.path, &diff.diff_hash);
+            let status = review_status_for_content(&reviews, &change.path, &diff.content_id);
             files.push(review_types::FileStatusEntry {
                 change,
                 status,
@@ -441,7 +547,7 @@ async fn try_migrate_reviews(
         let current_paths: std::collections::HashSet<String> =
             current_changes.iter().map(|c| c.path.clone()).collect();
 
-        let mut migrated: Vec<(String, String, String)> = Vec::new(); // (file_path, diff_hash, reviewed_commit)
+        let mut migrated: Vec<(String, String, String)> = Vec::new(); // (file_path, content_id, reviewed_commit)
 
         for (file_path, old_review) in &old_reviews {
             // Skip files no longer in the changed set.
@@ -458,32 +564,46 @@ async fn try_migrate_reviews(
                 let new_blob = repo.file_blob_hash("HEAD", file_path).ok().flatten();
 
                 if old_blob == new_blob {
-                    // File content unchanged after rebase.
-                    // Recompute diff_hash against new merge_base.
-                    let diff = repo.diff_file_workdir(&new_merge_base, file_path)?;
-                    migrated.push((
-                        file_path.clone(),
-                        diff.diff_hash,
-                        repo.resolve_commit("HEAD")?,
-                    ));
+                    // File content unchanged after rebase. Stamp content_id
+                    // for the new merge_base + current workdir end-state
+                    // (rename-aware, matches list/status hashing).
+                    let content_id = repo.review_content_id_for_workdir_path(
+                        git::DiffBase::Commit(&new_merge_base),
+                        file_path,
+                    )?;
+                    migrated.push((file_path.clone(), content_id, repo.resolve_commit("HEAD")?));
                 } else {
                     // File content changed during rebase.
                     // Migrate as Changed — keep the old reviewed_commit so
                     // the diff shows only what changed since the review.
-                    // Store the reviewed-state diff hash so current diffs
-                    // compare unequal and list as Changed.
-                    let diff = repo.diff_file(&new_merge_base, reviewed_commit, file_path)?;
-                    migrated.push((file_path.clone(), diff.diff_hash, reviewed_commit.clone()));
+                    // Store content_id of the reviewed end-state so current
+                    // workdir compares unequal and lists as Changed.
+                    let base_path = repo
+                        .list_changed_files_workdir(&new_merge_base)?
+                        .into_iter()
+                        .find(|change| change.path == *file_path)
+                        .and_then(|change| change.old_path);
+                    let content_id = repo.review_content_id_between_commits(
+                        Some(&new_merge_base),
+                        reviewed_commit,
+                        file_path,
+                        base_path.as_deref(),
+                    )?;
+                    migrated.push((file_path.clone(), content_id, reviewed_commit.clone()));
                 }
             } else {
                 // reviewed_commit is empty or GC'd.
-                // Fall back to diff_hash comparison.
-                let diff = repo.diff_file_workdir(&new_merge_base, file_path)?;
-                if diff.diff_hash == old_review.diff_hash {
-                    // Diff unchanged — keep as reviewed.
-                    migrated.push((file_path.clone(), diff.diff_hash, String::new()));
+                // Fall back to content_id when both eras have one; otherwise
+                // drop the review (cannot prove identity).
+                if review_types::is_content_id(&old_review.content_id) {
+                    let content_id = repo.review_content_id_for_workdir_path(
+                        git::DiffBase::Commit(&new_merge_base),
+                        file_path,
+                    )?;
+                    if content_id == old_review.content_id {
+                        migrated.push((file_path.clone(), content_id, String::new()));
+                    }
                 }
-                // If diff_hash differs, treat as unreviewed (don't migrate).
             }
         }
 
@@ -506,12 +626,12 @@ async fn try_migrate_reviews(
 
     {
         let db_guard = db.lock().await;
-        for (file_path, diff_hash, reviewed_commit) in &migrated_entries {
+        for (file_path, content_id, reviewed_commit) in &migrated_entries {
             let review = db_guard.store_review(
                 &current_merge_base,
                 &head_ref,
                 file_path,
-                diff_hash,
+                content_id,
                 reviewed_commit,
             )?;
             new_reviews.insert(file_path.clone(), review);
@@ -615,16 +735,14 @@ pub async fn handle_mark_reviewed(
         }
     };
 
-    // Compute the current diff hash using the same patience algorithm as the
-    // list endpoints so reviewed/unreviewed comparisons stay consistent.
+    // Store algorithm-independent content identity (base+workdir blob OIDs).
     let worktree = ctx.worktree.clone();
     let merge_base = ctx.merge_base.to_string();
     let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
-    let algorithm = crate::config::DiffAlgorithm::Patience;
     let head_ref = ctx.head_scope_key();
     let file_path = p.file_path.clone();
 
-    let (diff_hash, reviewed_commit) = {
+    let (content_id, reviewed_commit) = {
         let wt = worktree.clone();
         let mb = merge_base.clone();
         let fp = file_path.clone();
@@ -635,9 +753,10 @@ pub async fn handle_mark_reviewed(
             } else {
                 git::DiffBase::Commit(&mb)
             };
-            let diff = repo.diff_file_workdir_opts_for_base(base, &fp, algorithm, false)?;
+            // Rename-aware: base blob must use old_path when list/status do.
+            let content_id = repo.review_content_id_for_workdir_path(base, &fp)?;
             let head_oid = repo.resolve_commit("HEAD")?;
-            Ok((diff.diff_hash, head_oid))
+            Ok((content_id, head_oid))
         })
         .await;
 
@@ -663,7 +782,7 @@ pub async fn handle_mark_reviewed(
             &merge_base,
             &head_ref,
             &file_path,
-            &diff_hash,
+            &content_id,
             &reviewed_commit,
         ) {
             Ok(review) => review.reviewed_at,

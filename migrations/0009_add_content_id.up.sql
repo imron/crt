@@ -1,0 +1,2 @@
+-- content_id is applied via Database::repair_file_reviews_content_id_column
+-- so partial fixtures and older DBs both get the column safely.
