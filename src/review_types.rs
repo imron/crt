@@ -474,11 +474,10 @@ pub struct ActiveReviewSession {
 // ---------------------------------------------------------------------------
 
 impl Comment {
-    /// Create a `Comment` from a `db::StoredComment` with a given anchor status.
+    /// Create a `Comment` from a `db::StoredComment`.
     ///
     /// This is the bridge between the database layer and the model layer.
-    /// The anchor status is determined at runtime by the re-anchoring logic.
-    pub fn from_stored(stored: &crate::db::StoredComment, anchor_status: AnchorStatus) -> Self {
+    pub fn from_stored(stored: &crate::db::StoredComment) -> Self {
         Self {
             id: stored.id,
             merge_base: stored.merge_base.clone(),
@@ -495,7 +494,7 @@ impl Comment {
             resolved: stored.resolved,
             created_at: stored.created_at.clone(),
             updated_at: stored.updated_at.clone(),
-            anchor_status,
+            anchor_status: stored.anchor_status,
         }
     }
 }
@@ -697,9 +696,11 @@ mod tests {
             resolved: false,
             created_at: "2026-03-29T14:00:00+10:00".to_string(),
             updated_at: "2026-03-29T14:00:00+10:00".to_string(),
+            file_blob_sha: "blob-1".to_string(),
+            anchor_status: AnchorStatus::Anchored,
         };
 
-        let comment = Comment::from_stored(&stored, AnchorStatus::Anchored);
+        let comment = Comment::from_stored(&stored);
 
         assert_eq!(comment.id, 42);
         assert_eq!(comment.file_path, "src/lib.rs");
