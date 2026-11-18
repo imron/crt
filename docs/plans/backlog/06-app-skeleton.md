@@ -35,7 +35,7 @@ input event mutates it (by sending requests to the server).
    each event.
 
 4. **Application state**: a central struct holding at minimum:
-   - Connection context (repo, worktree, base_ref, head_ref).
+   - Connection context (repo, worktree, merge_base, head_ref).
    - The list of `FileEntry` values (received from server).
    - The currently selected file index.
    - Which pane has focus.

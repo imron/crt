@@ -79,7 +79,7 @@ boundaries make each module independently understandable and testable.
 - [ ] `ReviewStatus` correctly models all three states.
 - [ ] `FileEntry` combines git and review data into a single type.
 - [ ] Server message types serialize to/from JSON correctly.
-- [ ] `ConnectionContext` holds worktree, repo root, base_ref, and
+- [ ] `ConnectionContext` holds worktree, repo root, merge_base, and
       head_ref.
 
 ## Open Questions

@@ -19,7 +19,7 @@ clients.
 ## Requirements
 
 1. **Mark reviewed (`r`)**: pressing `r` on the currently selected file:
-   - Sends `mark_reviewed(base_ref, file_path)` to the server.
+   - Sends `mark_reviewed(file_path)` to the server.
    - The server computes the current diff hash and stores the review.
    - The server responds with the updated file entry.
    - The TUI updates the file's `ReviewStatus` to `Reviewed`.
@@ -36,7 +36,7 @@ clients.
 
 3. **Startup reconciliation**: when the TUI connects to the server and
    requests `list_changed_files`, the server:
-   - Loads stored reviews for the current `(base_ref, head_ref)`.
+   - Loads stored reviews for the current `(merge_base, head_ref)` scope.
    - Computes current diff hashes for all changed files.
    - Returns each file with the correct status:
      - No stored review → `Unreviewed`.
@@ -49,7 +49,7 @@ clients.
    back to `Unreviewed` by sending `unmark_reviewed` to the server.
 
 5. **`--reset` implementation**: `crt <base> --reset` connects to the
-   server, sends `reset_reviews(base_ref)`, prints a confirmation, and
+    server, sends `reset_reviews()`, prints a confirmation, and
    exits.
 
 6. **Review progress indicator**: visible somewhere in the UI (e.g. in
@@ -70,8 +70,8 @@ clients.
       in the reviewed section.
 - [ ] On restart, previously reviewed files with changed diffs appear in
       the unreviewed section with the `~` marker.
-- [ ] `--reset` clears all review state for the `(base_ref, head_ref)`
-      pair and confirms.
+- [ ] `--reset` clears all review state for the `(merge_base, head_ref)`
+      scope and confirms.
 - [ ] Review progress is visible in the UI.
 - [ ] Changes from another client (via server notification) are reflected
       in the TUI without restarting.
