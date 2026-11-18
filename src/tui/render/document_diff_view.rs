@@ -1,4 +1,4 @@
-//! Diff/file rendering backed by the Stage 29 document model.
+//! Diff/file rendering backed by the document model.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
