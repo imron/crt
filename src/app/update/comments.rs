@@ -232,6 +232,14 @@ fn scroll_to_comment(
         return;
     }
 
+    let visible_end = state
+        .diff_scroll
+        .saturating_add(view_height)
+        .saturating_sub(1);
+    if start_row >= state.diff_scroll && end_row <= visible_end {
+        return;
+    }
+
     let comment_height = end_row.saturating_sub(start_row).saturating_add(1);
     let scroll = if comment_height <= view_height {
         let max_full_view_scroll = view.diff_content_height().saturating_sub(view_height);
