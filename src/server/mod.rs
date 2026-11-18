@@ -156,6 +156,11 @@ impl ServerState {
         }
     }
 
+    pub async fn replace_session(&self, old_ctx: &ConnectionContext, new_ctx: &ConnectionContext) {
+        self.unregister_session(old_ctx).await;
+        self.register_session(new_ctx).await;
+    }
+
     pub async fn list_sessions(&self) -> Vec<ActiveReviewSession> {
         let sessions = self.active_sessions.lock().await;
         let mut out = sessions
@@ -629,6 +634,17 @@ async fn dispatch_initialized(
     conn_ctx: &mut Option<ConnectionContext>,
     conn_db: &mut Option<Arc<Mutex<Database>>>,
 ) -> JsonRpcResponse {
+    if method == RpcMethod::SetMergeBase {
+        let Some(ctx) = conn_ctx.as_mut() else {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_NOT_INITIALIZED,
+                "Connection not initialized. Send 'init' first.".to_string(),
+            );
+        };
+        return api::handle_set_merge_base(&request.params, id, state, ctx).await;
+    }
+
     let (Some(ctx), Some(db)) = (conn_ctx.as_ref(), conn_db.as_ref()) else {
         return JsonRpcResponse::error(
             id.clone(),
@@ -653,6 +669,14 @@ async fn dispatch_initialized(
             api::handle_unmark_reviewed(&request.params, id, ctx, db, &state.notify_tx).await
         }
         RpcMethod::ResetReviews => api::handle_reset_reviews(id, ctx, db, &state.notify_tx).await,
+        RpcMethod::SetMergeBase => JsonRpcResponse::error(
+            id.clone(),
+            ERR_INTERNAL,
+            format!(
+                "Method '{}' was dispatched through the wrong path",
+                request.method
+            ),
+        ),
         RpcMethod::CreateComment => {
             api::handle_create_comment(&request.params, id, ctx, db, &state.notify_tx).await
         }

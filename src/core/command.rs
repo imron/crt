@@ -10,6 +10,7 @@ pub enum Command {
     SetBlame(bool),
     SetComments(bool),
     SetWhitespaceIgnored(bool),
+    SetMergeBase(Option<String>),
     Unknown { name: String },
 }
 
@@ -55,24 +56,46 @@ pub fn parse_command(input: &str, fallback_word: Option<&str>) -> CommandParse {
                 }
             }
         }
-        "set" => match args {
-            "blame" => CommandParse::Parsed(Command::SetBlame(true)),
-            "noblame" => CommandParse::Parsed(Command::SetBlame(false)),
-            "comments" => CommandParse::Parsed(Command::SetComments(true)),
-            "nocomments" => CommandParse::Parsed(Command::SetComments(false)),
-            "whitespace" => CommandParse::Parsed(Command::SetWhitespaceIgnored(false)),
-            "nowhitespace" => CommandParse::Parsed(Command::SetWhitespaceIgnored(true)),
-            _ => CommandParse::Parsed(Command::Unknown {
+        "set" => parse_set_command(args),
+        _ => CommandParse::Parsed(Command::Unknown {
+            name: name.to_string(),
+        }),
+    }
+}
+
+fn parse_set_command(args: &str) -> CommandParse {
+    match args {
+        "blame" => CommandParse::Parsed(Command::SetBlame(true)),
+        "noblame" => CommandParse::Parsed(Command::SetBlame(false)),
+        "comments" => CommandParse::Parsed(Command::SetComments(true)),
+        "nocomments" => CommandParse::Parsed(Command::SetComments(false)),
+        "whitespace" => CommandParse::Parsed(Command::SetWhitespaceIgnored(false)),
+        "nowhitespace" => CommandParse::Parsed(Command::SetWhitespaceIgnored(true)),
+        "mergebase" | "mb" => CommandParse::Parsed(Command::SetMergeBase(None)),
+        _ => parse_set_assignment(args).unwrap_or_else(|| {
+            CommandParse::Parsed(Command::Unknown {
                 name: if args.is_empty() {
                     "set".to_string()
                 } else {
                     format!("set {args}")
                 },
-            }),
-        },
-        _ => CommandParse::Parsed(Command::Unknown {
-            name: name.to_string(),
+            })
         }),
+    }
+}
+
+fn parse_set_assignment(args: &str) -> Option<CommandParse> {
+    let (name, value) = args.split_once('=')?;
+    match name.trim() {
+        "mergebase" | "mb" => {
+            let refspec = if value.trim().is_empty() {
+                "HEAD".to_string()
+            } else {
+                value.trim().to_string()
+            };
+            Some(CommandParse::Parsed(Command::SetMergeBase(Some(refspec))))
+        }
+        _ => None,
     }
 }
 
@@ -159,6 +182,34 @@ mod tests {
         assert_eq!(
             parse_command("set nowhitespace", None),
             CommandParse::Parsed(Command::SetWhitespaceIgnored(true))
+        );
+    }
+
+    #[test]
+    fn parses_mergebase_set_commands() {
+        assert_eq!(
+            parse_command("set mergebase", None),
+            CommandParse::Parsed(Command::SetMergeBase(None))
+        );
+        assert_eq!(
+            parse_command("set mb", None),
+            CommandParse::Parsed(Command::SetMergeBase(None))
+        );
+        assert_eq!(
+            parse_command("set mergebase=my-branch", None),
+            CommandParse::Parsed(Command::SetMergeBase(Some("my-branch".to_string())))
+        );
+        assert_eq!(
+            parse_command("set mb=02abc", None),
+            CommandParse::Parsed(Command::SetMergeBase(Some("02abc".to_string())))
+        );
+        assert_eq!(
+            parse_command("set mb=", None),
+            CommandParse::Parsed(Command::SetMergeBase(Some("HEAD".to_string())))
+        );
+        assert_eq!(
+            parse_command("set mergebase=HEAD", None),
+            CommandParse::Parsed(Command::SetMergeBase(Some("HEAD".to_string())))
         );
     }
 }

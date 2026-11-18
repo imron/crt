@@ -125,17 +125,7 @@ pub async fn handle_init(
         db_path,
     };
 
-    let result = review_types::ConnectionContext {
-        repo_root: git_ctx.repo_root.to_string_lossy().into_owned(),
-        worktree: worktree_path.to_string_lossy().into_owned(),
-        head_ref: git_ctx.head.display_name(),
-        merge_base: merge_base.to_string(),
-        base_ref: if init_params.root {
-            review_types::ROOT_REVIEW_BASE_REF.to_string()
-        } else {
-            base_ref.clone()
-        },
-    };
+    let result = protocol_context(&ctx);
 
     if let Some(old_ctx) = conn_ctx.as_ref() {
         state.unregister_session(old_ctx).await;
@@ -151,6 +141,16 @@ pub async fn handle_init(
             ERR_INTERNAL,
             format!("Failed to serialize init result: {e}"),
         ),
+    }
+}
+
+fn protocol_context(ctx: &ConnectionContext) -> review_types::ConnectionContext {
+    review_types::ConnectionContext {
+        repo_root: ctx.repo_root.to_string_lossy().into_owned(),
+        worktree: ctx.worktree.to_string_lossy().into_owned(),
+        base_ref: ctx.base_ref.clone(),
+        head_ref: ctx.head.display_name(),
+        merge_base: ctx.merge_base.to_string(),
     }
 }
 
@@ -852,6 +852,68 @@ pub async fn handle_reset_reviews(
             format!("Serialization error: {e}"),
         ),
     }
+}
+
+pub async fn handle_set_merge_base(
+    params: &serde_json::Value,
+    id: &serde_json::Value,
+    state: &Arc<ServerState>,
+    ctx: &mut ConnectionContext,
+) -> JsonRpcResponse {
+    let params: review_types::SetMergeBaseParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INVALID_PARAMS,
+                format!("Invalid set_merge_base params: {e}"),
+            );
+        }
+    };
+    let refspec = if params.refspec.trim().is_empty() {
+        "HEAD".to_string()
+    } else {
+        params.refspec.trim().to_string()
+    };
+
+    let worktree = ctx.worktree.clone();
+    let refspec_for_git = refspec.clone();
+    let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let repo = git::Repo::open(&worktree)?;
+        let resolved = git::CommitId::new(repo.resolve_commit(&refspec_for_git)?);
+        Ok(resolved)
+    })
+    .await;
+
+    let merge_base = match git_result {
+        Ok(Ok(commit)) => commit,
+        Ok(Err(e)) => {
+            return JsonRpcResponse::error(id.clone(), ERR_INVALID_PARAMS, format!("{e:#}"));
+        }
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INTERNAL,
+                format!("Git task panicked: {e}"),
+            );
+        }
+    };
+
+    let old_ctx = ctx.clone();
+    ctx.base_ref = refspec.clone();
+    ctx.review_base = git::ReviewBase::Anonymous {
+        input: refspec,
+        resolved_commit: merge_base.clone(),
+    };
+    ctx.merge_base = merge_base;
+    state.replace_session(&old_ctx, ctx).await;
+
+    json_response(
+        id,
+        review_types::SetMergeBaseResult {
+            context: protocol_context(ctx),
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -2401,6 +2463,54 @@ pub async fn handle_find_definition(
 mod tests {
     use super::*;
 
+    fn init_test_repo(path: &std::path::Path) -> git2::Repository {
+        let repo = git2::Repository::init(path).expect("init repo");
+        let mut config = repo.config().expect("repo config");
+        config
+            .set_str("user.email", "test@test.com")
+            .expect("set email");
+        config.set_str("user.name", "Test").expect("set name");
+        drop(config);
+        repo
+    }
+
+    fn commit_all(repo: &git2::Repository, message: &str) -> git2::Oid {
+        let mut index = repo.index().expect("repo index");
+        index
+            .add_all(["."], git2::IndexAddOption::DEFAULT, None)
+            .expect("add all");
+        index.write().expect("write index");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let signature = git2::Signature::now("Test", "test@test.com").expect("signature");
+        let parent = repo
+            .head()
+            .ok()
+            .and_then(|head| head.target())
+            .and_then(|oid| repo.find_commit(oid).ok());
+        let parents = parent.iter().collect::<Vec<_>>();
+
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            message,
+            &tree,
+            parents.as_slice(),
+        )
+        .expect("commit")
+    }
+
+    fn setup_merge_base_repo() -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::tempdir().expect("temp repo");
+        let repo = init_test_repo(dir.path());
+        std::fs::write(dir.path().join("file.txt"), "base\n").expect("write base file");
+        let base = commit_all(&repo, "base").to_string();
+        std::fs::write(dir.path().join("file.txt"), "head\n").expect("write head file");
+        let head = commit_all(&repo, "head").to_string();
+        (dir, base, head)
+    }
+
     fn stored_comment(line_start: i64, anchor_text: &str) -> StoredComment {
         StoredComment {
             id: 1,
@@ -2585,6 +2695,62 @@ mod tests {
             },
             db_path: PathBuf::from("/repo/.crt/reviews.db"),
         }
+    }
+
+    #[tokio::test]
+    async fn set_merge_base_resolves_ref_to_full_hash_and_updates_session() {
+        let (dir, base, head) = setup_merge_base_repo();
+        let repo = git::Repo::open(dir.path()).expect("open repo");
+        let repo_context = repo.context().expect("repo context");
+        let state = Arc::new(ServerState::new());
+        let mut ctx = ConnectionContext {
+            repo_root: repo_context.repo_root.clone(),
+            worktree: repo_context.worktree.clone(),
+            base_ref: "base".to_string(),
+            review_base: git::ReviewBase::Anonymous {
+                input: "base".to_string(),
+                resolved_commit: git::CommitId::new(base),
+            },
+            merge_base: git::CommitId::new(repo.resolve_commit("HEAD~1").expect("base commit")),
+            head: repo_context.head,
+            db_path: repo_context.repo_root.join(".crt/reviews.db"),
+        };
+        state.register_session(&ctx).await;
+
+        let short_head = &head[..7];
+        let response = handle_set_merge_base(
+            &serde_json::to_value(review_types::SetMergeBaseParams {
+                refspec: short_head.to_string(),
+            })
+            .expect("serialize params"),
+            &serde_json::json!(1),
+            &state,
+            &mut ctx,
+        )
+        .await;
+
+        assert!(response.error.is_none(), "{:?}", response.error);
+        let result: review_types::SetMergeBaseResult =
+            serde_json::from_value(response.result.expect("result")).expect("deserialize result");
+        assert_eq!(ctx.merge_base.to_string(), head);
+        assert_eq!(ctx.base_ref, short_head);
+        assert_eq!(result.context.merge_base, head);
+        assert_eq!(result.context.base_ref, short_head);
+        match &ctx.review_base {
+            git::ReviewBase::Anonymous {
+                input,
+                resolved_commit,
+            } => {
+                assert_eq!(input, short_head);
+                assert_eq!(resolved_commit.as_ref(), head);
+            }
+            other => panic!("expected anonymous review base, got {other:?}"),
+        }
+
+        let sessions = state.list_sessions().await;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].merge_base, head);
+        assert_eq!(sessions[0].client_count, 1);
     }
 
     #[test]
