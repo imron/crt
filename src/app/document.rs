@@ -350,6 +350,7 @@ impl Document {
             })),
             DocumentRow::Spacer => Some(RenderLine::Spacer {
                 marker: self.overlays.comments.marker_for_row(row),
+                selected: self.overlays.selection_contains_row(row),
             }),
         }
     }
@@ -650,6 +651,11 @@ impl DocumentOverlays {
             end: ColumnIndex(end),
         }]
     }
+
+    fn selection_contains_row(&self, row: RowIndex) -> bool {
+        self.selection
+            .is_some_and(|selection| selection.contains_row(row))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -674,6 +680,16 @@ pub struct DocumentPosition {
 }
 
 impl VisibleSelection {
+    fn contains_row(self, row: RowIndex) -> bool {
+        match self {
+            Self::Line(span) => span.contains(row),
+            Self::Text { start, end } => {
+                let (start, end) = ordered_document_positions(start, end);
+                row >= start.row && row <= end.row
+            }
+        }
+    }
+
     fn normalized_span_for(self, row: RowIndex, text: &str) -> Option<ColumnSpan> {
         match self {
             Self::Line(span) => span.contains(row).then_some(ColumnSpan {
@@ -1181,7 +1197,10 @@ impl ColumnSpan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderLine<'a> {
     Content(RenderContent<'a>),
-    Spacer { marker: CommentMarker },
+    Spacer {
+        marker: CommentMarker,
+        selected: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3527,10 +3546,12 @@ mod tests {
             side_by_side.base().row(RowIndex(2)),
             Some(DocumentRow::Spacer)
         ));
-        let Some(RenderLine::Spacer { marker }) = side_by_side.base().line(RowIndex(2)) else {
+        let Some(RenderLine::Spacer { marker, selected }) = side_by_side.base().line(RowIndex(2))
+        else {
             panic!("expected spacer render line");
         };
         assert_eq!(marker.kind(), Some(CommentMarkerKind::Join));
+        assert!(!selected);
     }
 
     #[test]
@@ -4333,6 +4354,21 @@ mod tests {
         assert_eq!(selected.runs.len(), 1);
         assert_eq!(selected.runs[0].kind, TextRunKind::Selection);
         assert_eq!(selected.runs[0].text, Cow::Borrowed(""));
+    }
+
+    #[test]
+    fn visual_line_selection_marks_spacer_rows() {
+        let mut document = Document::new(vec![DocumentRow::Spacer], Vec::new());
+        document.overlays_mut().selection = Some(VisibleSelection::Line(RowSpan {
+            start: RowIndex(0),
+            end: RowIndex(0),
+        }));
+
+        let Some(RenderLine::Spacer { selected, .. }) = document.line(RowIndex(0)) else {
+            panic!("expected spacer render line");
+        };
+
+        assert!(selected);
     }
 
     #[test]
