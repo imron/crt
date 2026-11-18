@@ -18,14 +18,8 @@ pub mod search;
 pub mod server;
 pub mod tui;
 
-use std::path::PathBuf;
-use std::time::Duration;
-
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-
-/// How long to wait for an embedded server to become ready after startup.
-const EMBEDDED_SERVER_STARTUP_DELAY: Duration = Duration::from_millis(50);
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -115,7 +109,7 @@ pub fn run_with_cli(cli: Cli) -> Result<()> {
 
 /// `crt server` — start persistent server.
 fn cmd_server() -> Result<()> {
-    let socket_path = default_socket_path()?;
+    let socket_path = app::default_socket_path()?;
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
     rt.block_on(server::run_persistent(&socket_path))
 }
@@ -124,96 +118,18 @@ fn cmd_server() -> Result<()> {
 fn cmd_review(base: Option<String>, reset: bool, standalone: bool) -> Result<()> {
     let base = base.context("A base ref is required.\n\nUsage: crt <BASE>\n\nExample: crt main")?;
 
-    let socket_path = default_socket_path()?;
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
 
     rt.block_on(async {
-        let (cancel_guard, client) = connect_or_start(&socket_path, standalone).await?;
-        let cwd = std::env::current_dir().context("Failed to determine current directory")?;
-        let init = client.init(&cwd.to_string_lossy(), &base).await?;
-
-        if reset {
-            let result = client.reset_reviews().await?;
-            println!(
-                "Reset review state for (merge_base: {}, head: {}): {} review(s) cleared.",
-                git::short_hash(&init.merge_base),
-                init.head_ref,
-                result.cleared
-            );
-            drop(client);
-            shutdown_embedded(cancel_guard).await;
-            return Ok(());
+        match app::App::start_review(&base, reset, standalone).await? {
+            app::ReviewStartup::Reset(summary) => {
+                println!(
+                    "Reset review state for (merge_base: {}, head: {}): {} review(s) cleared.",
+                    summary.merge_base_short, summary.head_ref, summary.cleared
+                );
+                Ok(())
+            }
+            app::ReviewStartup::Review(app) => tui::run(app).await.context("TUI error"),
         }
-
-        let app = app::App::load(client, init).await?;
-
-        // Launch the TUI.
-        tui::run(app).await.context("TUI error")?;
-
-        // Clean shutdown of embedded server if we started one.
-        shutdown_embedded(cancel_guard).await;
-        Ok(())
     })
-}
-
-/// Connect to a running server, or start an embedded one.
-///
-/// Returns a cancellation token (Some if we started an embedded server,
-/// None if we connected to an existing one) and the client. The caller
-/// must hold the cancel guard — dropping it shuts down the embedded server.
-async fn connect_or_start(
-    socket_path: &std::path::Path,
-    standalone: bool,
-) -> Result<(Option<tokio_util::sync::CancellationToken>, client::Client)> {
-    if standalone {
-        // Standalone mode: start embedded server on a temp socket
-        let dir = std::env::temp_dir().join(format!("crt-{}", std::process::id()));
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("Failed to create temp dir {}", dir.display()))?;
-        let standalone_socket = dir.join("server.sock");
-        let cancel = server::start_embedded(&standalone_socket).await?;
-        // Brief pause for the listener to be ready
-        tokio::time::sleep(EMBEDDED_SERVER_STARTUP_DELAY).await;
-        let client = client::Client::connect(&standalone_socket).await?;
-        return Ok((Some(cancel), client));
-    }
-
-    // Try connecting to existing server
-    match client::Client::connect(socket_path).await {
-        Ok(c) => Ok((None, c)),
-        Err(_) => {
-            // No server running — start embedded on the real socket
-            let cancel = server::start_embedded(socket_path).await?;
-            // Brief pause for the listener to be ready
-            tokio::time::sleep(EMBEDDED_SERVER_STARTUP_DELAY).await;
-            let client = client::Client::connect(socket_path)
-                .await
-                .context("Failed to connect to embedded server")?;
-            Ok((Some(cancel), client))
-        }
-    }
-}
-
-/// Cancel an embedded server and wait briefly for cleanup.
-async fn shutdown_embedded(cancel: Option<tokio_util::sync::CancellationToken>) {
-    if let Some(token) = cancel {
-        token.cancel();
-        // Give the background task a moment to remove the socket
-        tokio::time::sleep(EMBEDDED_SERVER_STARTUP_DELAY).await;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Get the default socket path (~/.crt/server.sock).
-pub fn default_socket_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME").context("HOME environment variable not set")?;
-    let crt_dir = PathBuf::from(home).join(".crt");
-    if !crt_dir.exists() {
-        std::fs::create_dir_all(&crt_dir)
-            .with_context(|| format!("Failed to create {}", crt_dir.display()))?;
-    }
-    Ok(crt_dir.join("server.sock"))
 }

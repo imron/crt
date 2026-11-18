@@ -46,6 +46,10 @@ impl Tui {
         })
     }
 
+    pub fn into_app(self) -> App {
+        self.app
+    }
+
     /// Run the event loop. Returns when the user quits.
     pub async fn run(&mut self) -> Result<()> {
         // Install a panic hook that restores the terminal before printing
