@@ -275,6 +275,21 @@ fn create_comment_params(
     })
 }
 
+fn create_line_comment_params(
+    file_path: &str,
+    line_start: i64,
+    line_end: Option<i64>,
+    body: &str,
+) -> serde_json::Value {
+    params(review_types::CreateLineCommentParams {
+        file_path: file_path.to_string(),
+        line_start,
+        line_end,
+        side: None,
+        body: body.to_string(),
+    })
+}
+
 fn update_comment_params(id: i64, body: &str) -> serde_json::Value {
     params(review_types::UpdateCommentParams {
         id,
@@ -796,6 +811,132 @@ async fn test_client_list_repos_reports_multiple_active_sessions() {
     ];
     expected_worktrees.sort_unstable();
     assert_eq!(worktrees, expected_worktrees);
+}
+
+#[tokio::test]
+async fn test_create_line_comment_derives_anchor_from_file_content() {
+    let server = TestServer::start().await;
+    std::fs::write(
+        server.repo_dir.join("file.txt"),
+        "one\ntwo\nthree\nfour\nfive\nsix\nseven\n",
+    )
+    .unwrap();
+    let mut conn = server.connect_and_init().await;
+
+    let create = conn
+        .request(
+            RpcMethod::CreateLineComment,
+            create_line_comment_params("file.txt", 4, Some(5), "check this range"),
+        )
+        .await;
+    assert!(create["error"].is_null(), "create failed: {create}");
+    let comment = &create["result"]["comment"];
+    assert_eq!(comment["file_path"], "file.txt");
+    assert_eq!(comment["body"], "check this range");
+    assert_eq!(comment["line_start"], 4);
+    assert_eq!(comment["line_end"], 5);
+    assert_eq!(comment["anchor_text"], "four\nfive");
+    assert_eq!(comment["context_before"], "one\ntwo\nthree");
+    assert_eq!(comment["context_after"], "six\nseven");
+    assert_eq!(comment["anchor_status"], "anchored");
+
+    let id = comment["id"].as_i64().unwrap();
+    let list = conn
+        .request(
+            RpcMethod::ListComments,
+            list_comments_params("file.txt", false),
+        )
+        .await;
+    assert!(list["error"].is_null(), "list failed: {list}");
+    let comments = list["result"]["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0]["id"], id);
+}
+
+#[tokio::test]
+async fn test_create_line_comment_follows_shifted_code() {
+    let server = TestServer::start().await;
+    std::fs::write(
+        server.repo_dir.join("file.txt"),
+        "one\ntwo\nthree\nfour\nfive\n",
+    )
+    .unwrap();
+    let mut conn = server.connect_and_init().await;
+
+    let create = conn
+        .request(
+            RpcMethod::CreateLineComment,
+            create_line_comment_params("file.txt", 4, None, "look at four"),
+        )
+        .await;
+    assert!(create["error"].is_null(), "create failed: {create}");
+    assert_eq!(create["result"]["comment"]["anchor_text"], "four");
+
+    // Insert lines above the anchor; the comment should follow the content.
+    std::fs::write(
+        server.repo_dir.join("file.txt"),
+        "inserted\nalso inserted\none\ntwo\nthree\nfour\nfive\n",
+    )
+    .unwrap();
+
+    let list = conn
+        .request(
+            RpcMethod::ListComments,
+            list_comments_params("file.txt", false),
+        )
+        .await;
+    assert!(list["error"].is_null(), "list failed: {list}");
+    let comment = &list["result"]["comments"].as_array().unwrap()[0];
+    assert_eq!(comment["line_start"], 6);
+    assert_eq!(comment["anchor_text"], "four");
+}
+
+#[tokio::test]
+async fn test_create_line_comment_rejects_invalid_input() {
+    let server = TestServer::start().await;
+    let mut conn = server.connect_and_init().await;
+
+    let past_end = conn
+        .request(
+            RpcMethod::CreateLineComment,
+            create_line_comment_params("file.txt", 50, None, "nowhere"),
+        )
+        .await;
+    assert!(
+        past_end["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("outside the file"),
+        "unexpected response: {past_end}"
+    );
+
+    let empty_body = conn
+        .request(
+            RpcMethod::CreateLineComment,
+            create_line_comment_params("file.txt", 1, None, "   "),
+        )
+        .await;
+    assert!(
+        empty_body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("must not be empty"),
+        "unexpected response: {empty_body}"
+    );
+
+    let missing_file = conn
+        .request(
+            RpcMethod::CreateLineComment,
+            create_line_comment_params("nope.txt", 1, None, "no such file"),
+        )
+        .await;
+    assert!(
+        missing_file["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no readable content"),
+        "unexpected response: {missing_file}"
+    );
 }
 
 #[tokio::test]

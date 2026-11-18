@@ -23,7 +23,8 @@ use tokio::sync::Mutex;
 
 use crate::client::{Client, CommentScope};
 use crate::review_types::{
-    ActiveReviewSession, AnchorStatus, Comment, ConnectionContext, FileStatusEntry, ListReposResult,
+    ActiveReviewSession, AnchorStatus, Comment, CommentAnchorSide, ConnectionContext,
+    CreateLineCommentParams, FileStatusEntry, ListReposResult,
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -60,6 +61,24 @@ pub struct ListReviewCommentsParams {
 pub struct CommentIdParams {
     #[schemars(description = "Review comment id returned by list_review_comments")]
     pub id: i64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateReviewCommentParams {
+    #[schemars(description = "Path to a file in the review worktree")]
+    pub file_path: String,
+    #[schemars(description = "First line of the commented range, 1-based and inclusive")]
+    pub line_start: i64,
+    #[schemars(
+        description = "Last line of the commented range, 1-based and inclusive. Defaults to line_start"
+    )]
+    pub line_end: Option<i64>,
+    #[schemars(
+        description = "Which side the line numbers refer to: 'head' (default, the current worktree content) or 'base' (the content at the merge base)"
+    )]
+    pub side: Option<String>,
+    #[schemars(description = "The review comment text")]
+    pub body: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -324,6 +343,42 @@ impl CrtMcp {
         match client.get_comment(params.id).await {
             Ok(result) => to_json(&result),
             Err(e) => format!("Error getting review comment: {e:#}"),
+        }
+    }
+
+    #[tool(
+        description = "Create a review comment anchored to a line range in the selected review scope. Line numbers are 1-based and inclusive, and refer to the head side unless side='base'. The comment is anchored to the content of those lines, so it follows the code across later edits and rebases. Call select_review_session first."
+    )]
+    async fn create_review_comment(
+        &self,
+        Parameters(params): Parameters<CreateReviewCommentParams>,
+    ) -> String {
+        if let Err(e) = self.require_selected().await {
+            return format!("Error: {e:#}");
+        }
+        let side = match params.side.as_deref() {
+            None | Some("head") => Some(CommentAnchorSide::Head),
+            Some("base") => Some(CommentAnchorSide::Base),
+            Some(other) => {
+                return format!("Error: unknown side '{other}'; expected 'head' or 'base'");
+            }
+        };
+        let client = match self.client().await {
+            Ok(client) => client,
+            Err(e) => return format!("Error creating review comment: {e:#}"),
+        };
+        match client
+            .create_line_comment(CreateLineCommentParams {
+                file_path: params.file_path,
+                line_start: params.line_start,
+                line_end: params.line_end,
+                side,
+                body: params.body,
+            })
+            .await
+        {
+            Ok(result) => to_json(&summarize_comment_result(result.comment)),
+            Err(e) => format!("Error creating review comment: {e:#}"),
         }
     }
 
@@ -716,6 +771,7 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "create_review_comment",
                 "find_definition",
                 "get_comment_detail",
                 "get_file_diff",

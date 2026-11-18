@@ -62,6 +62,7 @@ rpc_methods! {
     ResetReviews => "reset_reviews",
     SetMergeBase => "set_merge_base",
     CreateComment => "create_comment",
+    CreateLineComment => "create_line_comment",
     ListComments => "list_comments",
     GetComment => "get_comment",
     UpdateComment => "update_comment",

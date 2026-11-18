@@ -500,6 +500,26 @@ pub struct CreateCommentParams {
     pub body: String,
 }
 
+/// Parameters for `create_line_comment`.
+///
+/// A convenience form of `create_comment` for clients that know a file and a
+/// line range but cannot build a full anchor themselves. The server reads the
+/// file content for the requested side and derives the anchor text and
+/// surrounding context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateLineCommentParams {
+    pub file_path: String,
+    /// First line of the range, 1-based and inclusive.
+    pub line_start: i64,
+    /// Last line of the range, 1-based and inclusive. Defaults to
+    /// `line_start`.
+    pub line_end: Option<i64>,
+    /// Which side of the review the line numbers refer to. Defaults to
+    /// `Head`.
+    pub side: Option<CommentAnchorSide>,
+    pub body: String,
+}
+
 /// Parameters for `list_comments`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListCommentsParams {
