@@ -1555,6 +1555,23 @@ mod tests {
         dir
     }
 
+    fn setup_worktree_repo(files: &[(&str, String)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp repo");
+        run_git(dir.path(), &["init"]);
+        run_git(dir.path(), &["config", "user.email", "test@test.com"]);
+        run_git(dir.path(), &["config", "user.name", "Test"]);
+        for (path, content) in files {
+            let file_path = dir.path().join(path);
+            if let Some(parent) = file_path.parent() {
+                std::fs::create_dir_all(parent).expect("create parent dirs");
+            }
+            std::fs::write(&file_path, content).expect("write file content");
+        }
+        run_git(dir.path(), &["add", "-A"]);
+        run_git(dir.path(), &["commit", "-m", "base"]);
+        dir
+    }
+
     fn run_git(path: &std::path::Path, args: &[&str]) {
         let out = std::process::Command::new("git")
             .args(args)
@@ -2473,9 +2490,28 @@ mod tests {
 
     #[test]
     fn unresolved_comment_section_navigation_scans_comment_rows() {
+        let repo = setup_worktree_repo(&[
+            (
+                "a.rs",
+                (1..=12)
+                    .map(|line| format!("a {line}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            (
+                "b.rs",
+                (1..=12)
+                    .map(|line| format!("b {line}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+        ]);
+        let mut context = test_context();
+        context.repo_root = repo.path().to_string_lossy().into_owned();
+        context.worktree = context.repo_root.clone();
         let mut app = App::new(
             Config::default(),
-            test_context(),
+            context,
             vec![test_file("a.rs"), test_file("b.rs")],
         );
         let mut first = stored_comment(3, "a.rs");
@@ -2516,9 +2552,28 @@ mod tests {
 
     #[test]
     fn activating_unresolved_comment_row_jumps_to_comment_anchor() {
+        let repo = setup_worktree_repo(&[
+            (
+                "a.rs",
+                (1..=12)
+                    .map(|line| format!("a {line}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            (
+                "b.rs",
+                (1..=12)
+                    .map(|line| format!("b {line}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+        ]);
+        let mut context = test_context();
+        context.repo_root = repo.path().to_string_lossy().into_owned();
+        context.worktree = context.repo_root.clone();
         let mut app = App::new(
             Config::default(),
-            test_context(),
+            context,
             vec![test_file("a.rs"), test_file("b.rs")],
         );
         let mut comment = stored_comment(9, "b.rs");
@@ -2530,6 +2585,7 @@ mod tests {
         app.state.selected_comment_id = Some(9);
         app.state.content_mode = ContentMode::FullFile;
         app.state.render_variant = RenderVariant::HeadVersion;
+        app.state.load_head_content();
 
         app.apply_core_effects(
             &RenderedViewport::new(vec!["line"; 12]),
@@ -2547,9 +2603,28 @@ mod tests {
 
     #[test]
     fn unresolved_comment_shortcut_advances_from_current_line_to_next_file() {
+        let repo = setup_worktree_repo(&[
+            (
+                "a.rs",
+                (1..=12)
+                    .map(|line| format!("a {line}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            (
+                "b.rs",
+                (1..=12)
+                    .map(|line| format!("b {line}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+        ]);
+        let mut context = test_context();
+        context.repo_root = repo.path().to_string_lossy().into_owned();
+        context.worktree = context.repo_root.clone();
         let mut app = App::new(
             Config::default(),
-            test_context(),
+            context,
             vec![test_file("a.rs"), test_file("b.rs")],
         );
         let mut first = stored_comment(3, "a.rs");
@@ -2603,9 +2678,28 @@ mod tests {
 
     #[test]
     fn unresolved_comment_shortcut_visits_same_start_line_comments() {
+        let repo = setup_worktree_repo(&[
+            (
+                "a.rs",
+                (1..=40)
+                    .map(|line| format!("a {line}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            (
+                "b.rs",
+                (1..=40)
+                    .map(|line| format!("b {line}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+        ]);
+        let mut context = test_context();
+        context.repo_root = repo.path().to_string_lossy().into_owned();
+        context.worktree = context.repo_root.clone();
         let mut app = App::new(
             Config::default(),
-            test_context(),
+            context,
             vec![test_file("a.rs"), test_file("b.rs")],
         );
         let mut outer = stored_comment(9, "a.rs");
@@ -2620,6 +2714,7 @@ mod tests {
         app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
         app.state.content_mode = ContentMode::FullFile;
         app.state.render_variant = RenderVariant::HeadVersion;
+        app.state.load_head_content();
         app.state.diff_line_cursor = 16;
 
         app.apply_core_effects(
@@ -2716,17 +2811,14 @@ mod tests {
         let mut app = App::new(
             Config::default(),
             test_context(),
-            vec![
-                test_file_with_offset_multiline_replacement_hunk("a.rs"),
-                test_file("b.rs"),
-            ],
+            vec![test_file_with_hunk("a.rs"), test_file_with_hunk("b.rs")],
         );
         let mut current = stored_comment(1, "a.rs");
-        move_comment_to_base_head_ranges(&mut current, 26, 26, 27, 28);
+        move_comment_head_range(&mut current, 11, 11);
         let mut next_same_file = stored_comment(2, "a.rs");
-        move_comment_head_range(&mut next_same_file, 29, 29);
+        move_comment_head_range(&mut next_same_file, 12, 12);
         let mut next_file = stored_comment(3, "b.rs");
-        move_comment_head_range(&mut next_file, 2, 2);
+        move_comment_head_range(&mut next_file, 11, 11);
         app.state.comments = vec![current, next_file, next_same_file];
         app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
         app.state.content_mode = ContentMode::Diff;
@@ -2794,6 +2886,86 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_comment_shortcut_cross_file_clamps_against_target_document() {
+        let plan_path = "docs/plans/completed/29d-document-comment-overlays.md";
+        let app_path = "src/app.rs";
+        let plan_content = (1..=132)
+            .map(|line| format!("plan {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let app_content = (1..=1600)
+            .map(|line| format!("app {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let repo =
+            setup_worktree_repo(&[(plan_path, plan_content.clone()), (app_path, app_content)]);
+        let mut context = test_context();
+        context.repo_root = repo.path().to_string_lossy().into_owned();
+        context.worktree = context.repo_root.clone();
+        let mut app = App::new(
+            Config::default(),
+            context,
+            vec![test_file(plan_path), test_file(app_path)],
+        );
+        let mut comment = stored_comment(59, app_path);
+        move_comment_head_range(&mut comment, 1505, 1513);
+        app.state.comments = vec![comment];
+        app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::HeadVersion;
+        app.state.selected_file = 0;
+        app.state.head_content = Some(plan_content);
+        app.state.diff_line_cursor = 131;
+        app.state.diff_scroll = 122;
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 132]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+
+        assert_eq!(
+            app.state.files[app.state.selected_file].change.path,
+            app_path
+        );
+        assert_eq!(app.state.selected_comment_id, Some(59));
+        assert_eq!(app.state.diff_line_cursor, 1504);
+    }
+
+    #[test]
+    fn unresolved_comment_shortcut_cross_file_uses_first_target_document_comment() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![
+                test_file("a.rs"),
+                test_file_with_offset_multiline_replacement_hunk("b.rs"),
+            ],
+        );
+        let mut current = stored_comment(1, "a.rs");
+        move_comment_head_range(&mut current, 2, 2);
+        let mut hidden_first = stored_comment(2, "b.rs");
+        move_comment_head_range(&mut hidden_first, 20, 20);
+        let mut visible_second = stored_comment(3, "b.rs");
+        move_comment_to_base_head_ranges(&mut visible_second, 26, 26, 27, 28);
+        app.state.comments = vec![current, hidden_first, visible_second];
+        app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
+        app.state.content_mode = ContentMode::Diff;
+        app.state.render_variant = RenderVariant::Inline;
+        app.state.diff_line_cursor = 1;
+        app.state.selected_comment_id = Some(1);
+        app.state.ensure_active_document();
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 12]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "b.rs");
+        assert_eq!(app.state.selected_comment_id, Some(3));
+        assert_eq!(app.state.diff_line_cursor, 0);
+    }
+
+    #[test]
     fn unresolved_comment_shortcut_cross_file_does_not_use_source_row_for_hidden_comment() {
         let mut app = App::new(
             Config::default(),
@@ -2842,6 +3014,12 @@ mod tests {
         app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
         app.state.content_mode = ContentMode::FullFile;
         app.state.render_variant = RenderVariant::HeadVersion;
+        app.state.head_content = Some(
+            (1..=220)
+                .map(|line| format!("line {line}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
         app.state.diff_line_cursor = 183;
         app.state.selected_comment_id = Some(2);
 
