@@ -10,9 +10,9 @@ mod search;
 mod server;
 mod ui;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -98,6 +98,31 @@ fn main() -> Result<()> {
             println!("  head ref:   {}", repo_info.head_ref);
             println!("  base commit: {}", &repo_info.base_commit_id[..12]);
             println!("  db path:    {}", repo_info.db_path.display());
+
+            // Show changed files (preview of git module)
+            let cwd = std::env::current_dir()?;
+            let repo = git::Repo::open(&cwd)?;
+            let changes = repo.list_changed_files(&base, "HEAD")?;
+
+            if changes.is_empty() {
+                println!("\n  No changes between {} and HEAD.", base);
+            } else {
+                println!("\n  Changed files ({}):", changes.len());
+                for change in &changes {
+                    let marker = match change.kind {
+                        git::ChangeKind::Added => "+",
+                        git::ChangeKind::Deleted => "-",
+                        git::ChangeKind::Modified => "~",
+                        git::ChangeKind::Renamed => "→",
+                    };
+                    if let Some(old) = &change.old_path {
+                        println!("    {} {} → {}", marker, old, change.path);
+                    } else {
+                        println!("    {} {}", marker, change.path);
+                    }
+                }
+            }
+
             println!("\nTUI not yet implemented (stage 6).");
 
             Ok(())
@@ -105,7 +130,7 @@ fn main() -> Result<()> {
     }
 }
 
-struct RepoContext {
+struct StartupContext {
     repo_root: PathBuf,
     worktree: PathBuf,
     head_ref: String,
@@ -113,69 +138,23 @@ struct RepoContext {
     db_path: PathBuf,
 }
 
-fn resolve_repo_context(base: &str) -> Result<RepoContext> {
+fn resolve_repo_context(base: &str) -> Result<StartupContext> {
     let cwd = std::env::current_dir().context("Failed to determine current directory")?;
 
-    // Open the repository from current directory (searches parents)
-    let repo = git2::Repository::discover(&cwd)
-        .context("Not a git repository (or any parent up to mount point)")?;
+    let repo = git::Repo::open(&cwd)?;
+    let ctx = repo.context()?;
 
-    // Resolve repo root (main repo, not worktree)
-    // commondir() gives us the shared .git directory; its parent is the repo root
-    let repo_root = if repo.is_worktree() {
-        // For worktrees, commondir points to the main repo's .git dir
-        let common = repo.commondir().to_path_buf();
-        common.parent().map(|p| p.to_path_buf()).unwrap_or(common)
-    } else {
-        repo.workdir()
-            .context("Bare repositories are not supported")?
-            .to_path_buf()
-    };
+    if ctx.is_detached {
+        eprintln!(
+            "Warning: HEAD is detached at {}. Review state will be scoped to this commit hash.",
+            ctx.head_ref
+        );
+    }
 
-    // Worktree path is where we're actually running
-    let worktree = repo
-        .workdir()
-        .context("Bare repositories are not supported")?
-        .to_path_buf();
-
-    // Resolve HEAD to a branch name
-    let head_ref = match repo.head() {
-        Ok(head) => {
-            if head.is_branch() {
-                head.shorthand().unwrap_or("HEAD").to_string()
-            } else {
-                // Detached HEAD — use short commit hash as fallback
-                let oid = head.target().context("HEAD has no target")?;
-                let short = &oid.to_string()[..8];
-                eprintln!(
-                    "Warning: HEAD is detached at {}. Review state will be scoped to this commit hash.",
-                    short
-                );
-                short.to_string()
-            }
-        }
-        Err(e) => {
-            if e.code() == git2::ErrorCode::UnbornBranch {
-                bail!("Repository has no commits yet. Make an initial commit before running crt.");
-            }
-            bail!("Failed to read HEAD: {}", e);
-        }
-    };
-
-    // Resolve the base ref to a commit
-    let base_obj = repo.revparse_single(base).with_context(|| {
-        format!(
-            "Could not resolve ref '{}'. Is it a valid branch, tag, or commit?",
-            base
-        )
-    })?;
-    let base_commit = base_obj
-        .peel_to_commit()
-        .with_context(|| format!("Ref '{}' does not point to a commit", base))?;
-    let base_commit_id = base_commit.id().to_string();
+    let base_commit_id = repo.resolve_commit(base)?;
 
     // Ensure .crt/ directory exists in repo root
-    let crt_dir = repo_root.join(".crt");
+    let crt_dir = ctx.repo_root.join(".crt");
     if !crt_dir.exists() {
         std::fs::create_dir_all(&crt_dir)
             .with_context(|| format!("Failed to create {}", crt_dir.display()))?;
@@ -184,18 +163,18 @@ fn resolve_repo_context(base: &str) -> Result<RepoContext> {
     let db_path = crt_dir.join("reviews.db");
 
     // Check if .crt/ is in .gitignore
-    check_gitignore(&repo_root);
+    check_gitignore(&ctx.repo_root);
 
-    Ok(RepoContext {
-        repo_root,
-        worktree,
-        head_ref,
+    Ok(StartupContext {
+        repo_root: ctx.repo_root,
+        worktree: ctx.worktree,
+        head_ref: ctx.head_ref,
         base_commit_id,
         db_path,
     })
 }
 
-fn check_gitignore(repo_root: &PathBuf) {
+fn check_gitignore(repo_root: &Path) {
     let gitignore_path = repo_root.join(".gitignore");
     if gitignore_path.exists() {
         if let Ok(contents) = std::fs::read_to_string(&gitignore_path) {
