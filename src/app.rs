@@ -614,7 +614,6 @@ impl App {
                     .state
                     .selected_comment_id
                     .filter(|id| self.state.comments.iter().any(|comment| comment.id == *id));
-                self.state.refresh_document_overlays();
                 self.state.mark_model_changed();
                 None
             }
@@ -706,7 +705,6 @@ impl App {
                 self.state.pending_comment_anchor = None;
                 self.state.visual_selection = None;
                 upsert_comment(&mut self.state.comments, result.comment.clone());
-                self.state.refresh_document_overlays();
                 self.state.mark_model_changed();
                 Some(StatusUpdate::Set(format!(
                     "Created comment #{}",
@@ -730,7 +728,6 @@ impl App {
         match client.update_comment(id, &body).await {
             Ok(result) => {
                 upsert_comment(&mut self.state.comments, result.comment.clone());
-                self.state.refresh_document_overlays();
                 self.state.mark_model_changed();
                 Some(StatusUpdate::Set(format!(
                     "Updated comment #{}",
@@ -753,7 +750,6 @@ impl App {
                 self.last_undo_action = Some(UndoAction::UnresolveComment {
                     id: result.comment.id,
                 });
-                self.state.refresh_document_overlays();
                 self.state.mark_model_changed();
                 Some(StatusUpdate::Set(format!(
                     "Resolved comment #{}",
@@ -777,7 +773,6 @@ impl App {
         match client.unresolve_comment(id).await {
             Ok(result) => {
                 upsert_comment(&mut self.state.comments, result.comment.clone());
-                self.state.refresh_document_overlays();
                 self.state.mark_model_changed();
                 Some(StatusUpdate::Set(format!(
                     "Unresolved comment #{}",
@@ -805,7 +800,6 @@ impl App {
                         self.state.selected_comment_id = None;
                     }
                     self.state.pending_delete_comment_id = None;
-                    self.state.refresh_document_overlays();
                     self.state.mark_model_changed();
                     Some(StatusUpdate::Set(format!("Deleted comment #{id}")))
                 } else {
@@ -1121,7 +1115,22 @@ impl AppState {
     }
 
     pub fn mark_model_changed(&mut self) {
+        self.refresh_current_active_document_overlays();
         self.model_revision = self.model_revision.wrapping_add(1);
+    }
+
+    fn refresh_current_active_document_overlays(&mut self) {
+        let Some(key) = self.current_document_key() else {
+            self.active_document = None;
+            return;
+        };
+        let is_current = self
+            .active_document
+            .as_ref()
+            .is_some_and(|active| active.document().key == key);
+        if is_current {
+            self.refresh_document_overlays();
+        }
     }
 
     pub fn current_document_key(&self) -> Option<document::DocumentKey> {
@@ -1164,7 +1173,7 @@ impl AppState {
         }
     }
 
-    pub fn refresh_document_overlays(&mut self) {
+    fn refresh_document_overlays(&mut self) {
         let Some(file_path) = self
             .selected_file_entry()
             .map(|entry| entry.change.path.clone())
@@ -2313,7 +2322,7 @@ mod tests {
     }
 
     #[test]
-    fn active_document_state_tracks_document_local_state() {
+    fn mark_model_changed_refreshes_active_document_state() {
         let mut app = App::new(
             Config::default(),
             test_context(),
@@ -2329,7 +2338,7 @@ mod tests {
             end: TextAnchor { line: 4, column: 8 },
         });
 
-        app.state.ensure_active_document();
+        app.state.mark_model_changed();
 
         let active_document = app.state.active_document.as_ref().expect("active document");
         assert_eq!(active_document.scroll(), document::RowIndex(3));
@@ -4685,7 +4694,7 @@ mod tests {
             .expect("head 172 should render");
         app.state.diff_line_cursor = head_172_row;
         app.state.selected_comment_id = Some(33);
-        app.state.refresh_document_overlays();
+        app.state.mark_model_changed();
 
         let model = app.model();
 
