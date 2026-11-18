@@ -299,9 +299,10 @@ impl CommentMarkerSet {
             return true;
         }
 
-        !self.markers_by_line.get(&line).is_some_and(|marker| {
-            marker.kind.is_boundary_marker() && marker.start_line > current_comment.start
-        })
+        !self
+            .markers_by_line
+            .get(&line)
+            .is_some_and(|marker| marker.kind.is_boundary_marker())
     }
 }
 
@@ -403,10 +404,10 @@ impl MarkerCandidate {
     }
 
     fn is_preferred_to(self, other: &Self) -> bool {
-        self.start_line > other.start_line
-            || (self.start_line == other.start_line
-                && (self.kind.priority() > other.kind.priority()
-                    || (self.kind.priority() == other.kind.priority()
+        self.kind.priority() > other.kind.priority()
+            || (self.kind.priority() == other.kind.priority()
+                && (self.start_line > other.start_line
+                    || (self.start_line == other.start_line
                         && (self.range_len < other.range_len
                             || (self.range_len == other.range_len
                                 && self.comment_id > other.comment_id)))))
@@ -1389,7 +1390,28 @@ mod tests {
         );
 
         assert_marker(&markers, 18, Some(CommentMarkerKind::Start), false, true);
-        assert_marker(&markers, 20, Some(CommentMarkerKind::Join), false, true);
+        assert_marker(&markers, 19, Some(CommentMarkerKind::Join), false, true);
+        assert_marker(&markers, 20, Some(CommentMarkerKind::End), true, false);
+        assert_marker(&markers, 29, Some(CommentMarkerKind::End), false, true);
+    }
+
+    #[test]
+    fn nested_comment_end_marker_survives_current_comment_join() {
+        let markers = CommentMarkerSet::new(
+            &[
+                comment(8, 10, 20, false),
+                comment(13, 16, 23, false),
+                comment(9, 18, 29, false),
+            ],
+            Some(18),
+        );
+
+        assert_marker(&markers, 16, Some(CommentMarkerKind::Start), false, false);
+        assert_marker(&markers, 18, Some(CommentMarkerKind::Start), false, true);
+        assert_marker(&markers, 19, Some(CommentMarkerKind::Join), false, true);
+        assert_marker(&markers, 20, Some(CommentMarkerKind::End), false, false);
+        assert_marker(&markers, 23, Some(CommentMarkerKind::End), false, false);
+        assert_marker(&markers, 29, Some(CommentMarkerKind::End), false, true);
     }
 
     #[test]
