@@ -264,7 +264,7 @@ impl Document {
     }
 
     pub fn search(&mut self, query: impl Into<String>) {
-        self.overlays.search = SearchOverlay::new(query.into(), &self.rows);
+        self.overlays.search = SearchOverlay::new(query.into());
     }
 
     pub fn clear_search(&mut self) {
@@ -415,6 +415,8 @@ pub struct DocumentPosition {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DocumentComments {
     comments_by_id: BTreeMap<i64, usize>,
+    comments_by_row: BTreeMap<RowIndex, Vec<usize>>,
+    marker_comments_by_row: BTreeMap<RowIndex, Vec<usize>>,
     comments: Vec<DocumentComment>,
     selected_comment_id: Option<i64>,
     current_comment_id: Option<i64>,
@@ -442,8 +444,15 @@ impl DocumentComments {
             comment.selected = Some(comment.id) == selected_comment_id;
             comment.current = Some(comment.id) == current_comment_id;
         }
+        let comments_by_row =
+            row_index_for_comments(&comments, |comment| (comment.span.start, comment.span.end));
+        let marker_comments_by_row = row_index_for_comments(&comments, |comment| {
+            (comment.marker_rows.start, comment.marker_rows.end)
+        });
         Self {
             comments_by_id,
+            comments_by_row,
+            marker_comments_by_row,
             comments,
             selected_comment_id,
             current_comment_id,
@@ -473,24 +482,19 @@ impl DocumentComments {
     }
 
     pub fn current_comment_at(&self, row: RowIndex) -> Option<&DocumentComment> {
-        let candidates: Vec<&DocumentComment> = self
-            .comments
-            .iter()
-            .filter(|comment| comment.span.contains(row))
-            .collect();
         if let Some(selected) = self
             .selected_comment_id
-            .and_then(|id| candidates.iter().copied().find(|comment| comment.id == id))
+            .and_then(|id| self.comments_at(row).find(|comment| comment.id == id))
         {
             return Some(selected);
         }
         if let Some(current) = self
             .current_comment_id
-            .and_then(|id| candidates.iter().copied().find(|comment| comment.id == id))
+            .and_then(|id| self.comments_at(row).find(|comment| comment.id == id))
         {
             return Some(current);
         }
-        preferred_comment(candidates)
+        preferred_comment(self.comments_at(row))
     }
 
     pub fn marker_for_row(&self, row: RowIndex) -> CommentMarker {
@@ -505,9 +509,8 @@ impl DocumentComments {
     }
 
     pub fn markers_for_row(&self, row: RowIndex) -> Vec<RowCommentMarker> {
-        self.comments
-            .iter()
-            .filter(|comment| comment.marker_rows.contains(row))
+        self.marker_comments_at(row)
+            .into_iter()
             .map(|comment| RowCommentMarker {
                 comment_id: comment.id,
                 marker: CommentMarker::new(
@@ -581,19 +584,51 @@ impl DocumentComments {
     }
 
     fn current_marker_comment(&self, row: RowIndex) -> Option<&DocumentComment> {
-        let candidates: Vec<&DocumentComment> = self
-            .comments
-            .iter()
-            .filter(|comment| comment.marker_rows.contains(row))
-            .collect();
-        if let Some(current) = self
-            .current_comment_id
-            .and_then(|id| candidates.iter().copied().find(|comment| comment.id == id))
-        {
+        if let Some(current) = self.current_comment_id.and_then(|id| {
+            self.marker_comments_at(row)
+                .find(|comment| comment.id == id)
+        }) {
             return Some(current);
         }
-        preferred_comment(candidates)
+        preferred_comment(self.marker_comments_at(row))
     }
+
+    fn comments_at(&self, row: RowIndex) -> impl Iterator<Item = &DocumentComment> {
+        comments_for_row(&self.comments, &self.comments_by_row, row)
+    }
+
+    fn marker_comments_at(&self, row: RowIndex) -> impl Iterator<Item = &DocumentComment> {
+        comments_for_row(&self.comments, &self.marker_comments_by_row, row)
+    }
+}
+
+fn row_index_for_comments(
+    comments: &[DocumentComment],
+    rows: impl Fn(&DocumentComment) -> (RowIndex, RowIndex),
+) -> BTreeMap<RowIndex, Vec<usize>> {
+    let mut index = BTreeMap::new();
+    for (comment_index, comment) in comments.iter().enumerate() {
+        let (start, end) = rows(comment);
+        for row in start.0..=end.0 {
+            index
+                .entry(RowIndex(row))
+                .or_insert_with(Vec::new)
+                .push(comment_index);
+        }
+    }
+    index
+}
+
+fn comments_for_row<'a>(
+    comments: &'a [DocumentComment],
+    index: &'a BTreeMap<RowIndex, Vec<usize>>,
+    row: RowIndex,
+) -> impl Iterator<Item = &'a DocumentComment> {
+    index
+        .get(&row)
+        .into_iter()
+        .flat_map(|comment_indexes| comment_indexes.iter())
+        .filter_map(|comment_index| comments.get(*comment_index))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -612,12 +647,6 @@ pub struct MarkerRows {
     pub end: RowIndex,
 }
 
-impl MarkerRows {
-    fn contains(self, row: RowIndex) -> bool {
-        row >= self.start && row <= self.end
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RowCommentMarker {
     pub comment_id: i64,
@@ -627,63 +656,45 @@ pub struct RowCommentMarker {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SearchOverlay {
     pub query: Option<String>,
-    pub matches: Vec<SearchMatch>,
 }
 
 impl SearchOverlay {
-    pub fn new(query: String, rows: &[DocumentRow]) -> Self {
+    pub fn new(query: String) -> Self {
         if query.is_empty() {
             return Self::default();
         }
-        let matches = rows
-            .iter()
-            .enumerate()
-            .filter_map(|(row, document_row)| match document_row {
-                DocumentRow::Content(content) => Some((row, content.text.as_str())),
-                DocumentRow::Spacer => None,
-            })
-            .flat_map(|(row, text)| {
-                text.match_indices(&query)
-                    .map(move |(start, value)| SearchMatch {
-                        row: RowIndex(row),
-                        start: ColumnIndex(start),
-                        end: ColumnIndex(start + value.len()),
-                    })
-            })
-            .collect();
-        Self {
-            query: Some(query),
-            matches,
-        }
+        Self { query: Some(query) }
     }
 
-    fn render_runs_for<'a>(&'a self, row: RowIndex, text: &'a str) -> Vec<TextRun<'a>> {
-        let matches: Vec<&SearchMatch> = self
-            .matches
-            .iter()
-            .filter(|search_match| search_match.row == row)
-            .collect();
-        if matches.is_empty() {
+    fn render_runs_for<'a>(&'a self, _row: RowIndex, text: &'a str) -> Vec<TextRun<'a>> {
+        let Some(query) = self.query.as_deref() else {
             return vec![TextRun {
                 text: Cow::Borrowed(text),
                 kind: TextRunKind::Plain,
             }];
-        }
+        };
 
         let mut runs = Vec::new();
         let mut offset = 0;
-        for search_match in matches {
-            if search_match.start.0 > offset {
+        for (start, value) in text.match_indices(query) {
+            if start > offset {
                 runs.push(TextRun {
-                    text: Cow::Borrowed(&text[offset..search_match.start.0]),
+                    text: Cow::Borrowed(&text[offset..start]),
                     kind: TextRunKind::Plain,
                 });
             }
+            let end = start + value.len();
             runs.push(TextRun {
-                text: Cow::Borrowed(&text[search_match.start.0..search_match.end.0]),
+                text: Cow::Borrowed(&text[start..end]),
                 kind: TextRunKind::SearchMatch,
             });
-            offset = search_match.end.0;
+            offset = end;
+        }
+        if runs.is_empty() {
+            return vec![TextRun {
+                text: Cow::Borrowed(text),
+                kind: TextRunKind::Plain,
+            }];
         }
         if offset < text.len() {
             runs.push(TextRun {
@@ -693,13 +704,6 @@ impl SearchOverlay {
         }
         runs
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SearchMatch {
-    pub row: RowIndex,
-    pub start: ColumnIndex,
-    pub end: ColumnIndex,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1338,24 +1342,27 @@ fn current_comment_id_for_rows(
     cursor: Option<RowIndex>,
 ) -> Option<i64> {
     let cursor = cursor?;
-    let candidates: Vec<&DocumentComment> = comments
-        .iter()
-        .filter(|comment| comment.span.contains(cursor))
-        .collect();
-    if let Some(selected) = selected_comment_id
-        .and_then(|id| candidates.iter().copied().find(|comment| comment.id == id))
-    {
+    if let Some(selected) = selected_comment_id.and_then(|id| {
+        comments
+            .iter()
+            .find(|comment| comment.span.contains(cursor) && comment.id == id)
+    }) {
         return Some(selected.id);
     }
-    preferred_comment(candidates).map(|comment| comment.id)
+    preferred_comment(
+        comments
+            .iter()
+            .filter(|comment| comment.span.contains(cursor)),
+    )
+    .map(|comment| comment.id)
 }
 
-fn preferred_comment(candidates: Vec<&DocumentComment>) -> Option<&DocumentComment> {
-    let max_start = candidates.iter().map(|comment| comment.span.start).max()?;
+fn preferred_comment<'a>(
+    candidates: impl IntoIterator<Item = &'a DocumentComment>,
+) -> Option<&'a DocumentComment> {
     candidates
         .into_iter()
-        .filter(|comment| comment.span.start == max_start)
-        .max_by_key(|comment| comment.id)
+        .max_by_key(|comment| (comment.span.start, comment.id))
 }
 
 fn marker_kind(rows: MarkerRows, row: RowIndex) -> CommentMarkerKind {
@@ -1580,11 +1587,6 @@ mod tests {
             comments,
             search: SearchOverlay {
                 query: Some("needle".to_string()),
-                matches: vec![SearchMatch {
-                    row: RowIndex(0),
-                    start: ColumnIndex(1),
-                    end: ColumnIndex(3),
-                }],
             },
             selection: Some(VisibleSelection::Line(RowSpan {
                 start: RowIndex(0),
@@ -2120,6 +2122,21 @@ mod tests {
                 end: RowIndex(2)
             })
         );
+        assert_eq!(comments.comments_by_row.get(&RowIndex(0)), Some(&vec![0]));
+        assert_eq!(comments.comments_by_row.get(&RowIndex(1)), Some(&vec![0]));
+        assert_eq!(comments.comments_by_row.get(&RowIndex(2)), Some(&vec![1]));
+        assert_eq!(
+            comments.marker_comments_by_row.get(&RowIndex(0)),
+            Some(&vec![0])
+        );
+        assert_eq!(
+            comments.marker_comments_by_row.get(&RowIndex(1)),
+            Some(&vec![0])
+        );
+        assert_eq!(
+            comments.marker_comments_by_row.get(&RowIndex(2)),
+            Some(&vec![1])
+        );
     }
 
     #[test]
@@ -2163,24 +2180,15 @@ mod tests {
         );
 
         document.search("42");
-        assert!(document.overlays().search.matches.is_empty());
+        let RenderLine::Content(rendered) = document.line(RowIndex(0)).expect("render line") else {
+            panic!("expected content render line");
+        };
+        assert_eq!(rendered.runs.len(), 1);
+        assert_eq!(rendered.runs[0].kind, TextRunKind::Plain);
+        assert_eq!(rendered.runs[0].text, Cow::Borrowed("needle hay needle"));
 
         document.search("needle");
-        assert_eq!(
-            document.overlays().search.matches,
-            vec![
-                SearchMatch {
-                    row: RowIndex(0),
-                    start: ColumnIndex(0),
-                    end: ColumnIndex(6),
-                },
-                SearchMatch {
-                    row: RowIndex(0),
-                    start: ColumnIndex(11),
-                    end: ColumnIndex(17),
-                },
-            ]
-        );
+        assert_eq!(document.overlays().search.query.as_deref(), Some("needle"));
         let RenderLine::Content(rendered) = document.line(RowIndex(0)).expect("render line") else {
             panic!("expected content render line");
         };
