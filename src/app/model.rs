@@ -210,9 +210,9 @@ pub struct SemanticSelection {
 }
 
 impl AppModel {
-    pub(crate) fn from_state(state: &AppState, revision: u64) -> Self {
+    pub(crate) fn from_state(state: &AppState) -> Self {
         Self {
-            revision,
+            revision: state.model_revision(),
             context: state.context.clone(),
             layout: AppLayout {
                 file_list_visible: state.show_file_list,

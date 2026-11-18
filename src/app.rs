@@ -92,7 +92,6 @@ pub struct DefinitionResults {
 pub struct App {
     pub state: AppState,
     pub config: Config,
-    model_revision: u64,
     client: Option<Client>,
     config_path: Option<PathBuf>,
     embedded_server: Option<tokio_util::sync::CancellationToken>,
@@ -109,7 +108,6 @@ impl App {
         Self {
             state,
             config,
-            model_revision: 0,
             client: None,
             config_path: None,
             embedded_server: None,
@@ -154,7 +152,7 @@ impl App {
         app.client = Some(client);
         app.config_path = config_path;
         app.state.on_file_changed();
-        app.mark_model_changed();
+        app.state.mark_model_changed();
         Ok(app)
     }
 
@@ -172,16 +170,8 @@ impl App {
         }
         self.config.layout.file_list_width = width;
         self.state.file_list_width = width;
-        self.mark_model_changed();
+        self.state.mark_model_changed();
         self.save_layout_config();
-    }
-
-    pub fn model_revision(&self) -> u64 {
-        self.model_revision
-    }
-
-    pub fn mark_model_changed(&mut self) {
-        self.model_revision = self.model_revision.wrapping_add(1);
     }
 
     fn save_layout_config(&self) {
@@ -281,7 +271,7 @@ impl App {
     }
 
     pub fn model(&self) -> AppModel {
-        AppModel::from_state(&self.state, self.model_revision)
+        AppModel::from_state(&self.state)
     }
 
     pub fn interaction_context(&self) -> InteractionContext {
@@ -310,9 +300,6 @@ impl App {
         effects: Vec<CoreEffect>,
     ) -> AppOutput {
         let mut output = update::apply_core_effects(&mut self.state, viewport, effects);
-        if output.model_changed {
-            self.mark_model_changed();
-        }
         if output.take_pending_review_toggle() {
             self.pending_work.push_back(AppWork::ToggleSelectedReview);
         }
@@ -330,11 +317,7 @@ impl App {
         viewport: &impl AppViewport,
         search_match: &SearchMatch,
     ) -> AppOutput {
-        let output = update::navigate_to_search_match(&mut self.state, viewport, search_match);
-        if output.model_changed {
-            self.mark_model_changed();
-        }
-        output
+        update::navigate_to_search_match(&mut self.state, viewport, search_match)
     }
 
     pub fn navigate_to_definition(
@@ -342,11 +325,7 @@ impl App {
         viewport: &impl AppViewport,
         definition: &DefinitionLocation,
     ) -> AppOutput {
-        let output = update::navigate_to_definition(&mut self.state, viewport, definition);
-        if output.model_changed {
-            self.mark_model_changed();
-        }
-        output
+        update::navigate_to_definition(&mut self.state, viewport, definition)
     }
 
     async fn toggle_selected_review(&mut self) -> Option<StatusUpdate> {
@@ -363,7 +342,7 @@ impl App {
         match result {
             Ok(action_result) => {
                 self.apply_review_result(&action_result);
-                self.mark_model_changed();
+                self.state.mark_model_changed();
                 None
             }
             Err(e) => {
@@ -377,7 +356,7 @@ impl App {
         match self.list_changed_files().await {
             Ok(result) => {
                 self.replace_file_snapshot(result.files);
-                self.mark_model_changed();
+                self.state.mark_model_changed();
                 None
             }
             Err(e) => Some(StatusUpdate::Set(format!("Failed to reload files: {e}"))),
@@ -464,7 +443,7 @@ impl App {
                         matches,
                         selected: 0,
                     });
-                    self.mark_model_changed();
+                    self.state.mark_model_changed();
                     Some(StatusUpdate::Clear)
                 }
             },
@@ -495,7 +474,7 @@ impl App {
                             definitions,
                             selected: 0,
                         });
-                        self.mark_model_changed();
+                        self.state.mark_model_changed();
                         Some(StatusUpdate::Clear)
                     }
                 }
@@ -524,7 +503,7 @@ impl App {
                 self.state.selected_file = file_index;
                 self.state.on_file_changed();
                 self.state.diff_line_cursor = (line_number as usize).saturating_sub(1);
-                self.mark_model_changed();
+                self.state.mark_model_changed();
                 Some(StatusUpdate::Clear)
             }
             core_search::LocationTarget::External {
@@ -610,6 +589,8 @@ fn notification_requires_snapshot_reload(notifications: &[Notification]) -> bool
 /// Central application state for review data and domain interaction.
 /// Input events mutate it, sometimes by sending requests to the server.
 pub struct AppState {
+    /// Monotonic revision of the UI-renderable app model.
+    model_revision: u64,
     /// Resolved context from the server (repo root, worktree, refs).
     pub context: ConnectionContext,
     /// All files changed in base..HEAD, with their review status and diffs.
@@ -691,6 +672,7 @@ impl AppState {
         review::sort_files(&mut files);
 
         Self {
+            model_revision: 0,
             context,
             files,
             // Index 0 is the first unreviewed file (due to sort order).
@@ -723,6 +705,14 @@ impl AppState {
             definition_results: None,
             core_interaction: CoreInteractionEngine::new(),
         }
+    }
+
+    pub fn model_revision(&self) -> u64 {
+        self.model_revision
+    }
+
+    pub fn mark_model_changed(&mut self) {
+        self.model_revision = self.model_revision.wrapping_add(1);
     }
 
     /// The currently selected file, if any.
