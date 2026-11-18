@@ -1,6 +1,6 @@
 # Stage 13d: Gutter Markers for Comments
 
-## Status: In Progress
+## Status: Complete
 
 ## Order
 
@@ -39,8 +39,11 @@ closed and without inserting comment text into the diff itself.
    - Resolved multiline uses the same connected style with `○` instead
      of `●`.
 
-3. Nested comments are indicated by additional markers in the gutter
-   (extra `●` or `○` as appropriate).
+3. Nested comments are collapsed into one gutter marker column. The visible
+   marker is chosen deterministically:
+   - multiline start/end boundaries win over continuation lines,
+   - narrower nested ranges win over wider ranges at the same priority,
+   - newer comments win ties.
 
 4. Markers are visible whenever comments exist for the file. Their
    visibility is independent of whether the comments panel is open.
@@ -52,13 +55,17 @@ closed and without inserting comment text into the diff itself.
 
 ## Acceptance Criteria
 
-- [ ] Lines with comments show `●` (unresolved) or `○` (resolved) in
+- [x] Lines with comments show `●` (unresolved) or `○` (resolved) in
       the gutter.
-- [ ] Multiline comments use the connected `●` / `┃` / `●` (or `○` /
+- [x] Multiline comments use the connected `●` / `┃` / `●` (or `○` /
       `┃` / `○`) style.
-- [ ] Nested comments produce multiple markers on the relevant lines.
-- [ ] Markers remain visible when the comments panel is closed.
-- [ ] No dependency on inline block rendering or virtual line changes.
+- [x] Nested comments collapse into one deterministic marker column.
+- [x] Markers remain visible when the comments panel is closed.
+- [x] No dependency on inline block rendering or virtual line changes.
+- [x] Markers are shown in diff and full-file HEAD modes, and hidden in
+      full-file base mode while comments remain HEAD-only.
+- [x] Active comment markers are highlighted without hiding nested
+      boundary markers.
 
 ## Implementation Notes
 
@@ -93,4 +100,17 @@ closed and without inserting comment text into the diff itself.
   hollow when appropriate.
 - Fixed rendered-text extraction paths to convert character columns to byte
   indexes before slicing, avoiding crashes on multibyte marker glyphs.
+- Added cursor-aware active comment marker highlighting with a dedicated
+  blue diff style colour.
+- Hid comment markers from full-file base mode while comments are still
+  HEAD-only.
+- Fixed diff render caching so active marker highlights update as the cursor
+  moves.
+- Added side-by-side geometry for the right-hand content column so cursor,
+  search, selection, and clipboard extraction do not bleed across columns.
+- Added spacing between line numbers and markers, and between side-by-side
+  markers and source text.
+- Added coverage for resolved/unresolved single-line and multiline markers,
+  multi-level nesting, shared boundaries, active outer/middle/inner comments,
+  identical-range tie breaks, render colours, and side-by-side spacing.
 - Verified with `cargo test`.
