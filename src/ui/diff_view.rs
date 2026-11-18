@@ -301,7 +301,7 @@ fn build_content(
     // Reviewed file summary mode.
     if matches!(entry.status, ReviewStatus::Reviewed { .. }) && !state.reviewed_diff_expanded {
         let at = match &entry.status {
-            ReviewStatus::Reviewed { at } => at.as_str(),
+            ReviewStatus::Reviewed { at, .. } => at.as_str(),
             _ => "",
         };
         let title = format!(" {} ", entry.change.path);
@@ -439,6 +439,27 @@ fn build_title(state: &AppState, entry: &crate::model::FileEntry, total_hunks: u
 
     let ws_label = if state.ignore_whitespace { " -w" } else { "" };
 
+    // Show diff base indicator for reviewed files when not using merge base.
+    let base_label = if !state.show_merge_base {
+        let has_reviewed_commit = matches!(
+            &entry.status,
+            ReviewStatus::Reviewed {
+                reviewed_commit: Some(_),
+                ..
+            } | ReviewStatus::Changed {
+                reviewed_commit: Some(_),
+                ..
+            }
+        );
+        if has_reviewed_commit {
+            " [since review]"
+        } else {
+            ""
+        }
+    } else {
+        ""
+    };
+
     let hunk_info = if total_hunks == 0 {
         String::new()
     } else if let Some(idx) = state.current_hunk_index() {
@@ -447,7 +468,7 @@ fn build_title(state: &AppState, entry: &crate::model::FileEntry, total_hunks: u
         String::new()
     };
 
-    format!(" {path}{mode_label}{ws_label}{hunk_info} ")
+    format!(" {path}{mode_label}{ws_label}{base_label}{hunk_info} ")
 }
 
 // ---------------------------------------------------------------------------

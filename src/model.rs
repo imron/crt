@@ -94,11 +94,17 @@ pub enum ReviewStatus {
     Reviewed {
         /// ISO 8601 timestamp of when the file was reviewed.
         at: String,
+        /// The HEAD commit OID at the time the file was reviewed.
+        #[serde(default)]
+        reviewed_commit: Option<String>,
     },
     /// Was reviewed, but the diff has changed since the review.
     Changed {
         /// ISO 8601 timestamp of the original review (now stale).
         at: String,
+        /// The HEAD commit OID at the time the file was reviewed.
+        #[serde(default)]
+        reviewed_commit: Option<String>,
     },
 }
 
@@ -468,6 +474,7 @@ mod tests {
 
         let reviewed = ReviewStatus::Reviewed {
             at: "2026-03-29T14:30:00+10:00".to_string(),
+            reviewed_commit: Some("abc123".to_string()),
         };
         let json = serde_json::to_string(&reviewed).unwrap();
         assert!(json.contains("\"status\":\"reviewed\""));
@@ -475,6 +482,7 @@ mod tests {
 
         let changed = ReviewStatus::Changed {
             at: "2026-03-29T14:30:00+10:00".to_string(),
+            reviewed_commit: Some("abc123".to_string()),
         };
         let json = serde_json::to_string(&changed).unwrap();
         assert!(json.contains("\"status\":\"changed\""));
@@ -486,9 +494,11 @@ mod tests {
             ReviewStatus::Unreviewed,
             ReviewStatus::Reviewed {
                 at: "2026-03-29T14:30:00+10:00".to_string(),
+                reviewed_commit: Some("abc123".to_string()),
             },
             ReviewStatus::Changed {
                 at: "2026-03-29T14:30:00+10:00".to_string(),
+                reviewed_commit: Some("abc123".to_string()),
             },
         ];
 

@@ -656,6 +656,37 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             return;
         }
 
+        (KeyCode::Char('m'), KeyModifiers::NONE) => {
+            // Toggle diff base between merge base and reviewed commit.
+            let has_reviewed_commit = state.selected_file_entry().is_some_and(|e| {
+                matches!(
+                    &e.status,
+                    ReviewStatus::Reviewed {
+                        reviewed_commit: Some(_),
+                        ..
+                    } | ReviewStatus::Changed {
+                        reviewed_commit: Some(_),
+                        ..
+                    }
+                )
+            });
+            if has_reviewed_commit {
+                state.show_merge_base = !state.show_merge_base;
+                state.reload_current_diff();
+                state.diff_cache = None;
+                let label = if state.show_merge_base {
+                    "Diff base: merge base"
+                } else {
+                    "Diff base: since review"
+                };
+                state.status_message = Some((label.to_string(), Instant::now()));
+            } else {
+                state.status_message =
+                    Some(("File not yet reviewed".to_string(), Instant::now()));
+            }
+            return;
+        }
+
         (KeyCode::Char(']'), KeyModifiers::CONTROL) => {
             // Go-to-definition: extract word under cursor and request definition.
             request_go_to_definition(state);

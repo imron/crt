@@ -161,10 +161,20 @@ pub async fn handle_list_changed_files(
                 Some(review) if review.diff_hash == diff.diff_hash => {
                     model::ReviewStatus::Reviewed {
                         at: review.reviewed_at.clone(),
+                        reviewed_commit: if review.reviewed_commit.is_empty() {
+                            None
+                        } else {
+                            Some(review.reviewed_commit.clone())
+                        },
                     }
                 }
                 Some(review) => model::ReviewStatus::Changed {
                     at: review.reviewed_at.clone(),
+                    reviewed_commit: if review.reviewed_commit.is_empty() {
+                        None
+                    } else {
+                        Some(review.reviewed_commit.clone())
+                    },
                 },
             };
 
@@ -277,19 +287,21 @@ pub async fn handle_mark_reviewed(
     let merge_base = ctx.merge_base.clone();
     let file_path = p.file_path.clone();
 
-    let diff_hash = {
+    let (diff_hash, reviewed_commit) = {
         let wt = worktree.clone();
         let mb = merge_base.clone();
         let fp = file_path.clone();
-        let result = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
-            let repo = git::Repo::open(&wt)?;
-            let diff = repo.diff_file_workdir(&mb, &fp)?;
-            Ok(diff.diff_hash)
-        })
-        .await;
+        let result =
+            tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
+                let repo = git::Repo::open(&wt)?;
+                let diff = repo.diff_file_workdir(&mb, &fp)?;
+                let head_oid = repo.resolve_commit("HEAD")?;
+                Ok((diff.diff_hash, head_oid))
+            })
+            .await;
 
         match result {
-            Ok(Ok(hash)) => hash,
+            Ok(Ok(pair)) => pair,
             Ok(Err(e)) => {
                 return JsonRpcResponse::error(id.clone(), ERR_INTERNAL, format!("{e:#}"));
             }
@@ -306,7 +318,13 @@ pub async fn handle_mark_reviewed(
     // Store the review in the database.
     let reviewed_at = {
         let db_guard = db.lock().await;
-        match db_guard.store_review(&merge_base, &ctx.head_ref, &file_path, &diff_hash) {
+        match db_guard.store_review(
+            &merge_base,
+            &ctx.head_ref,
+            &file_path,
+            &diff_hash,
+            &reviewed_commit,
+        ) {
             Ok(review) => review.reviewed_at,
             Err(e) => {
                 return JsonRpcResponse::error(
@@ -329,7 +347,10 @@ pub async fn handle_mark_reviewed(
 
     let result = model::ReviewActionResult {
         file_path,
-        status: model::ReviewStatus::Reviewed { at: reviewed_at },
+        status: model::ReviewStatus::Reviewed {
+            at: reviewed_at,
+            reviewed_commit: Some(reviewed_commit),
+        },
     };
 
     match serde_json::to_value(result) {

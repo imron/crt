@@ -265,6 +265,9 @@ pub struct AppState {
     pub diff_search_matches: Vec<(usize, usize, usize)>,
     /// Index of the currently focused match in `diff_search_matches`.
     pub diff_search_current: usize,
+    /// When true, force diffs to use merge_base even for reviewed files.
+    /// Toggled by the `m` keybinding.
+    pub show_merge_base: bool,
 }
 
 impl AppState {
@@ -346,12 +349,38 @@ impl AppState {
             diff_search_cursor: 0,
             diff_search_matches: Vec::new(),
             diff_search_current: 0,
+            show_merge_base: false,
         }
     }
 
     /// The currently selected file, if any.
     pub fn selected_file_entry(&self) -> Option<&FileEntry> {
         self.files.get(self.selected_file)
+    }
+
+    /// Return the effective diff base for the currently selected file.
+    ///
+    /// If the file has been reviewed and `show_merge_base` is false, use the
+    /// reviewed commit so the diff only shows changes since the review.
+    /// Otherwise fall back to the merge base.
+    pub fn effective_diff_base(&self) -> &str {
+        if !self.show_merge_base {
+            if let Some(entry) = self.selected_file_entry() {
+                let commit = match &entry.status {
+                    ReviewStatus::Reviewed {
+                        reviewed_commit, ..
+                    } => reviewed_commit.as_deref(),
+                    ReviewStatus::Changed {
+                        reviewed_commit, ..
+                    } => reviewed_commit.as_deref(),
+                    ReviewStatus::Unreviewed => None,
+                };
+                if let Some(c) = commit {
+                    return c;
+                }
+            }
+        }
+        &self.context.merge_base
     }
 
     /// Number of unreviewed files (Unreviewed + Changed status).
@@ -488,11 +517,12 @@ impl AppState {
     fn refresh_current_file_diff(&mut self) {
         if let Some(entry) = self.files.get(self.selected_file) {
             let path = entry.change.path.clone();
+            let diff_base = self.effective_diff_base().to_string();
             if let Ok(repo) =
                 crate::git::Repo::open(std::path::Path::new(&self.context.worktree))
             {
                 if let Ok(diff) = repo.diff_file_workdir_opts(
-                    &self.context.merge_base,
+                    &diff_base,
                     &path,
                     self.diff_algorithm,
                     self.ignore_whitespace,
@@ -512,11 +542,12 @@ impl AppState {
     pub fn reload_current_diff(&mut self) {
         if let Some(entry) = self.files.get(self.selected_file) {
             let path = entry.change.path.clone();
+            let diff_base = self.effective_diff_base().to_string();
             if let Ok(repo) =
                 crate::git::Repo::open(std::path::Path::new(&self.context.worktree))
             {
                 if let Ok(diff) = repo.diff_file_workdir_opts(
-                    &self.context.merge_base,
+                    &diff_base,
                     &path,
                     self.diff_algorithm,
                     self.ignore_whitespace,
@@ -720,7 +751,10 @@ impl App {
             context,
             files,
         );
-        state.load_head_content();
+        // Refresh the first file's diff using the correct base (e.g.
+        // reviewed_commit for previously-reviewed files).  The server always
+        // computes diffs from merge_base, so we recompute locally here.
+        state.on_file_changed();
         let terminal = setup_terminal().context("Failed to set up terminal")?;
 
         Ok(Self {
