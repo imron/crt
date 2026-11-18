@@ -65,6 +65,8 @@ pub struct TuiState {
     pub last_click: Option<LastPointerClick>,
     /// True while the user is dragging the file list / diff pane border.
     pub dragging_border: bool,
+    /// Whether the help overlay is visible.
+    pub show_help: bool,
     /// Current input mode (Normal vs Command).
     pub input_mode: InputMode,
     /// Command-mode input buffer (the text after `:`).

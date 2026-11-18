@@ -21,7 +21,6 @@ const CTRL_C_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub fn interaction_context(state: &AppState) -> InteractionContext {
     InteractionContext {
-        help_visible: state.show_help,
         search_results_visible: state.search_results.is_some(),
         definition_results_visible: state.definition_results.is_some(),
         focused_pane: Some(match state.pane_focus {
@@ -86,12 +85,7 @@ pub fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> boo
             CoreEffect::Suspend => {
                 state.should_suspend = true;
             }
-            CoreEffect::ShowHelp => {
-                state.show_help = true;
-            }
-            CoreEffect::DismissHelp => {
-                state.show_help = false;
-            }
+            CoreEffect::ShowHelp | CoreEffect::DismissHelp => {}
             CoreEffect::ReviewToggle => {
                 toggle_review(state);
                 state.status_message = None;

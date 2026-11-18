@@ -12,7 +12,7 @@ use super::state::{InputMode, TuiState};
 use crate::app::AppState;
 use crate::app_update;
 use crate::core::{
-    InputEvent, InputModifiers, Key as CoreKey, KeyEvent as CoreKeyEvent,
+    InputEvent, InputModifiers, InteractionContext, Key as CoreKey, KeyEvent as CoreKeyEvent,
     KeyEventKind as CoreKeyEventKind,
 };
 
@@ -59,8 +59,15 @@ fn dispatch_core_input(
     };
     let effects = state
         .core_interaction
-        .handle_input(event, &app_update::interaction_context(state));
+        .handle_input(event, &interaction_context(state, tui_state));
     apply_core_effects(state, tui_state, effects)
+}
+
+fn interaction_context(state: &AppState, tui_state: &TuiState) -> InteractionContext {
+    InteractionContext {
+        help_visible: tui_state.show_help,
+        ..app_update::interaction_context(state)
+    }
 }
 
 fn submit_active_prompt(state: &mut AppState, tui_state: &mut TuiState, value: String) -> bool {
@@ -106,7 +113,7 @@ pub fn handle_key_event(state: &mut AppState, tui_state: &mut TuiState, key: Cro
         return;
     }
 
-    if state.show_help {
+    if tui_state.show_help {
         dispatch_core_input(state, tui_state, key);
         return;
     }

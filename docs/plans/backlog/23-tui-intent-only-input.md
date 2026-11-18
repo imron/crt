@@ -120,6 +120,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   TUI-owned state, with prompt core effects applied at the TUI boundary.
 - Moved active mouse selection, drag anchors, double-click tracking, and border
   drag state into TUI-owned state.
+- Moved help overlay visibility into TUI-owned state while keeping core input
+  routing aware of whether help is visible.
 
 ## Acceptance Criteria
 
