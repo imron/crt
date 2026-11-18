@@ -236,13 +236,13 @@ mod tests {
     }
 
     #[test]
-    fn full_file_base_view_hides_comment_markers() {
+    fn full_file_base_view_allocates_comment_gutter() {
         let styles = StyleConfig::default();
         let diff = diff_panel(ContentMode::FullFile, RenderVariant::BaseVersion);
 
         let (_, _, _, _, _, _, comment_marker_w) = build_content(&diff, &styles, 80);
 
-        assert_eq!(comment_marker_w, 0);
+        assert_eq!(comment_marker_w, 1);
     }
 
     #[test]

@@ -28,8 +28,10 @@ impl CommentMarker {
     }
 }
 
-pub fn marker_column_width(markers: &CommentMarkerSet) -> usize {
-    usize::from(markers.has_markers())
+pub fn marker_column_width(_markers: &CommentMarkerSet) -> usize {
+    // Always allocate the column so content doesn't shift when comments
+    // are added or removed.
+    1
 }
 
 pub fn marker_for_line(markers: &CommentMarkerSet, line: Option<u32>) -> CommentMarker {
