@@ -1,20 +1,25 @@
 # Visual Line Abstraction
 
-## Status: Not Started
+## Status: Abandoned
 
 ## Goal
 
-Introduce a `LineType` enum and a minimal `LineView` abstraction so that
-the diff view can support different kinds of visual rows while keeping
-cursor navigation, scrolling, and rendering logic simple and consistent.
+This plan is abandoned. Inline comment rows are no longer part of the Stage 13
+comment workflow, so the diff view does not need a visual-row abstraction for
+comment display.
 
 ## Why
 
-Cursor navigation must be able to land on and move through different kinds
-of visual rows. A stable abstraction for "what kind of row is this?" and
-"how do logical source lines map to visual rows?" lets us add rows of
-different types without scattering special-case logic across cursor,
-navigation, search, and rendering code.
+The comments panel and the file panel's `Unresolved Comments` section cover
+the review workflows that inline rows were intended to support. Keeping the
+diff renderer simple is preferable until another concrete feature needs
+virtual rows.
+
+## Previous Goal
+
+Introduce a `LineType` enum and a minimal `LineView` abstraction so that the
+diff view can support different kinds of visual rows while keeping cursor
+navigation, scrolling, and rendering logic simple and consistent.
 
 ## Design Decisions
 
@@ -95,4 +100,5 @@ navigation, search, and rendering code.
 
 ## Progress
 
-- (To be filled)
+- Abandoned after the Stage 13 workflow settled on panel-based comment display
+  and file-panel unresolved comment scanning.
