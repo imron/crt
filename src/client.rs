@@ -2,7 +2,7 @@
 //!
 //! Provides typed methods for all server API calls, hiding JSON-RPC details.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
@@ -423,6 +423,24 @@ impl Client {
             },
         )
         .await
+    }
+
+    pub async fn list_current_and_previous_unresolved_comments(
+        &self,
+        file_path: Option<&str>,
+        include_current_resolved: bool,
+    ) -> Result<review_types::ListCommentsResult> {
+        let current_scope = if include_current_resolved {
+            CommentScope::CurrentWithResolved
+        } else {
+            CommentScope::CurrentUnresolved
+        };
+        let mut result = self.list_comments(file_path, current_scope).await?;
+        let previous_unresolved = self
+            .list_comments(file_path, CommentScope::PreviousBasesUnresolved)
+            .await?;
+        append_unique_comments(&mut result.comments, previous_unresolved.comments);
+        Ok(result)
     }
 
     pub async fn get_comment(&self, id: i64) -> Result<review_types::CommentResult> {
@@ -882,4 +900,56 @@ fn jitter_delay(range: &RangeInclusive<Duration>) -> Duration {
         .map(|duration| duration.subsec_nanos() as u64)
         .unwrap_or(0);
     Duration::from_millis(start + (nanos % span))
+}
+
+fn append_unique_comments(
+    comments: &mut Vec<review_types::Comment>,
+    new_comments: Vec<review_types::Comment>,
+) {
+    let mut seen: BTreeSet<i64> = comments.iter().map(|comment| comment.id).collect();
+    for comment in new_comments {
+        if seen.insert(comment.id) {
+            comments.push(comment);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::review_types::{AnchorStatus, Comment};
+
+    #[test]
+    fn append_unique_comments_keeps_current_and_adds_previous_unresolved() {
+        let mut comments = vec![comment(1), comment(2)];
+
+        append_unique_comments(&mut comments, vec![comment(2), comment(3)]);
+
+        let ids = comments
+            .iter()
+            .map(|comment| comment.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![1, 2, 3]);
+    }
+
+    fn comment(id: i64) -> Comment {
+        Comment {
+            id,
+            merge_base: "merge-base".to_string(),
+            head_ref: "HEAD".to_string(),
+            file_path: "src/lib.rs".to_string(),
+            line_start: id,
+            line_end: id,
+            char_start: None,
+            char_end: None,
+            anchor_text: String::new(),
+            context_before: String::new(),
+            context_after: String::new(),
+            body: format!("comment {id}"),
+            resolved: false,
+            created_at: "2026-07-01T00:00:00+10:00".to_string(),
+            updated_at: "2026-07-01T00:00:00+10:00".to_string(),
+            anchor_status: AnchorStatus::Anchored,
+        }
+    }
 }

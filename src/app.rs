@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 
 use self::model::AppModel;
-use crate::client::{Client, ClientEvent, CommentScope, Notification};
+use crate::client::{Client, ClientEvent, Notification};
 use crate::config::Config;
 use crate::core::TextAnchor;
 use crate::core::command::Command;
@@ -18,8 +18,8 @@ use crate::core::search as core_search;
 use crate::core::{ConnectionState, InputEvent};
 use crate::protocol::NotificationKind;
 use crate::review_types::{
-    Comment, ConnectionContext, ContentMode, CreateCommentParams, DefinitionLocation, FileEntry,
-    ListCommentsResult, PaneFocus, RenderVariant, ReviewActionResult, ReviewStatus, SearchMatch,
+    ConnectionContext, ContentMode, CreateCommentParams, DefinitionLocation, FileEntry, PaneFocus,
+    RenderVariant, ReviewActionResult, ReviewStatus, SearchMatch,
 };
 use anyhow::{Context, Result};
 
@@ -66,28 +66,6 @@ pub struct ResetReviewSummary {
 pub enum ReviewStartup {
     Review(App),
     Reset(ResetReviewSummary),
-}
-
-async fn list_current_and_previous_unresolved_comments(
-    client: &Client,
-) -> Result<ListCommentsResult> {
-    let mut result = client
-        .list_comments(None, CommentScope::CurrentWithResolved)
-        .await?;
-    let previous_unresolved = client
-        .list_comments(None, CommentScope::PreviousBasesUnresolved)
-        .await?;
-    append_unique_comments(&mut result.comments, previous_unresolved.comments);
-    Ok(result)
-}
-
-fn append_unique_comments(comments: &mut Vec<Comment>, new_comments: Vec<Comment>) {
-    let mut seen: BTreeSet<i64> = comments.iter().map(|comment| comment.id).collect();
-    for comment in new_comments {
-        if seen.insert(comment.id) {
-            comments.push(comment);
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +206,10 @@ impl App {
                 Vec::new()
             }
         };
-        let comments = match list_current_and_previous_unresolved_comments(&client).await {
+        let comments = match client
+            .list_current_and_previous_unresolved_comments(None, true)
+            .await
+        {
             Ok(result) => result.comments,
             Err(e) => {
                 eprintln!("Warning: could not load comments: {e}");
@@ -314,7 +295,9 @@ impl App {
     }
 
     pub async fn list_comments(&self) -> Result<crate::review_types::ListCommentsResult> {
-        list_current_and_previous_unresolved_comments(self.client()?).await
+        self.client()?
+            .list_current_and_previous_unresolved_comments(None, true)
+            .await
     }
 
     async fn drain_notifications(&self) -> Result<Vec<Notification>> {
