@@ -43,8 +43,10 @@ fallback.
 
    | Style        | Languages                                             |
    | ------------ | ----------------------------------------------------- |
-   | `//`         | Rust, JavaScript, TypeScript, C, C++, Java, Go, Swift, Kotlin, Scala, Dart, PHP |
-   | `#`          | Python, Shell, Bash, Ruby, Perl, TOML, YAML, Dockerfile, Makefile |
+   | `//`         | Rust, JS, TypeScript, C, C++, Java, Go, Swift,        |
+   |              | Kotlin, Scala, Dart, PHP                              |
+   | `#`          | Python, Shell, Bash, Ruby, Perl, TOML, YAML,          |
+   |              | Dockerfile, Makefile                                  |
    | `--`         | SQL, Lua, Haskell                                     |
    | `<!-- -->`   | HTML, XML, Markdown, SVG, Vue                         |
    | `/* */`      | CSS, SCSS, LESS                                       |

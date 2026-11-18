@@ -144,14 +144,14 @@ UI-owned:
 | Current hotspot | Target core API/module |
 | --- | --- |
 | `src/tui/input.rs` key normalization | App/Core input handling |
-| `src/tui/input.rs` prompt submit/cancel | Prompt handshake (`prompt.rs` + `interaction.rs`) |
-| `src/app/update.rs` command/search/navigation reducers | Private implementation behind `App` methods over `AppModel` |
-| `src/tui/runtime.rs` pending async command execution | App-requested external work handled by runtime |
-| `src/tui/runtime.rs` review toggle RPC flow | Review service + app-owned result application |
-| `src/tui/runtime.rs` file-list reload | Review/diff services + snapshot policy |
-| `src/app.rs` diff/content/blame helpers | Diff service plus app-owned model projection |
-| `src/tui/input.rs` mouse normalization | UI adapter hit map -> semantic app input |
-| `src/tui/render/*` render data prep coupling | TUI rendering from `AppModel` plus TUI-owned hit maps |
+| `src/tui/input.rs` prompt submit/cancel | Prompt handshake |
+| `src/app/update.rs` reducers | Private implementation behind `App` |
+| `src/tui/runtime.rs` async commands | App-requested work run by runtime |
+| `src/tui/runtime.rs` review toggle RPC | Review service + app-owned result |
+| `src/tui/runtime.rs` file-list reload | Review/diff services + snapshots |
+| `src/app.rs` diff/content/blame helpers | Diff service + model projection |
+| `src/tui/input.rs` mouse normalization | Adapter hit map -> app input |
+| `src/tui/render/*` data prep coupling | Render `AppModel` + TUI hit maps |
 
 ## Stage 20 Artifacts
 
