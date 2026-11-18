@@ -81,7 +81,12 @@ private func nsImage(from data: UnsafePointer<UInt8>, size: Int) -> NSImage? {
         return nil
     }
     let bytes = Data(bytes: data, count: size)
-    return NSImage(data: bytes)
+    guard let image = NSImage(data: bytes) else {
+        return nil
+    }
+    // Keep transparent padding in the Dock tile; do not trim to opaque bounds.
+    image.alignmentRect = NSRect(origin: .zero, size: image.size)
+    return image
 }
 
 private func decodeSnapshot(_ data: UnsafePointer<UInt8>, _ size: Int) -> GuiSnapshot {
