@@ -421,6 +421,7 @@ pub struct ContentRow {
     pub text: String,
     pub blame: Option<BlameInfo>,
     pub source: SourceLocation,
+    pub changed_spans: Vec<ColumnSpan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -582,7 +583,8 @@ pub struct DocumentOverlays {
 
 impl DocumentOverlays {
     fn render_runs_for<'a>(&'a self, row: RowIndex, content: &'a ContentRow) -> Vec<TextRun<'a>> {
-        self.search.render_runs_for(row, content.text.as_str())
+        self.search
+            .render_runs_for(row, content.text.as_str(), &content.changed_spans)
     }
 }
 
@@ -935,43 +937,78 @@ impl SearchOverlay {
             })
     }
 
-    fn render_runs_for<'a>(&'a self, row: RowIndex, text: &'a str) -> Vec<TextRun<'a>> {
-        if self.query.is_none() {
+    fn render_runs_for<'a>(
+        &'a self,
+        row: RowIndex,
+        text: &'a str,
+        changed_spans: &'a [ColumnSpan],
+    ) -> Vec<TextRun<'a>> {
+        if self.query.is_none() && changed_spans.is_empty() {
             return vec![TextRun {
                 text: Cow::Borrowed(text),
                 kind: TextRunKind::Plain,
             }];
         }
 
-        let mut runs = Vec::new();
-        let mut offset = 0;
-        for span in self.match_spans_for(row, text) {
-            if span.columns.start.0 > offset {
-                runs.push(TextRun {
-                    text: Cow::Borrowed(&text[offset..span.columns.start.0]),
-                    kind: TextRunKind::Plain,
-                });
-            }
-            runs.push(TextRun {
-                text: Cow::Borrowed(&text[span.columns.start.0..span.columns.end.0]),
-                kind: TextRunKind::SearchMatch,
-            });
-            offset = span.columns.end.0;
+        let search_spans: Vec<ColumnSpan> = self
+            .match_spans_for(row, text)
+            .map(|search_match| search_match.columns)
+            .collect();
+        let mut boundaries =
+            Vec::with_capacity(2 + changed_spans.len() * 2 + search_spans.len() * 2);
+        boundaries.push(0);
+        boundaries.push(text.len());
+        for span in changed_spans.iter().chain(search_spans.iter()) {
+            boundaries.push(span.start.0.min(text.len()));
+            boundaries.push(span.end.0.min(text.len()));
         }
+        boundaries.sort_unstable();
+        boundaries.dedup();
+
+        let mut runs = Vec::with_capacity(boundaries.len().saturating_sub(1));
+        let mut search_index = 0;
+        let mut changed_index = 0;
+        for window in boundaries.windows(2) {
+            let start = window[0];
+            let end = window[1];
+            if start >= end {
+                continue;
+            }
+            advance_span_index(&search_spans, &mut search_index, start);
+            advance_span_index(changed_spans, &mut changed_index, start);
+            let kind = if span_at(&search_spans, search_index, start) {
+                TextRunKind::SearchMatch
+            } else if span_at(changed_spans, changed_index, start) {
+                TextRunKind::Changed
+            } else {
+                TextRunKind::Plain
+            };
+            runs.push(TextRun {
+                text: Cow::Borrowed(&text[start..end]),
+                kind,
+            });
+        }
+
         if runs.is_empty() {
             return vec![TextRun {
                 text: Cow::Borrowed(text),
                 kind: TextRunKind::Plain,
             }];
         }
-        if offset < text.len() {
-            runs.push(TextRun {
-                text: Cow::Borrowed(&text[offset..]),
-                kind: TextRunKind::Plain,
-            });
-        }
         runs
     }
+}
+
+fn advance_span_index(spans: &[ColumnSpan], index: &mut usize, offset: usize) {
+    while spans.get(*index).is_some_and(|span| span.end.0 <= offset) {
+        *index += 1;
+    }
+}
+
+fn span_at(spans: &[ColumnSpan], index: usize, offset: usize) -> bool {
+    spans
+        .get(index)
+        .is_some_and(|span| offset >= span.start.0 && offset < span.end.0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1011,6 +1048,7 @@ pub struct TextRun<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextRunKind {
     Plain,
+    Changed,
     SearchMatch,
 }
 
@@ -1415,25 +1453,41 @@ fn push_unified_hunk_rows(
         }
 
         let (deletion_end, addition_end) = paired_change_bounds(&hunk.lines, line_index);
-        for line in &hunk.lines[line_index..deletion_end] {
-            rows.push(DocumentRow::Content(content_row(
+        let deletions = &hunk.lines[line_index..deletion_end];
+        let additions = &hunk.lines[deletion_end..addition_end];
+        for (idx, line) in deletions.iter().enumerate() {
+            let text = trimmed_diff_content(line);
+            let changed_spans = additions
+                .get(idx)
+                .map(trimmed_diff_content)
+                .map(|paired| changed_spans_for_replacement(text, paired, DiffSide::Base))
+                .unwrap_or_default();
+            rows.push(DocumentRow::Content(content_row_with_changed_spans(
                 line.old_lineno.or(Some(*old_cursor)),
                 None,
-                trimmed_diff_content(line),
+                text,
                 LineKind::Deletion,
                 head_blame,
                 base_blame,
+                changed_spans,
             )));
             *old_cursor = old_cursor.saturating_add(1);
         }
-        for line in &hunk.lines[deletion_end..addition_end] {
-            rows.push(DocumentRow::Content(content_row(
+        for (idx, line) in additions.iter().enumerate() {
+            let text = trimmed_diff_content(line);
+            let changed_spans = deletions
+                .get(idx)
+                .map(trimmed_diff_content)
+                .map(|paired| changed_spans_for_replacement(paired, text, DiffSide::Head))
+                .unwrap_or_default();
+            rows.push(DocumentRow::Content(content_row_with_changed_spans(
                 None,
                 line.new_lineno.or(Some(*new_cursor)),
-                trimmed_diff_content(line),
+                text,
                 LineKind::Addition,
                 head_blame,
                 base_blame,
+                changed_spans,
             )));
             *new_cursor = new_cursor.saturating_add(1);
         }
@@ -1482,12 +1536,19 @@ fn push_side_by_side_hunk_rows(
         let additions = &hunk.lines[deletion_end..addition_end];
         for idx in 0..deletions.len().max(additions.len()) {
             if let Some(line) = deletions.get(idx) {
-                base_rows.push(DocumentRow::Content(side_content_row(
+                let text = trimmed_diff_content(line);
+                let changed_spans = additions
+                    .get(idx)
+                    .map(trimmed_diff_content)
+                    .map(|paired| changed_spans_for_replacement(text, paired, DiffSide::Base))
+                    .unwrap_or_default();
+                base_rows.push(DocumentRow::Content(side_content_row_with_changed_spans(
                     CommentAnchorSide::Base,
                     line.old_lineno.unwrap_or(*old_cursor),
-                    trimmed_diff_content(line),
+                    text,
                     LineKind::Deletion,
                     base_blame,
+                    changed_spans,
                 )));
                 *old_cursor = old_cursor.saturating_add(1);
             } else {
@@ -1495,12 +1556,19 @@ fn push_side_by_side_hunk_rows(
             }
 
             if let Some(line) = additions.get(idx) {
-                head_rows.push(DocumentRow::Content(side_content_row(
+                let text = trimmed_diff_content(line);
+                let changed_spans = deletions
+                    .get(idx)
+                    .map(trimmed_diff_content)
+                    .map(|paired| changed_spans_for_replacement(paired, text, DiffSide::Head))
+                    .unwrap_or_default();
+                head_rows.push(DocumentRow::Content(side_content_row_with_changed_spans(
                     CommentAnchorSide::Head,
                     line.new_lineno.unwrap_or(*new_cursor),
-                    trimmed_diff_content(line),
+                    text,
                     LineKind::Addition,
                     head_blame,
+                    changed_spans,
                 )));
                 *new_cursor = new_cursor.saturating_add(1);
             } else {
@@ -1543,6 +1611,150 @@ fn push_side_by_side_context_row(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffSide {
+    Base,
+    Head,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DiffToken {
+    start: usize,
+    end: usize,
+}
+
+fn changed_spans_for_replacement(old: &str, new: &str, side: DiffSide) -> Vec<ColumnSpan> {
+    let old_tokens = diff_tokens(old);
+    let new_tokens = diff_tokens(new);
+    if old_tokens.is_empty() || new_tokens.is_empty() {
+        return Vec::new();
+    }
+
+    let table = diff_lcs_table(old, new, &old_tokens, &new_tokens);
+    let lcs_len = table[old_tokens.len()][new_tokens.len()];
+    let max_tokens = old_tokens.len().max(new_tokens.len());
+    if lcs_len * 100 / max_tokens < 40 {
+        return Vec::new();
+    }
+
+    let mut old_changed = Vec::new();
+    let mut new_changed = Vec::new();
+    collect_changed_token_spans(
+        old,
+        new,
+        &old_tokens,
+        &new_tokens,
+        &table,
+        &mut old_changed,
+        &mut new_changed,
+    );
+    match side {
+        DiffSide::Base => old_changed,
+        DiffSide::Head => new_changed,
+    }
+}
+
+fn diff_tokens(text: &str) -> Vec<DiffToken> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut tokens = Vec::new();
+    let mut idx = 0;
+    while idx < chars.len() {
+        let start = chars[idx].0;
+        if chars[idx].1.is_alphanumeric() || chars[idx].1 == '_' {
+            while idx < chars.len() && (chars[idx].1.is_alphanumeric() || chars[idx].1 == '_') {
+                idx += 1;
+            }
+        } else {
+            idx += 1;
+        }
+        let end = chars.get(idx).map(|(byte, _)| *byte).unwrap_or(text.len());
+        tokens.push(DiffToken { start, end });
+    }
+    tokens
+}
+
+fn diff_lcs_table(
+    old: &str,
+    new: &str,
+    old_tokens: &[DiffToken],
+    new_tokens: &[DiffToken],
+) -> Vec<Vec<usize>> {
+    let mut table = vec![vec![0; new_tokens.len() + 1]; old_tokens.len() + 1];
+    for old_idx in 1..=old_tokens.len() {
+        for new_idx in 1..=new_tokens.len() {
+            let old_token = &old[old_tokens[old_idx - 1].start..old_tokens[old_idx - 1].end];
+            let new_token = &new[new_tokens[new_idx - 1].start..new_tokens[new_idx - 1].end];
+            if old_token == new_token {
+                table[old_idx][new_idx] = table[old_idx - 1][new_idx - 1] + 1;
+            } else {
+                table[old_idx][new_idx] =
+                    table[old_idx - 1][new_idx].max(table[old_idx][new_idx - 1]);
+            }
+        }
+    }
+    table
+}
+
+fn collect_changed_token_spans(
+    old: &str,
+    new: &str,
+    old_tokens: &[DiffToken],
+    new_tokens: &[DiffToken],
+    table: &[Vec<usize>],
+    old_changed: &mut Vec<ColumnSpan>,
+    new_changed: &mut Vec<ColumnSpan>,
+) {
+    let mut old_idx = old_tokens.len();
+    let mut new_idx = new_tokens.len();
+    while old_idx > 0 && new_idx > 0 {
+        let old_token = &old[old_tokens[old_idx - 1].start..old_tokens[old_idx - 1].end];
+        let new_token = &new[new_tokens[new_idx - 1].start..new_tokens[new_idx - 1].end];
+        if old_token == new_token {
+            old_idx -= 1;
+            new_idx -= 1;
+        } else if table[old_idx - 1][new_idx] >= table[old_idx][new_idx - 1] {
+            old_idx -= 1;
+            old_changed.push(token_span(old_tokens[old_idx]));
+        } else {
+            new_idx -= 1;
+            new_changed.push(token_span(new_tokens[new_idx]));
+        }
+    }
+    while old_idx > 0 {
+        old_idx -= 1;
+        old_changed.push(token_span(old_tokens[old_idx]));
+    }
+    while new_idx > 0 {
+        new_idx -= 1;
+        new_changed.push(token_span(new_tokens[new_idx]));
+    }
+    old_changed.reverse();
+    new_changed.reverse();
+    merge_adjacent_column_spans(old_changed);
+    merge_adjacent_column_spans(new_changed);
+}
+
+fn token_span(token: DiffToken) -> ColumnSpan {
+    ColumnSpan {
+        start: ColumnIndex(token.start),
+        end: ColumnIndex(token.end),
+    }
+}
+
+fn merge_adjacent_column_spans(spans: &mut Vec<ColumnSpan>) {
+    let mut merged: Vec<ColumnSpan> = Vec::with_capacity(spans.len());
+    for span in spans.drain(..) {
+        if let Some(last) = merged.last_mut()
+            && last.end == span.start
+        {
+            last.end = span.end;
+            continue;
+        }
+        merged.push(span);
+    }
+    *spans = merged;
+}
+
 fn content_row(
     old_lineno: Option<u32>,
     new_lineno: Option<u32>,
@@ -1561,6 +1773,22 @@ fn content_row(
             .and_then(|line| blame_for_line(head_blame, line))
             .or_else(|| old_lineno.and_then(|line| blame_for_line(base_blame, line))),
         source: source_from_lines(old_lineno, new_lineno),
+        changed_spans: Vec::new(),
+    }
+}
+
+fn content_row_with_changed_spans(
+    old_lineno: Option<u32>,
+    new_lineno: Option<u32>,
+    text: &str,
+    kind: LineKind,
+    head_blame: &[BlameLine],
+    base_blame: &[BlameLine],
+    changed_spans: Vec<ColumnSpan>,
+) -> ContentRow {
+    ContentRow {
+        changed_spans,
+        ..content_row(old_lineno, new_lineno, text, kind, head_blame, base_blame)
     }
 }
 
@@ -1579,6 +1807,21 @@ fn side_content_row(
         text: text.to_string(),
         blame: blame_for_line(blame, line),
         source: SourceLocation::single(side, line),
+        changed_spans: Vec::new(),
+    }
+}
+
+fn side_content_row_with_changed_spans(
+    side: CommentAnchorSide,
+    line: u32,
+    text: &str,
+    kind: LineKind,
+    blame: &[BlameLine],
+    changed_spans: Vec<ColumnSpan>,
+) -> ContentRow {
+    ContentRow {
+        changed_spans,
+        ..side_content_row(side, line, text, kind, blame)
     }
 }
 
@@ -1934,6 +2177,20 @@ mod tests {
         }
     }
 
+    fn similar_replacement_hunk() -> DiffHunk {
+        DiffHunk {
+            old_start: 2,
+            old_lines: 1,
+            new_start: 2,
+            new_lines: 1,
+            header: "@@ -2 +2 @@".to_string(),
+            lines: vec![
+                diff_line(LineKind::Deletion, "hello world", Some(2), None),
+                diff_line(LineKind::Addition, "hello earth", None, Some(2)),
+            ],
+        }
+    }
+
     fn segment(side: CommentAnchorSide, start: i64, end: i64) -> CommentAnchorSegment {
         segment_with_path("src/lib.rs", side, start, end)
     }
@@ -2181,6 +2438,76 @@ mod tests {
             panic!("expected addition content line");
         };
         assert_eq!(addition.source, SourceLocation::paired(None, Some(2)));
+    }
+
+    #[test]
+    fn unified_replacement_rows_precompute_word_level_changed_spans() {
+        let document = build_unified_document(&input(
+            key(ContentMode::Diff, RenderVariant::Inline),
+            &[similar_replacement_hunk()],
+            Some("one\nhello world\nthree\n"),
+            Some("one\nhello earth\nthree\n"),
+            &[],
+        ));
+
+        assert_eq!(
+            content(&document, 1).changed_spans,
+            vec![ColumnSpan {
+                start: ColumnIndex(6),
+                end: ColumnIndex(11)
+            }]
+        );
+        assert_eq!(
+            content(&document, 2).changed_spans,
+            vec![ColumnSpan {
+                start: ColumnIndex(6),
+                end: ColumnIndex(11)
+            }]
+        );
+
+        let RenderLine::Content(deletion) = document.line(RowIndex(1)).expect("deletion line")
+        else {
+            panic!("expected deletion content line");
+        };
+        assert_eq!(deletion.runs[0].kind, TextRunKind::Plain);
+        assert_eq!(deletion.runs[0].text, Cow::Borrowed("hello "));
+        assert_eq!(deletion.runs[1].kind, TextRunKind::Changed);
+        assert_eq!(deletion.runs[1].text, Cow::Borrowed("world"));
+
+        let RenderLine::Content(addition) = document.line(RowIndex(2)).expect("addition line")
+        else {
+            panic!("expected addition content line");
+        };
+        assert_eq!(addition.runs[0].kind, TextRunKind::Plain);
+        assert_eq!(addition.runs[0].text, Cow::Borrowed("hello "));
+        assert_eq!(addition.runs[1].kind, TextRunKind::Changed);
+        assert_eq!(addition.runs[1].text, Cow::Borrowed("earth"));
+    }
+
+    #[test]
+    fn side_by_side_replacement_rows_precompute_word_level_changed_spans() {
+        let (base, head) = build_side_by_side_structural_documents(&input(
+            key(ContentMode::Diff, RenderVariant::SideBySide),
+            &[similar_replacement_hunk()],
+            Some("one\nhello world\nthree\n"),
+            Some("one\nhello earth\nthree\n"),
+            &[],
+        ));
+
+        assert_eq!(
+            content(&base, 1).changed_spans,
+            vec![ColumnSpan {
+                start: ColumnIndex(6),
+                end: ColumnIndex(11)
+            }]
+        );
+        assert_eq!(
+            content(&head, 1).changed_spans,
+            vec![ColumnSpan {
+                start: ColumnIndex(6),
+                end: ColumnIndex(11)
+            }]
+        );
     }
 
     #[test]
@@ -3638,6 +3965,7 @@ mod tests {
                 text: "needle hay needle".to_string(),
                 blame: None,
                 source: SourceLocation::single(CommentAnchorSide::Head, 42),
+                changed_spans: Vec::new(),
             })],
             Vec::new(),
         );
@@ -3705,6 +4033,7 @@ mod tests {
                 text: "needle tail".to_string(),
                 blame: None,
                 source: SourceLocation::single(CommentAnchorSide::Head, 1),
+                changed_spans: Vec::new(),
             })],
             Vec::new(),
         );
@@ -3732,6 +4061,7 @@ mod tests {
                     text: "needle first needle".to_string(),
                     blame: None,
                     source: SourceLocation::single(CommentAnchorSide::Head, 1),
+                    changed_spans: Vec::new(),
                 }),
                 DocumentRow::Spacer,
                 DocumentRow::Content(ContentRow {
@@ -3742,6 +4072,7 @@ mod tests {
                     text: "second needle".to_string(),
                     blame: None,
                     source: SourceLocation::single(CommentAnchorSide::Head, 2),
+                    changed_spans: Vec::new(),
                 }),
             ],
             Vec::new(),
