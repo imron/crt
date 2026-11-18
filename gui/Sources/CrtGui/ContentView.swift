@@ -1,55 +1,98 @@
 import SwiftUI
 
 struct ContentView: View {
-    let snapshot: GuiSnapshot
+    @ObservedObject var store: GuiStore
+    @State private var selection: String?
 
     var body: some View {
-        VSplitView {
-            metadata
-                .padding()
+        NavigationSplitView {
             fileList
+        } detail: {
+            diffPane
         }
-        .frame(minWidth: 560, minHeight: 400)
-    }
-
-    private var metadata: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("crt")
-                .font(.largeTitle)
-            Text(snapshot.version)
-                .foregroundStyle(.secondary)
-            Divider()
-            labeled("Repository", snapshot.repoName)
-            labeled("Worktree", snapshot.worktree)
-            labeled("HEAD", snapshot.headRef)
-            labeled("Merge base", snapshot.mergeBase)
-            labeled("Server", snapshot.status)
+        .frame(minWidth: 800, minHeight: 480)
+        .onAppear {
+            selection = store.snapshot.selectedPath
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: store.snapshot.selectedPath) { _, path in
+            selection = path
+        }
+        .onChange(of: selection) { _, path in
+            guard let path, path != store.snapshot.selectedPath else {
+                return
+            }
+            store.selectFile(path)
+        }
     }
 
     private var fileList: some View {
-        List(snapshot.files) { file in
-            HStack {
+        List(store.snapshot.files, selection: $selection) { file in
+            VStack(alignment: .leading, spacing: 2) {
                 Text(file.path)
                     .font(.system(.body, design: .monospaced))
-                Spacer()
-                Text(file.status)
+                Text("\(file.status) · \(file.kind)")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                Text(file.kind)
-                    .foregroundStyle(.tertiary)
             }
+            .tag(file.path)
         }
-        .listStyle(.inset)
+        .listStyle(.sidebar)
+        .navigationTitle(store.snapshot.repoName)
     }
 
-    private func labeled(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .textSelection(.enabled)
+    @ViewBuilder
+    private var diffPane: some View {
+        if let diff = store.snapshot.diff {
+            DiffView(diff: diff)
+        } else {
+            ContentUnavailableView(
+                "No file selected",
+                systemImage: "doc.text",
+                description: Text("Choose a file from the sidebar.")
+            )
+        }
+    }
+}
+
+struct DiffView: View {
+    let diff: GuiDiff
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(diff.path)
+                .font(.headline)
+                .padding(8)
+            Divider()
+            if diff.isBinary {
+                Text("Binary file")
+                    .foregroundStyle(.secondary)
+                    .padding()
+            } else {
+                ScrollView([.horizontal, .vertical]) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(diff.lines.enumerated()), id: \.offset) { _, line in
+                            Text(line.content)
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(color(for: line.kind))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding(8)
+                }
+            }
+        }
+    }
+
+    private func color(for kind: String) -> Color {
+        switch kind {
+        case "addition":
+            return .green
+        case "deletion":
+            return .red
+        case "hunk":
+            return .cyan
+        default:
+            return .primary
         }
     }
 }

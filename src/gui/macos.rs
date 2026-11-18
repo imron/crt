@@ -4,8 +4,10 @@
 //! keeps the client and any embedded server alive on worker threads.
 //! Snapshot data crosses FFI as a JSON envelope (`{"data": ...}`).
 
+use std::cell::RefCell;
+
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::app;
 use crate::git;
@@ -13,6 +15,12 @@ use crate::review_types;
 
 unsafe extern "C" {
     fn crt_gui_run(data: *const u8, size: usize);
+    fn crt_gui_apply_snapshot(data: *const u8, size: usize);
+}
+
+// App is !Send (Rc document rows). Keep it on the GUI/main thread.
+thread_local! {
+    static SESSION: RefCell<Option<app::App>> = const { RefCell::new(None) };
 }
 
 #[derive(Serialize)]
@@ -24,6 +32,8 @@ struct GuiSnapshot {
     merge_base: String,
     status: String,
     files: Vec<GuiFile>,
+    selected_path: Option<String>,
+    diff: Option<GuiDiff>,
 }
 
 #[derive(Serialize)]
@@ -34,8 +44,34 @@ struct GuiFile {
 }
 
 #[derive(Serialize)]
+struct GuiDiff {
+    path: String,
+    is_binary: bool,
+    lines: Vec<GuiDiffLine>,
+}
+
+#[derive(Serialize)]
+struct GuiDiffLine {
+    kind: &'static str,
+    content: String,
+    old_lineno: Option<u32>,
+    new_lineno: Option<u32>,
+}
+
+#[derive(Serialize)]
 struct SnapshotEnvelope<'a> {
     data: &'a GuiSnapshot,
+}
+
+#[derive(Deserialize)]
+struct ActionEnvelope {
+    data: GuiAction,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum GuiAction {
+    SelectFile { path: String },
 }
 
 pub fn run_gui(base: Option<&str>, root: bool, reset: bool, standalone: bool) -> Result<()> {
@@ -50,8 +86,8 @@ pub fn run_gui(base: Option<&str>, root: bool, reset: bool, standalone: bool) ->
         }
         app::ReviewStartup::Review(app) => {
             let snapshot = snapshot_from_app(&app);
-            let json = serde_json::to_vec(&SnapshotEnvelope { data: &snapshot })
-                .context("Failed to serialize GUI snapshot")?;
+            let json = encode_snapshot(&snapshot)?;
+            store_session(app);
 
             // NSApplication.run() blocks until the window closes. Worker
             // threads keep driving the embedded server for that whole time.
@@ -60,10 +96,27 @@ pub fn run_gui(base: Option<&str>, root: bool, reset: bool, standalone: bool) ->
                 crt_gui_run(json.as_ptr(), json.len());
             }
 
-            rt.block_on(app.shutdown());
+            if let Some(app) = take_session() {
+                rt.block_on(app.shutdown());
+            }
             Ok(())
         }
     }
+}
+
+fn store_session(app: app::App) {
+    SESSION.with(|session| {
+        *session.borrow_mut() = Some(app);
+    });
+}
+
+fn take_session() -> Option<app::App> {
+    SESSION.with(|session| session.borrow_mut().take())
+}
+
+fn encode_snapshot(snapshot: &GuiSnapshot) -> Result<Vec<u8>> {
+    serde_json::to_vec(&SnapshotEnvelope { data: snapshot })
+        .context("Failed to serialize GUI snapshot")
 }
 
 fn snapshot_from_app(app: &app::App) -> GuiSnapshot {
@@ -73,6 +126,11 @@ fn snapshot_from_app(app: &app::App) -> GuiSnapshot {
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| context.worktree.clone());
+    let selected_path = app
+        .state
+        .selected_file_entry()
+        .map(|entry| entry.change.path.clone());
+    let diff = app.state.selected_file_entry().map(gui_diff);
 
     GuiSnapshot {
         version: format!("{} ({})", env!("CARGO_PKG_VERSION"), env!("CRT_BUILD_HASH")),
@@ -82,6 +140,8 @@ fn snapshot_from_app(app: &app::App) -> GuiSnapshot {
         merge_base: git::short_hash(&context.merge_base),
         status: "Connected".to_string(),
         files: app.state.files.iter().map(gui_file).collect(),
+        selected_path,
+        diff,
     }
 }
 
@@ -90,6 +150,33 @@ fn gui_file(entry: &review_types::FileEntry) -> GuiFile {
         path: entry.change.path.clone(),
         kind: change_kind_name(entry.change.kind),
         status: review_status_name(&entry.status),
+    }
+}
+
+fn gui_diff(entry: &review_types::FileEntry) -> GuiDiff {
+    let mut lines = Vec::new();
+    if !entry.diff.is_binary {
+        for hunk in &entry.diff.hunks {
+            lines.push(GuiDiffLine {
+                kind: "hunk",
+                content: hunk.header.clone(),
+                old_lineno: None,
+                new_lineno: None,
+            });
+            for line in &hunk.lines {
+                lines.push(GuiDiffLine {
+                    kind: diff_line_kind(line.kind),
+                    content: line.content.clone(),
+                    old_lineno: line.old_lineno,
+                    new_lineno: line.new_lineno,
+                });
+            }
+        }
+    }
+    GuiDiff {
+        path: entry.change.path.clone(),
+        is_binary: entry.diff.is_binary,
+        lines,
     }
 }
 
@@ -110,9 +197,62 @@ fn review_status_name(status: &review_types::ReviewStatus) -> &'static str {
     }
 }
 
+fn diff_line_kind(kind: review_types::LineKind) -> &'static str {
+    match kind {
+        review_types::LineKind::Context => "context",
+        review_types::LineKind::Addition => "addition",
+        review_types::LineKind::Deletion => "deletion",
+    }
+}
+
+fn apply_action(app: &mut app::App, action: GuiAction) {
+    match action {
+        GuiAction::SelectFile { path } => {
+            let Some(index) = app
+                .state
+                .files
+                .iter()
+                .position(|entry| entry.change.path == path)
+            else {
+                return;
+            };
+            let focus = app.state.focus_for_file(index);
+            app.state.select_file(index, focus, true);
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn crt_gui_submit_action(data: *const u8, size: usize) {
+    if data.is_null() || size == 0 {
+        return;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data, size) }.to_vec();
+    let action = match serde_json::from_slice::<ActionEnvelope>(&bytes) {
+        Ok(envelope) => envelope.data,
+        Err(_) => return,
+    };
+
+    let json = SESSION.with(|session| {
+        let mut session = session.borrow_mut();
+        let app = session.as_mut()?;
+        apply_action(app, action);
+        encode_snapshot(&snapshot_from_app(app)).ok()
+    });
+    let Some(json) = json else {
+        return;
+    };
+
+    unsafe {
+        crt_gui_apply_snapshot(json.as_ptr(), json.len());
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{GuiFile, GuiSnapshot, SnapshotEnvelope};
+    use super::{
+        ActionEnvelope, GuiAction, GuiDiff, GuiDiffLine, GuiFile, GuiSnapshot, SnapshotEnvelope,
+    };
 
     #[test]
     fn snapshot_envelope_uses_snake_case_keys() {
@@ -128,16 +268,34 @@ mod tests {
                 kind: "modified",
                 status: "unreviewed",
             }],
+            selected_path: Some("src/gui.rs".to_string()),
+            diff: Some(GuiDiff {
+                path: "src/gui.rs".to_string(),
+                is_binary: false,
+                lines: vec![GuiDiffLine {
+                    kind: "addition",
+                    content: "fn main() {}".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(1),
+                }],
+            }),
         };
         let json = serde_json::to_string(&SnapshotEnvelope { data: &snapshot }).unwrap();
         assert!(json.contains("\"data\""));
         assert!(json.contains("\"repo_name\""));
-        assert!(json.contains("\"head_ref\""));
-        assert!(json.contains("\"merge_base\""));
-        assert!(json.contains("\"files\""));
-        assert!(json.contains("src/gui.rs"));
+        assert!(json.contains("\"selected_path\""));
+        assert!(json.contains("\"old_lineno\""));
         assert!(!json.contains("repoName"));
-        assert!(!json.contains("headRef"));
-        assert!(!json.contains("mergeBase"));
+        assert!(!json.contains("selectedPath"));
+        assert!(!json.contains("oldLineno"));
+    }
+
+    #[test]
+    fn select_file_action_decodes_from_envelope() {
+        let json = r#"{"data":{"type":"select_file","path":"src/gui.rs"}}"#;
+        let envelope: ActionEnvelope = serde_json::from_str(json).unwrap();
+        match envelope.data {
+            GuiAction::SelectFile { path } => assert_eq!(path, "src/gui.rs"),
+        }
     }
 }

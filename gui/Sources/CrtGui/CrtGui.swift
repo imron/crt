@@ -3,19 +3,69 @@ import Foundation
 import SwiftUI
 
 private var retainedDelegate: AppDelegate?
+private var retainedStore: GuiStore?
+
+@_silgen_name("crt_gui_submit_action")
+func crt_gui_submit_action(_ data: UnsafePointer<UInt8>, _ size: Int)
 
 @_cdecl("crt_gui_run")
 public func crtGuiRun(_ data: UnsafePointer<UInt8>, _ size: Int) {
     let app = NSApplication.shared
     app.setActivationPolicy(.regular)
     let snapshot = decodeSnapshot(data, size)
+    let store = GuiStore(snapshot: snapshot)
+    retainedStore = store
 
-    let delegate = AppDelegate(snapshot: snapshot)
+    let delegate = AppDelegate(store: store)
     retainedDelegate = delegate
     app.delegate = delegate
     app.mainMenu = makeMainMenu()
     app.run()
 }
+
+@_cdecl("crt_gui_apply_snapshot")
+public func crtGuiApplySnapshot(_ data: UnsafePointer<UInt8>, _ size: Int) {
+    let snapshot = decodeSnapshot(data, size)
+    DispatchQueue.main.async {
+        retainedStore?.snapshot = snapshot
+    }
+}
+
+final class GuiStore: ObservableObject {
+    @Published var snapshot: GuiSnapshot
+
+    init(snapshot: GuiSnapshot) {
+        self.snapshot = snapshot
+    }
+
+    func selectFile(_ path: String) {
+        guard path != snapshot.selectedPath else {
+            return
+        }
+        let action = ActionEnvelope(data: SelectFileAction(path: path))
+        guard let json = try? snapshotEncoder.encode(action) else {
+            return
+        }
+        json.withUnsafeBytes { raw in
+            guard let ptr = raw.bindMemory(to: UInt8.self).baseAddress else {
+                return
+            }
+            crt_gui_submit_action(ptr, json.count)
+        }
+    }
+}
+
+private let snapshotDecoder: JSONDecoder = {
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    return decoder
+}()
+
+private let snapshotEncoder: JSONEncoder = {
+    let encoder = JSONEncoder()
+    encoder.keyEncodingStrategy = .convertToSnakeCase
+    return encoder
+}()
 
 private func decodeSnapshot(_ data: UnsafePointer<UInt8>, _ size: Int) -> GuiSnapshot {
     guard size > 0 else {
@@ -36,12 +86,6 @@ private func decodeSnapshot(_ data: UnsafePointer<UInt8>, _ size: Int) -> GuiSna
     }
 }
 
-private let snapshotDecoder: JSONDecoder = {
-    let decoder = JSONDecoder()
-    decoder.keyDecodingStrategy = .convertFromSnakeCase
-    return decoder
-}()
-
 private struct Envelope<T: Decodable>: Decodable {
     let data: T?
     let error: SnapshotError?
@@ -51,12 +95,38 @@ private struct SnapshotError: Decodable {
     let message: String
 }
 
-struct GuiFile: Decodable, Identifiable {
+private struct ActionEnvelope: Encodable {
+    let data: SelectFileAction
+}
+
+private struct SelectFileAction: Encodable {
+    let type = "select_file"
+    let path: String
+}
+
+struct GuiFile: Decodable, Identifiable, Hashable {
     let path: String
     let kind: String
     let status: String
 
     var id: String { path }
+}
+
+struct GuiDiffLine: Decodable, Identifiable {
+    let kind: String
+    let content: String
+    let oldLineno: UInt32?
+    let newLineno: UInt32?
+
+    var id: String {
+        "\(kind)-\(oldLineno ?? 0)-\(newLineno ?? 0)-\(content)"
+    }
+}
+
+struct GuiDiff: Decodable {
+    let path: String
+    let isBinary: Bool
+    let lines: [GuiDiffLine]
 }
 
 struct GuiSnapshot: Decodable {
@@ -67,6 +137,8 @@ struct GuiSnapshot: Decodable {
     let mergeBase: String
     let status: String
     let files: [GuiFile]
+    let selectedPath: String?
+    let diff: GuiDiff?
 
     static func invalid(_ message: String) -> GuiSnapshot {
         GuiSnapshot(
@@ -76,7 +148,9 @@ struct GuiSnapshot: Decodable {
             headRef: "",
             mergeBase: "",
             status: message,
-            files: []
+            files: [],
+            selectedPath: nil,
+            diff: nil
         )
     }
 }
@@ -97,18 +171,18 @@ private func makeMainMenu() -> NSMenu {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let snapshot: GuiSnapshot
+    private let store: GuiStore
     private var window: NSWindow?
 
-    init(snapshot: GuiSnapshot) {
-        self.snapshot = snapshot
+    init(store: GuiStore) {
+        self.store = store
         super.init()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let hosting = NSHostingView(rootView: ContentView(snapshot: snapshot))
+        let hosting = NSHostingView(rootView: ContentView(store: store))
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 960, height: 640),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
