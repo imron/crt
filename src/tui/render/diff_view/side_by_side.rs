@@ -57,8 +57,10 @@ pub fn build_side_by_side_diff(
     let has_blame = !head_blame.is_empty() || !base_blame.is_empty();
     let blame_w = if has_blame { BLAME_COL_WIDTH + 1 } else { 0 };
 
-    // Each column: [blame + " "] + gutter + " " + content.  Middle divider is " │ ".
-    let col_fixed = blame_w + gutter_w + comment_marker_w + 1;
+    // Each column: [blame + " "] + gutter + " " + marker + " " + content.
+    // Middle divider is " │ ".
+    let marker_sep = usize::from(comment_marker_w > 0);
+    let col_fixed = blame_w + gutter_w + comment_marker_w + marker_sep + 1;
     let divider_w = 3; // " │ "
     let available = inner_w.saturating_sub(col_fixed * 2 + divider_w);
     let col_w = available / 2;
@@ -127,6 +129,9 @@ pub fn build_side_by_side_diff(
                 marker_style,
             ));
         }
+        if comment_marker.width() > 0 {
+            spans.push(Span::styled(" ", gutter_style));
+        }
 
         if let Some((word_spans, em_style)) = emphasis {
             let mut chars = 0;
@@ -169,6 +174,7 @@ pub fn build_side_by_side_diff(
         spans.push(Span::styled(num, gutter_style));
         if comment_marker_w > 0 {
             spans.push(Span::styled(" ".repeat(comment_marker_w), gutter_style));
+            spans.push(Span::styled(" ", gutter_style));
         }
         spans.push(Span::styled(
             " ".repeat(col_w),
@@ -393,5 +399,44 @@ pub fn build_side_by_side_diff(
         hunk_first_changes,
         gutter_w,
         comment_marker_w,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::model::CommentAttachment;
+    use crate::config::DiffStyle;
+    use crate::review_types::AnchorStatus;
+
+    #[test]
+    fn side_by_side_separates_comment_marker_and_source() {
+        let comments = [CommentAttachment {
+            id: 1,
+            line_start: 1,
+            line_end: 1,
+            resolved: false,
+            anchor_status: AnchorStatus::Anchored,
+        }];
+        let markers = CommentMarkerSet::new(&comments, None);
+
+        let built = build_side_by_side_diff(
+            &DiffStyle::default(),
+            Color::Black,
+            &[],
+            Some("source\n"),
+            &[],
+            &[],
+            &markers,
+            Color::Blue,
+            80,
+        );
+        let rendered: String = built.lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(rendered.contains("● source"));
     }
 }
