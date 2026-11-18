@@ -79,8 +79,8 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState) {
     }
 
     // Render mouse selection highlight on top of everything.
-    if state.mouse_selection.is_some() {
-        draw_selection_highlight(frame, state);
+    if tui_state.mouse_selection.is_some() {
+        draw_selection_highlight(frame, state, tui_state);
     }
 
     // Search results overlay.
@@ -103,8 +103,8 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState) {
 // Selection highlight
 // ---------------------------------------------------------------------------
 
-fn draw_selection_highlight(frame: &mut Frame, state: &AppState) {
-    let Some(sel) = &state.mouse_selection else {
+fn draw_selection_highlight(frame: &mut Frame, state: &AppState, tui_state: &TuiState) {
+    let Some(sel) = &tui_state.mouse_selection else {
         return;
     };
 

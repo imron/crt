@@ -69,45 +69,6 @@ pub struct JumpLocation {
 }
 
 // ---------------------------------------------------------------------------
-// Mouse selection
-// ---------------------------------------------------------------------------
-
-/// An in-progress or completed text selection via mouse drag.
-#[derive(Debug, Clone)]
-pub struct MouseSelection {
-    /// Which pane the selection is confined to.
-    pub pane: PaneFocus,
-    /// Start position in pane semantic text coordinates.
-    pub start: TextAnchor,
-    /// Current end position in pane semantic text coordinates.
-    pub end: TextAnchor,
-    /// Set when selection was created by double-click word selection.
-    /// The Up event should not re-extract text (it was already copied).
-    pub word_selected: bool,
-}
-
-impl MouseSelection {
-    /// Normalize so start is before end (handles upward/leftward drags).
-    pub fn normalized(&self) -> (TextAnchor, TextAnchor) {
-        if self.start.line < self.end.line
-            || (self.start.line == self.end.line && self.start.column <= self.end.column)
-        {
-            (self.start, self.end)
-        } else {
-            (self.end, self.start)
-        }
-    }
-}
-
-/// Last semantic content click, used for double-click detection.
-#[derive(Debug, Clone)]
-pub struct LastPointerClick {
-    pub when: Instant,
-    pub pane: PaneFocus,
-    pub anchor: TextAnchor,
-}
-
-// ---------------------------------------------------------------------------
 // Application state
 // ---------------------------------------------------------------------------
 
@@ -169,11 +130,6 @@ pub struct AppState {
     pub show_file_list: bool,
     /// Whether the diff pane is visible.
     pub show_diff_pane: bool,
-    /// Active mouse text selection, if any.
-    pub mouse_selection: Option<MouseSelection>,
-    /// Mouse down anchor used to start a drag selection only after the pointer
-    /// actually moves.
-    pub mouse_down_anchor: Option<(PaneFocus, TextAnchor)>,
     /// Plain text of rendered diff lines (set during render, for clipboard).
     pub diff_rendered_text: Vec<String>,
     /// Plain text of rendered file list lines (set during render, for clipboard).
@@ -190,8 +146,6 @@ pub struct AppState {
     /// Transient status bar message (e.g. "Press Ctrl-C again to quit").
     /// Cleared after a timeout or on next keypress.
     pub status_message: Option<(String, Instant)>,
-    /// Last semantic content click, for double-click detection.
-    pub last_click: Option<LastPointerClick>,
     /// Whether the help overlay is visible.
     pub show_help: bool,
     /// Current diff algorithm.
@@ -211,8 +165,6 @@ pub struct AppState {
     /// Set by the key handler when `r` is pressed. The async event loop
     /// picks this up and calls the server.
     pub pending_review_toggle: bool,
-    /// True while the user is dragging the file list / diff pane border.
-    pub dragging_border: bool,
     /// Set to true to suspend the process (Ctrl-Z).
     pub should_suspend: bool,
     /// Set to true to exit the event loop.
@@ -280,8 +232,6 @@ impl AppState {
             show_comments: false,
             show_file_list: true,
             show_diff_pane: true,
-            mouse_selection: None,
-            mouse_down_anchor: None,
             diff_rendered_text: Vec::new(),
             file_list_rendered_text: Vec::new(),
             file_list_row_to_file: Vec::new(),
@@ -289,7 +239,6 @@ impl AppState {
             file_list_area: Rect::default(),
             diff_area: Rect::default(),
             status_message: None,
-            last_click: None,
             show_help: false,
             diff_algorithm,
             default_diff_algorithm: diff_algorithm,
@@ -298,7 +247,6 @@ impl AppState {
             head_blame: Vec::new(),
             base_blame: Vec::new(),
             pending_review_toggle: false,
-            dragging_border: false,
             should_suspend: false,
             should_quit: false,
             pending_refresh: false,
@@ -819,51 +767,6 @@ mod tests {
             test_context(),
             vec![test_file("src/lib.rs")],
         )
-    }
-
-    #[test]
-    fn test_selection_normalized() {
-        // Forward selection.
-        let sel = MouseSelection {
-            pane: PaneFocus::Diff,
-            start: TextAnchor { line: 2, column: 5 },
-            end: TextAnchor {
-                line: 4,
-                column: 10,
-            },
-            word_selected: false,
-        };
-        assert_eq!(
-            sel.normalized(),
-            (
-                TextAnchor { line: 2, column: 5 },
-                TextAnchor {
-                    line: 4,
-                    column: 10,
-                }
-            )
-        );
-
-        // Backward selection (dragged upward).
-        let sel = MouseSelection {
-            pane: PaneFocus::Diff,
-            start: TextAnchor {
-                line: 4,
-                column: 10,
-            },
-            end: TextAnchor { line: 2, column: 5 },
-            word_selected: false,
-        };
-        assert_eq!(
-            sel.normalized(),
-            (
-                TextAnchor { line: 2, column: 5 },
-                TextAnchor {
-                    line: 4,
-                    column: 10,
-                }
-            )
-        );
     }
 
     #[test]
