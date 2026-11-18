@@ -90,6 +90,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   input as typed search effects.
 - Routed quit, suspend, help open, and help dismiss keys through core input as
   typed app/session effects.
+- Routed search and definition results overlay close, selection movement, and
+  accept-selected keys through core input as typed overlay effects.
 
 ## Acceptance Criteria
 
