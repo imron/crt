@@ -1631,6 +1631,42 @@ mod tests {
         }
     }
 
+    fn test_file_with_migration_offset_replacement_hunk(path: &str) -> FileEntry {
+        FileEntry {
+            change: FileChange {
+                path: path.to_string(),
+                old_path: None,
+                kind: ChangeKind::Modified,
+            },
+            status: ReviewStatus::Unreviewed,
+            diff: DiffContent {
+                hunks: vec![DiffHunk {
+                    old_start: 29,
+                    old_lines: 1,
+                    new_start: 31,
+                    new_lines: 1,
+                    header: "@@ -29 +31 @@".to_string(),
+                    lines: vec![
+                        DiffLine {
+                            kind: LineKind::Deletion,
+                            content: "a.context_before, a.context_after, a.status".to_string(),
+                            old_lineno: Some(29),
+                            new_lineno: None,
+                        },
+                        DiffLine {
+                            kind: LineKind::Addition,
+                            content: "a.context_before, a.context_after, a.status, ''".to_string(),
+                            old_lineno: None,
+                            new_lineno: Some(31),
+                        },
+                    ],
+                }],
+                is_binary: false,
+                diff_hash: format!("hash-{path}"),
+            },
+        }
+    }
+
     fn test_file_with_leading_deletion_hunk(path: &str) -> FileEntry {
         FileEntry {
             change: FileChange {
@@ -2731,6 +2767,60 @@ mod tests {
         assert_eq!(head.anchor_text, "new line one\nnew line two");
         assert_eq!(capture.line_start, 26);
         assert_eq!(capture.line_end, 28);
+    }
+
+    #[test]
+    fn inline_visual_selection_captures_offset_replacement_sides() {
+        let path = "migrations/0005_comment_resolution_events.up.sql";
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_migration_offset_replacement_hunk(path)],
+        );
+        let mut base_lines: Vec<String> = (1..=34).map(|n| format!("base {n}")).collect();
+        let mut head_lines: Vec<String> = (1..=36).map(|n| format!("head {n}")).collect();
+        base_lines[28] = "a.context_before, a.context_after, a.status".to_string();
+        head_lines[30] = "a.context_before, a.context_after, a.status, ''".to_string();
+        app.state.base_content = Some(format!("{}\n", base_lines.join("\n")));
+        app.state.head_content = Some(format!("{}\n", head_lines.join("\n")));
+        app.state.pane_focus = PaneFocus::Diff;
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartText {
+                    anchor: TextAnchor {
+                        line: 30,
+                        column: 0,
+                    },
+                }),
+                CoreEffect::VisualSelection(VisualSelectionEffect::ExtendTo {
+                    anchor: TextAnchor {
+                        line: 31,
+                        column: 0,
+                    },
+                }),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+            ],
+        );
+
+        let capture = app
+            .state
+            .pending_comment_anchor
+            .as_ref()
+            .expect("offset replacement selection should capture anchor data");
+        assert_eq!(capture.file_path, path);
+        assert_eq!(capture.segments.len(), 2);
+        let base = segment_for_side(capture, CommentAnchorSide::Base)
+            .expect("replacement selection should capture a base segment");
+        let head = segment_for_side(capture, CommentAnchorSide::Head)
+            .expect("replacement selection should capture a head segment");
+        assert_eq!(base.line_start, 29);
+        assert_eq!(base.line_end, 29);
+        assert_eq!(head.line_start, 31);
+        assert_eq!(head.line_end, 31);
+        assert_eq!(capture.line_start, 29);
+        assert_eq!(capture.line_end, 31);
     }
 
     #[test]
