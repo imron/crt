@@ -1,6 +1,6 @@
 # Stage 26: Thin Client Hardening and Tests
 
-## Status: Backlog
+## Status: Complete
 
 ## Order
 
@@ -90,13 +90,13 @@ state are likely.
 
 ## Acceptance Criteria
 
-- [ ] All new thin-client services have focused behavioral unit tests.
-- [ ] End-to-end failover scenarios pass consistently.
-- [ ] Multi-client/multi-repo behavior is verified under shared server.
-- [ ] Input/prompt/pointer interaction contracts are covered by tests.
-- [ ] Reconnect status and snapshot-before-delta behavior are covered by tests.
-- [ ] No regressions in existing server protocol tests.
-- [ ] Test suite is stable across repeated runs.
+- [x] All new thin-client services have focused behavioral unit tests.
+- [x] End-to-end failover scenarios pass consistently.
+- [x] Multi-client/multi-repo behavior is verified under shared server.
+- [x] Input/prompt/pointer interaction contracts are covered by tests.
+- [x] Reconnect status and snapshot-before-delta behavior are covered by tests.
+- [x] No regressions in existing server protocol tests.
+- [x] Test suite is stable across repeated runs.
 
 ## Resolved Decisions
 
