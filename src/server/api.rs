@@ -3171,6 +3171,8 @@ mod tests {
                 segment,
                 actual,
                 case.expected_base,
+                base_content.as_deref(),
+                "base-blob",
                 failures,
             );
         }
@@ -3183,6 +3185,8 @@ mod tests {
                 segment,
                 actual,
                 case.expected_head,
+                head_content.as_deref(),
+                "head-blob",
                 failures,
             );
         }
@@ -3206,8 +3210,17 @@ mod tests {
         original: &review_types::CommentAnchorSegment,
         actual: &NewCommentAnchorSegment,
         expected: ExpectedMatch,
+        expected_content: Option<&str>,
+        expected_blob: &str,
         failures: &mut Vec<String>,
     ) {
+        if actual.file_blob_sha != expected_blob {
+            failures.push(format!(
+                "{topology:?} {shape:?} {} {:?}: expected blob {:?}, got {:?}",
+                case.id, original.side, expected_blob, actual.file_blob_sha
+            ));
+        }
+
         let expected_placement = match expected {
             ExpectedMatch::NotFound => review_types::AnchorPlacementStatus::Orphaned,
             ExpectedMatch::ExactAtLine
@@ -3269,6 +3282,75 @@ mod tests {
             | ExpectedMatch::ExactElsewhere
             | ExpectedMatch::ExactAny => {}
         }
+
+        check_context_snapshot(
+            topology,
+            shape,
+            case,
+            original,
+            actual,
+            expected,
+            expected_content,
+            failures,
+        );
+    }
+
+    fn check_context_snapshot(
+        topology: HistoryTopology,
+        shape: AnchorShape,
+        case: HistoryMatrixCase,
+        original: &review_types::CommentAnchorSegment,
+        actual: &NewCommentAnchorSegment,
+        expected: ExpectedMatch,
+        expected_content: Option<&str>,
+        failures: &mut Vec<String>,
+    ) {
+        let expected_context = match expected {
+            ExpectedMatch::NotFound => (
+                original.context_before.clone(),
+                original.context_after.clone(),
+            ),
+            ExpectedMatch::ExactAtLine
+            | ExpectedMatch::ExactElsewhere
+            | ExpectedMatch::ExactAny
+            | ExpectedMatch::Context => {
+                let Some(content) = expected_content else {
+                    failures.push(format!(
+                        "{topology:?} {shape:?} {} {:?}: anchored segment has no source content",
+                        case.id, original.side
+                    ));
+                    return;
+                };
+                context_snapshot_for_segment(content, actual)
+            }
+        };
+
+        if actual.context_before != expected_context.0 {
+            failures.push(format!(
+                "{topology:?} {shape:?} {} {:?}: expected before context {:?}, got {:?}",
+                case.id, original.side, expected_context.0, actual.context_before
+            ));
+        }
+        if actual.context_after != expected_context.1 {
+            failures.push(format!(
+                "{topology:?} {shape:?} {} {:?}: expected after context {:?}, got {:?}",
+                case.id, original.side, expected_context.1, actual.context_after
+            ));
+        }
+    }
+
+    fn context_snapshot_for_segment(
+        content: &str,
+        segment: &NewCommentAnchorSegment,
+    ) -> (String, String) {
+        let lines = content_lines(content);
+        let start = segment
+            .line_start
+            .checked_sub(1)
+            .and_then(|line| usize::try_from(line).ok())
+            .unwrap_or(0);
+        let end = usize::try_from(segment.line_end).unwrap_or(start + 1);
+        context_around(&lines, start, end)
     }
 
     fn expected_aggregate_status(
