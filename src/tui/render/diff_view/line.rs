@@ -220,6 +220,7 @@ mod tests {
             line_end: 1,
             resolved: false,
             anchor_status: AnchorStatus::Anchored,
+            side_ranges: Vec::new(),
         }
     }
 

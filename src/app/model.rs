@@ -6,6 +6,10 @@
 
 use std::collections::BTreeMap;
 
+use crate::app::diff_rows::{
+    LinearDiffRows, SideBySideDiffRows, full_file_base_rows, full_file_head_rows, inline_diff_rows,
+    side_by_side_diff_rows,
+};
 use crate::app::{AppState, CommentAnchorCapture, FileListSectionFocus, VisualSelectionMode};
 use crate::config::DiffAlgorithm;
 use crate::core::TextAnchor;
@@ -108,6 +112,10 @@ pub struct DiffPanel {
     pub is_binary: bool,
     pub diff_hash: Option<String>,
     pub hunks: Vec<DiffHunk>,
+    pub inline_rows: LinearDiffRows,
+    pub full_file_head_rows: LinearDiffRows,
+    pub full_file_base_rows: LinearDiffRows,
+    pub side_by_side_rows: SideBySideDiffRows,
     pub head_content: Option<String>,
     pub base_content: Option<String>,
     pub head_blame: Vec<BlameLine>,
@@ -179,12 +187,24 @@ pub struct CommentAttachment {
     pub line_end: i64,
     pub resolved: bool,
     pub anchor_status: AnchorStatus,
+    pub side_ranges: Vec<CommentAttachmentRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentAttachmentRange {
+    pub side: review_types::CommentAnchorSide,
+    pub line_start: i64,
+    pub line_end: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CommentMarkerSet {
     markers_by_line: BTreeMap<u32, MarkerCandidate>,
+    base_markers_by_line: BTreeMap<u32, MarkerCandidate>,
+    head_markers_by_line: BTreeMap<u32, MarkerCandidate>,
     current_comment: Option<CurrentComment>,
+    base_current_comment: Option<CurrentComment>,
+    head_current_comment: Option<CurrentComment>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -244,11 +264,31 @@ impl CommentMarkerSet {
             }
         }
 
+        let base_markers_by_line =
+            side_marker_candidates(comments, review_types::CommentAnchorSide::Base);
+        let head_markers_by_line =
+            side_marker_candidates(comments, review_types::CommentAnchorSide::Head);
         let current_comment = current_comment(comments, current_line, selected_comment_id);
+        let base_current_comment = side_current_comment(
+            comments,
+            review_types::CommentAnchorSide::Base,
+            current_line,
+            selected_comment_id,
+        );
+        let head_current_comment = side_current_comment(
+            comments,
+            review_types::CommentAnchorSide::Head,
+            current_line,
+            selected_comment_id,
+        );
 
         Self {
             markers_by_line: marker_candidates,
+            base_markers_by_line,
+            head_markers_by_line,
             current_comment,
+            base_current_comment,
+            head_current_comment,
         }
     }
 
@@ -278,6 +318,52 @@ impl CommentMarkerSet {
         self.inactive_marker_for_line(line)
     }
 
+    pub fn marker_for_side_line(
+        &self,
+        side: review_types::CommentAnchorSide,
+        line: Option<u32>,
+    ) -> CommentMarker {
+        let Some(line) = line else {
+            return CommentMarker {
+                kind: None,
+                resolved: false,
+                current: false,
+            };
+        };
+        let current_comment = match side {
+            review_types::CommentAnchorSide::Base => self.base_current_comment,
+            review_types::CommentAnchorSide::Head => self.head_current_comment,
+        };
+        let markers_by_line = match side {
+            review_types::CommentAnchorSide::Base => &self.base_markers_by_line,
+            review_types::CommentAnchorSide::Head => &self.head_markers_by_line,
+        };
+        if let Some(current_comment) = current_comment {
+            if current_comment.contains(line)
+                && self.side_line_uses_current_marker(line, current_comment, markers_by_line)
+            {
+                return CommentMarker {
+                    kind: Some(current_comment.kind_for_line(line)),
+                    resolved: current_comment.resolved,
+                    current: true,
+                };
+            }
+        }
+        markers_by_line
+            .get(&line)
+            .copied()
+            .map(|marker| CommentMarker {
+                kind: Some(marker.kind),
+                resolved: marker.resolved,
+                current: false,
+            })
+            .unwrap_or(CommentMarker {
+                kind: None,
+                resolved: false,
+                current: false,
+            })
+    }
+
     fn inactive_marker_for_line(&self, line: u32) -> CommentMarker {
         self.markers_by_line
             .get(&line)
@@ -301,6 +387,21 @@ impl CommentMarkerSet {
 
         !self
             .markers_by_line
+            .get(&line)
+            .is_some_and(|marker| marker.kind.is_boundary_marker())
+    }
+
+    fn side_line_uses_current_marker(
+        &self,
+        line: u32,
+        current_comment: CurrentComment,
+        markers_by_line: &BTreeMap<u32, MarkerCandidate>,
+    ) -> bool {
+        if current_comment.is_boundary(line) {
+            return true;
+        }
+
+        !markers_by_line
             .get(&line)
             .is_some_and(|marker| marker.kind.is_boundary_marker())
     }
@@ -358,6 +459,118 @@ fn current_comment(
             })
         })
         .collect();
+    let max_start = candidates.iter().map(|comment| comment.start).max()?;
+    if let Some(selected) = selected_comment_id.and_then(|id| {
+        candidates
+            .iter()
+            .copied()
+            .find(|comment| comment.id == id && comment.start == max_start)
+    }) {
+        return Some(selected);
+    }
+    candidates
+        .into_iter()
+        .filter(|comment| comment.start == max_start)
+        .max_by_key(|comment| comment.id)
+}
+
+fn side_marker_candidates(
+    comments: &[CommentAttachment],
+    side: review_types::CommentAnchorSide,
+) -> BTreeMap<u32, MarkerCandidate> {
+    let mut marker_candidates: BTreeMap<u32, MarkerCandidate> = BTreeMap::new();
+
+    for comment in comments {
+        let ranges: Vec<&CommentAttachmentRange> = comment
+            .side_ranges
+            .iter()
+            .filter(|range| range.side == side)
+            .collect();
+        if ranges.is_empty() {
+            insert_marker_candidates(
+                &mut marker_candidates,
+                comment,
+                comment.line_start,
+                comment.line_end,
+            );
+            continue;
+        }
+
+        for range in ranges {
+            insert_marker_candidates(
+                &mut marker_candidates,
+                comment,
+                range.line_start,
+                range.line_end,
+            );
+        }
+    }
+
+    marker_candidates
+}
+
+fn insert_marker_candidates(
+    marker_candidates: &mut BTreeMap<u32, MarkerCandidate>,
+    comment: &CommentAttachment,
+    line_start: i64,
+    line_end: i64,
+) {
+    let start = line_start.max(1) as u32;
+    let end = line_end.max(line_start).max(1) as u32;
+    for line in start..=end {
+        let candidate = MarkerCandidate::new(comment, start, end, line);
+        marker_candidates
+            .entry(line)
+            .and_modify(|existing| {
+                if candidate.is_preferred_to(existing) {
+                    *existing = candidate;
+                }
+            })
+            .or_insert(candidate);
+    }
+}
+
+fn side_current_comment(
+    comments: &[CommentAttachment],
+    side: review_types::CommentAnchorSide,
+    current_line: Option<u32>,
+    selected_comment_id: Option<i64>,
+) -> Option<CurrentComment> {
+    let current_line = current_line?;
+    let mut candidates = Vec::new();
+    for comment in comments {
+        let ranges: Vec<&CommentAttachmentRange> = comment
+            .side_ranges
+            .iter()
+            .filter(|range| range.side == side)
+            .collect();
+        if ranges.is_empty() {
+            let start = comment.line_start.max(1) as u32;
+            let end = comment.line_end.max(comment.line_start).max(1) as u32;
+            if current_line >= start && current_line <= end {
+                candidates.push(CurrentComment {
+                    id: comment.id,
+                    start,
+                    end,
+                    resolved: comment.resolved,
+                });
+            }
+            continue;
+        }
+
+        for range in ranges {
+            let start = range.line_start.max(1) as u32;
+            let end = range.line_end.max(range.line_start).max(1) as u32;
+            if current_line >= start && current_line <= end {
+                candidates.push(CurrentComment {
+                    id: comment.id,
+                    start,
+                    end,
+                    resolved: comment.resolved,
+                });
+            }
+        }
+    }
     let max_start = candidates.iter().map(|comment| comment.start).max()?;
     if let Some(selected) = selected_comment_id.and_then(|id| {
         candidates
@@ -821,6 +1034,24 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
                 .collect()
         })
         .unwrap_or_default();
+    let side_by_side_rows = selected
+        .map(|entry| {
+            side_by_side_diff_rows(
+                &entry.diff.hunks,
+                state.base_content.as_deref(),
+                state.head_content.as_deref(),
+            )
+        })
+        .unwrap_or_default();
+    let inline_rows = selected
+        .map(|entry| inline_diff_rows(&entry.diff.hunks, state.head_content.as_deref()))
+        .unwrap_or_default();
+    let full_file_head_rows = selected
+        .map(|entry| full_file_head_rows(&entry.diff.hunks, state.head_content.as_deref()))
+        .unwrap_or_default();
+    let full_file_base_rows = selected
+        .map(|entry| full_file_base_rows(&entry.diff.hunks, state.base_content.as_deref()))
+        .unwrap_or_default();
     let comments = selected
         .map(|entry| comment_attachments_for_current_view(state, &entry.change.path))
         .unwrap_or_default();
@@ -842,6 +1073,10 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
         is_binary: selected.is_some_and(|entry| entry.diff.is_binary),
         diff_hash: selected.map(|entry| entry.diff.diff_hash.clone()),
         hunks,
+        inline_rows,
+        full_file_head_rows,
+        full_file_base_rows,
+        side_by_side_rows,
         head_content: state.head_content.clone(),
         base_content: state.base_content.clone(),
         head_blame: state.head_blame.iter().map(BlameLine::from).collect(),
@@ -942,12 +1177,25 @@ fn comment_attachments_for_file_and_side(
         .filter_map(|comment| {
             let line_start = comment_anchor_line_start(comment, side)?;
             let line_end = comment_anchor_line_end(comment, side)?;
+            let side_ranges = comment
+                .anchor
+                .segments
+                .iter()
+                .filter(|segment| segment.file_path == comment.file_path)
+                .filter(|segment| side.is_none_or(|side| segment.side == side))
+                .map(|segment| CommentAttachmentRange {
+                    side: segment.side,
+                    line_start: segment.line_start,
+                    line_end: segment.line_end,
+                })
+                .collect();
             Some(CommentAttachment {
                 id: comment.id,
                 line_start,
                 line_end,
                 resolved: comment.resolved,
                 anchor_status: comment.anchor_status,
+                side_ranges,
             })
         })
         .collect()
@@ -1324,6 +1572,7 @@ mod tests {
             line_end: end,
             resolved,
             anchor_status: AnchorStatus::Anchored,
+            side_ranges: Vec::new(),
         }
     }
 
