@@ -152,9 +152,6 @@ pub(super) fn apply_core_effects(
     let mut update = AppOutput::default();
     for effect in effects {
         update.handled = true;
-        if core_effect_may_change_model(&effect) {
-            state.mark_model_changed();
-        }
         match effect {
             CoreEffect::RequestPrompt(_) => {}
             CoreEffect::Status(status) => {
@@ -244,25 +241,6 @@ pub(super) fn apply_core_effects(
     update
 }
 
-fn core_effect_may_change_model(effect: &CoreEffect) -> bool {
-    matches!(
-        effect,
-        CoreEffect::DiffSearch(_)
-            | CoreEffect::DiffCursor(_)
-            | CoreEffect::SearchResults(_)
-            | CoreEffect::DefinitionResults(_)
-            | CoreEffect::Pane(_)
-            | CoreEffect::NavigateFile(_)
-            | CoreEffect::JumpHunk(_)
-            | CoreEffect::TogglePaneFocus
-            | CoreEffect::TogglePaneVisibility(_)
-            | CoreEffect::ToggleInlineDiff
-            | CoreEffect::CycleViewMode
-            | CoreEffect::CycleDiffAlgorithm
-            | CoreEffect::ToggleDiffBase
-    )
-}
-
 fn apply_search_results_effect(
     state: &mut AppState,
     view: &impl AppViewport,
@@ -272,6 +250,7 @@ fn apply_search_results_effect(
     match effect {
         crate::core::SearchResultsEffect::Close => {
             state.search_results = None;
+            state.mark_model_changed();
         }
         crate::core::SearchResultsEffect::SelectNext => {
             let Some(results) = state.search_results.as_mut() else {
@@ -279,6 +258,7 @@ fn apply_search_results_effect(
             };
             if !results.matches.is_empty() {
                 results.selected = (results.selected + 1).min(results.matches.len() - 1);
+                state.mark_model_changed();
             }
         }
         crate::core::SearchResultsEffect::SelectPrevious => {
@@ -286,12 +266,14 @@ fn apply_search_results_effect(
                 return;
             };
             results.selected = results.selected.saturating_sub(1);
+            state.mark_model_changed();
         }
         crate::core::SearchResultsEffect::SelectFirst => {
             let Some(results) = state.search_results.as_mut() else {
                 return;
             };
             results.selected = 0;
+            state.mark_model_changed();
         }
         crate::core::SearchResultsEffect::SelectLast => {
             let Some(results) = state.search_results.as_mut() else {
@@ -299,6 +281,7 @@ fn apply_search_results_effect(
             };
             if !results.matches.is_empty() {
                 results.selected = results.matches.len() - 1;
+                state.mark_model_changed();
             }
         }
         crate::core::SearchResultsEffect::AcceptSelected => {
@@ -307,6 +290,7 @@ fn apply_search_results_effect(
                 .as_ref()
                 .and_then(|results| results.matches.get(results.selected).cloned());
             state.search_results = None;
+            state.mark_model_changed();
             if let Some(search_match) = selected {
                 let target = core_search::resolve_search_target(&state.files, &search_match);
                 navigate_to_location_target(state, view, update, target);
@@ -324,6 +308,7 @@ fn apply_definition_results_effect(
     match effect {
         crate::core::DefinitionResultsEffect::Close => {
             state.definition_results = None;
+            state.mark_model_changed();
         }
         crate::core::DefinitionResultsEffect::SelectNext => {
             let Some(results) = state.definition_results.as_mut() else {
@@ -331,6 +316,7 @@ fn apply_definition_results_effect(
             };
             if !results.definitions.is_empty() {
                 results.selected = (results.selected + 1).min(results.definitions.len() - 1);
+                state.mark_model_changed();
             }
         }
         crate::core::DefinitionResultsEffect::SelectPrevious => {
@@ -338,6 +324,7 @@ fn apply_definition_results_effect(
                 return;
             };
             results.selected = results.selected.saturating_sub(1);
+            state.mark_model_changed();
         }
         crate::core::DefinitionResultsEffect::AcceptSelected => {
             let selected = state
@@ -345,6 +332,7 @@ fn apply_definition_results_effect(
                 .as_ref()
                 .and_then(|results| results.definitions.get(results.selected).cloned());
             state.definition_results = None;
+            state.mark_model_changed();
             if let Some(definition) = selected {
                 let target = core_search::resolve_definition_target(&state.files, &definition);
                 navigate_to_location_target(state, view, update, target);
@@ -355,10 +343,6 @@ fn apply_definition_results_effect(
 
 /// Apply a parsed command emitted by the core interaction engine.
 fn apply_command(state: &mut AppState, update: &mut AppOutput, command: CommandParse) {
-    if command_changes_model(&command) {
-        state.mark_model_changed();
-    }
-
     match command {
         CommandParse::Empty => {}
         CommandParse::NeedsArgument { usage } | CommandParse::NeedsWord { usage } => {
@@ -418,13 +402,6 @@ fn apply_command(state: &mut AppState, update: &mut AppOutput, command: CommandP
     }
 }
 
-fn command_changes_model(command: &CommandParse) -> bool {
-    matches!(
-        command,
-        CommandParse::Parsed(Command::SetBlame(_) | Command::SetWhitespaceIgnored(_))
-    )
-}
-
 fn apply_diff_search(
     state: &mut AppState,
     view: &impl AppViewport,
@@ -449,6 +426,7 @@ fn apply_diff_search(
             update.set_status(format!("{cur}/{total}"));
         }
     }
+    state.mark_model_changed();
 }
 
 fn navigate_diff_search_match(
@@ -480,6 +458,7 @@ fn navigate_diff_search_match(
     let (row, _, _) = state.diff_search_matches[idx];
     state.diff_line_cursor = row;
     clamp_cursor_and_scroll(state, view);
+    state.mark_model_changed();
     let cur = idx + 1;
     update.set_status(format!("{cur}/{len}"));
 }
@@ -488,6 +467,7 @@ fn clear_diff_search(state: &mut AppState) {
     state.diff_search_query = None;
     state.diff_search_matches.clear();
     state.diff_search_current = 0;
+    state.mark_model_changed();
 }
 
 fn apply_diff_cursor_effect(
@@ -627,6 +607,7 @@ fn apply_diff_cursor_effect(
             bigword_backward(state, view);
         }
     }
+    state.mark_model_changed();
 }
 
 fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
@@ -634,6 +615,7 @@ fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
         PaneEffect::ActivateFileListSelection => {
             if state.show_diff_pane {
                 state.pane_focus = PaneFocus::Diff;
+                state.mark_model_changed();
             }
         }
         PaneEffect::ActivateDiffSelection => {
@@ -643,6 +625,7 @@ fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
                 {
                     state.reviewed_diff_expanded = true;
                     state.diff_scroll = 0;
+                    state.mark_model_changed();
                 }
             }
         }
@@ -663,6 +646,7 @@ fn toggle_pane_focus(state: &mut AppState) {
             PaneFocus::FileList => PaneFocus::Diff,
             PaneFocus::Diff => PaneFocus::FileList,
         };
+        state.mark_model_changed();
     }
 }
 
@@ -674,9 +658,11 @@ fn toggle_pane_visibility(state: &mut AppState, pane: PaneId) {
                 if state.show_diff_pane {
                     state.show_file_list = false;
                     state.pane_focus = PaneFocus::Diff;
+                    state.mark_model_changed();
                 }
             } else {
                 state.show_file_list = true;
+                state.mark_model_changed();
             }
         }
         PaneId::Diff => {
@@ -684,9 +670,11 @@ fn toggle_pane_visibility(state: &mut AppState, pane: PaneId) {
                 if state.show_file_list {
                     state.show_diff_pane = false;
                     state.pane_focus = PaneFocus::FileList;
+                    state.mark_model_changed();
                 }
             } else {
                 state.show_diff_pane = true;
+                state.mark_model_changed();
             }
         }
         _ => {}
@@ -699,7 +687,6 @@ pub(super) fn navigate_to_search_match(
     m: &crate::review_types::SearchMatch,
 ) -> AppOutput {
     let mut update = AppOutput::handled();
-    state.mark_model_changed();
     let target = core_search::resolve_search_target(&state.files, m);
     navigate_to_location_target(state, view, &mut update, target);
     update
@@ -711,7 +698,6 @@ pub(super) fn navigate_to_definition(
     def: &crate::review_types::DefinitionLocation,
 ) -> AppOutput {
     let mut update = AppOutput::handled();
-    state.mark_model_changed();
     let target = core_search::resolve_definition_target(&state.files, def);
     navigate_to_location_target(state, view, &mut update, target);
     update
@@ -733,6 +719,7 @@ fn navigate_to_location_target(
             on_file_changed(state);
             state.diff_line_cursor = (line_number as usize).saturating_sub(1);
             clamp_cursor_and_scroll(state, view);
+            state.mark_model_changed();
         }
         core_search::LocationTarget::External {
             file_path,
@@ -759,10 +746,14 @@ fn push_jump_stack(state: &mut AppState) {
 
 fn toggle_inline_diff(state: &mut AppState, update: &mut AppOutput) {
     if state.content_mode == ContentMode::Diff {
+        let previous = state.render_variant;
         state.render_variant = match state.render_variant {
             RenderVariant::Inline => RenderVariant::SideBySide,
             other => other,
         };
+        if state.render_variant != previous {
+            state.mark_model_changed();
+        }
     }
     update.clear_status();
 }
@@ -1012,6 +1003,7 @@ fn cycle_view_mode(state: &mut AppState, view: &impl AppViewport) {
             state.render_variant = RenderVariant::Inline;
         }
     }
+    state.mark_model_changed();
 }
 
 fn estimate_current_line(state: &AppState, view: &impl AppViewport) -> usize {
@@ -1059,6 +1051,7 @@ fn jump_to_next_hunk(state: &mut AppState, view: &impl AppViewport) {
         state.diff_scroll = jump.scroll;
         state.diff_col_cursor = 0;
         clamp_cursor_and_scroll(state, view);
+        state.mark_model_changed();
     }
 }
 
@@ -1074,6 +1067,7 @@ fn jump_to_prev_hunk(state: &mut AppState, view: &impl AppViewport) {
         state.diff_scroll = jump.scroll;
         state.diff_col_cursor = 0;
         clamp_cursor_and_scroll(state, view);
+        state.mark_model_changed();
     }
 }
 
