@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crt::client::{Client, ClientEvent, ReconnectOptions};
@@ -292,4 +293,90 @@ async fn peer_recovers_when_embedded_owner_shuts_down() {
     );
     assert!(peer.list_changed_files().await.unwrap().files.is_empty());
     peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn simultaneous_peer_recovery_has_one_bind_winner() {
+    let repo = TestRepo::new();
+    let options = ReconnectOptions {
+        jitter: Duration::from_millis(0)..=Duration::from_millis(0),
+        embedded_startup_delay: Duration::from_millis(10),
+    };
+    let owner = Client::connect_or_start_with_options(&repo.socket_path, false, options.clone())
+        .await
+        .unwrap();
+    owner
+        .init(&repo.repo_dir.to_string_lossy(), "HEAD")
+        .await
+        .unwrap();
+    let peer_a = Arc::new(
+        Client::connect_or_start_with_options(&repo.socket_path, false, options.clone())
+            .await
+            .unwrap(),
+    );
+    peer_a
+        .init(&repo.repo_dir.to_string_lossy(), "HEAD")
+        .await
+        .unwrap();
+    let peer_b = Arc::new(
+        Client::connect_or_start_with_options(&repo.socket_path, false, options)
+            .await
+            .unwrap(),
+    );
+    peer_b
+        .init(&repo.repo_dir.to_string_lossy(), "HEAD")
+        .await
+        .unwrap();
+
+    owner.shutdown().await;
+    assert!(peer_a.list_changed_files().await.is_err());
+    assert!(peer_b.list_changed_files().await.is_err());
+    peer_a.drain_events().await;
+    peer_b.drain_events().await;
+
+    let recover_a = {
+        let peer = Arc::clone(&peer_a);
+        tokio::spawn(async move { peer.recover_if_disconnected().await })
+    };
+    let recover_b = {
+        let peer = Arc::clone(&peer_b);
+        tokio::spawn(async move { peer.recover_if_disconnected().await })
+    };
+    let first = recover_a.await.unwrap().unwrap();
+    let second = recover_b.await.unwrap().unwrap();
+
+    assert!(
+        first == Some(ConnectionState::Reconnected) || second == Some(ConnectionState::Reconnected),
+        "expected at least one simultaneous recovery attempt to win the bind, got {first:?} and {second:?}"
+    );
+
+    assert!(
+        recover_until_reconnected(&peer_a).await,
+        "peer A did not reconnect after race"
+    );
+    assert!(
+        recover_until_reconnected(&peer_b).await,
+        "peer B did not reconnect after race"
+    );
+    assert!(peer_a.list_changed_files().await.unwrap().files.is_empty());
+    assert!(peer_b.list_changed_files().await.unwrap().files.is_empty());
+    peer_a.shutdown().await;
+    peer_b.shutdown().await;
+}
+
+async fn recover_until_reconnected(client: &Client) -> bool {
+    if client.list_changed_files().await.is_ok() {
+        return true;
+    }
+
+    for _ in 0..20 {
+        if client.recover_if_disconnected().await.unwrap() == Some(ConnectionState::Reconnected) {
+            return true;
+        }
+        if client.list_changed_files().await.is_ok() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
 }
