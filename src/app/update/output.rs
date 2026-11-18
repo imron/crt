@@ -17,7 +17,6 @@ pub struct AppOutput {
     pending_comment_unresolve: Option<i64>,
     pending_comment_delete: Option<i64>,
     pub save_layout: bool,
-    pub show_comments: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,9 +120,5 @@ impl AppOutput {
 
     pub fn request_layout_save(&mut self) {
         self.save_layout = true;
-    }
-
-    pub fn set_comments_visible(&mut self, show: bool) {
-        self.show_comments = Some(show);
     }
 }

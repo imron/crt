@@ -30,7 +30,8 @@ pub fn apply_command(state: &mut AppState, update: &mut AppOutput, command: Comm
             update.set_status("Blame: hidden");
         }
         CommandParse::Parsed(Command::SetComments(show)) => {
-            update.set_comments_visible(show);
+            state.show_comments_panel = show;
+            state.mark_model_changed();
             let status = if show {
                 "Comments: shown"
             } else {
