@@ -57,6 +57,8 @@ explicit approval.
 - Avoid mixing unrelated changes in a single commit.
 - Do not commit local scratch files or personal data exports.
 - All `.md` files must wrap lines at a maximum of 80 characters.
+- Do not inline `crate::module::Item` in definitions or expressions.
+  Import the module (`use crate::module`) and write `module::Item`.
 
 ## Panic Hygiene
 
