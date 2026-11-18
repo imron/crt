@@ -14,7 +14,6 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, broadcast};
 
 use crate::db::Database;
-use crate::git;
 
 // ---------------------------------------------------------------------------
 // JSON-RPC types
@@ -22,6 +21,7 @@ use crate::git;
 
 #[derive(Debug, Deserialize)]
 pub struct JsonRpcRequest {
+    #[serde(default)]
     pub jsonrpc: String,
     pub method: String,
     #[serde(default)]
@@ -29,7 +29,7 @@ pub struct JsonRpcRequest {
     pub id: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct JsonRpcResponse {
     pub jsonrpc: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -39,7 +39,7 @@ pub struct JsonRpcResponse {
     pub id: serde_json::Value,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct JsonRpcError {
     pub code: i64,
     pub message: String,
@@ -71,11 +71,13 @@ impl JsonRpcResponse {
     }
 }
 
-// JSON-RPC error codes
+// JSON-RPC standard error codes
 pub const ERR_PARSE: i64 = -32700;
 pub const ERR_METHOD_NOT_FOUND: i64 = -32601;
 pub const ERR_INVALID_PARAMS: i64 = -32602;
 pub const ERR_INTERNAL: i64 = -32603;
+
+// Application error codes
 pub const ERR_NOT_INITIALIZED: i64 = -32000;
 pub const ERR_NOT_IMPLEMENTED: i64 = -32001;
 
@@ -98,7 +100,13 @@ pub struct ServerState {
     /// Open databases keyed by repo root path.
     databases: Mutex<HashMap<PathBuf, Arc<Mutex<Database>>>>,
     /// Broadcast channel for notifications.
-    _notify_tx: broadcast::Sender<notify::Notification>,
+    pub notify_tx: broadcast::Sender<notify::Notification>,
+}
+
+impl Default for ServerState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ServerState {
@@ -106,7 +114,7 @@ impl ServerState {
         let (notify_tx, _) = broadcast::channel(64);
         Self {
             databases: Mutex::new(HashMap::new()),
-            _notify_tx: notify_tx,
+            notify_tx,
         }
     }
 
@@ -116,8 +124,11 @@ impl ServerState {
         if let Some(db) = dbs.get(db_path) {
             return Ok(Arc::clone(db));
         }
-        let db = Database::open(db_path)
-            .with_context(|| format!("Failed to open database at {}", db_path.display()))?;
+        // Database::open is sync, run on blocking thread
+        let path_owned = db_path.to_path_buf();
+        let db = tokio::task::spawn_blocking(move || Database::open(&path_owned))
+            .await
+            .context("Database task panicked")??;
         let db = Arc::new(Mutex::new(db));
         dbs.insert(db_path.to_path_buf(), Arc::clone(&db));
         Ok(db)
@@ -125,7 +136,7 @@ impl ServerState {
 }
 
 // ---------------------------------------------------------------------------
-// Server
+// Persistent server
 // ---------------------------------------------------------------------------
 
 /// Start the persistent server, listening on the given socket path.
@@ -140,40 +151,29 @@ pub async fn run_persistent(socket_path: &Path) -> Result<()> {
                 );
             }
             Err(_) => {
-                // Stale socket — remove it
                 std::fs::remove_file(socket_path).with_context(|| {
-                    format!(
-                        "Failed to remove stale socket at {}",
-                        socket_path.display()
-                    )
+                    format!("Failed to remove stale socket at {}", socket_path.display())
                 })?;
-                eprintln!(
-                    "Removed stale socket at {}",
-                    socket_path.display()
-                );
+                eprintln!("Removed stale socket at {}", socket_path.display());
             }
         }
     }
 
     // Ensure parent directory exists
     if let Some(parent) = socket_path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!("Failed to create directory {}", parent.display())
-        })?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory {}", parent.display()))?;
     }
 
-    let listener = UnixListener::bind(socket_path).with_context(|| {
-        format!("Failed to bind to {}", socket_path.display())
-    })?;
+    let listener = UnixListener::bind(socket_path)
+        .with_context(|| format!("Failed to bind to {}", socket_path.display()))?;
 
     eprintln!("crt server listening on {}", socket_path.display());
 
     let state = Arc::new(ServerState::new());
-
-    // Install shutdown handler
     let socket_path_owned = socket_path.to_path_buf();
-    let shutdown = tokio::signal::ctrl_c();
 
+    let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
 
     loop {
@@ -181,11 +181,13 @@ pub async fn run_persistent(socket_path: &Path) -> Result<()> {
             accept = listener.accept() => {
                 match accept {
                     Ok((stream, _addr)) => {
+                        eprintln!("Client connected");
                         let state = Arc::clone(&state);
                         tokio::spawn(async move {
                             if let Err(e) = handle_connection(stream, state).await {
                                 eprintln!("Connection error: {e}");
                             }
+                            eprintln!("Client disconnected");
                         });
                     }
                     Err(e) => {
@@ -200,7 +202,6 @@ pub async fn run_persistent(socket_path: &Path) -> Result<()> {
         }
     }
 
-    // Cleanup socket file
     let _ = std::fs::remove_file(&socket_path_owned);
     eprintln!("Server stopped.");
     Ok(())
@@ -215,9 +216,7 @@ async fn handle_connection(stream: UnixStream, state: Arc<ServerState>) -> Resul
     let mut reader = BufReader::new(reader);
     let writer = Arc::new(Mutex::new(writer));
     let mut conn_ctx: Option<ConnectionContext> = None;
-    let mut db: Option<Arc<Mutex<Database>>> = None;
-
-    eprintln!("Client connected");
+    let mut conn_db: Option<Arc<Mutex<Database>>> = None;
 
     let mut line = String::new();
     loop {
@@ -228,8 +227,7 @@ async fn handle_connection(stream: UnixStream, state: Arc<ServerState>) -> Resul
             .context("Failed to read from client")?;
 
         if n == 0 {
-            // Client disconnected
-            break;
+            break; // Client disconnected
         }
 
         let trimmed = line.trim();
@@ -251,18 +249,16 @@ async fn handle_connection(stream: UnixStream, state: Arc<ServerState>) -> Resul
             }
         };
 
-        // Notifications (no id) — we don't handle any yet
+        // Notifications (no id) — we don't handle any client-to-server notifications yet
         let id = match &request.id {
             Some(id) => id.clone(),
             None => continue,
         };
 
-        // Dispatch
-        let response = dispatch(&request, &id, &state, &mut conn_ctx, &mut db).await;
+        let response = dispatch(&request, &id, &state, &mut conn_ctx, &mut conn_db).await;
         send_response(&writer, &response).await?;
     }
 
-    eprintln!("Client disconnected");
     Ok(())
 }
 
@@ -284,165 +280,63 @@ async fn send_response(
 // Dispatch
 // ---------------------------------------------------------------------------
 
+/// All known method names for stub registration.
+const STUB_METHODS: &[&str] = &[
+    "list_changed_files",
+    "get_file_diff",
+    "get_file_content",
+    "mark_reviewed",
+    "unmark_reviewed",
+    "reset_reviews",
+    "create_comment",
+    "list_comments",
+    "get_comment",
+    "update_comment",
+    "resolve_comment",
+    "unresolve_comment",
+    "delete_comment",
+    "apply_comments",
+    "clear_comments",
+    "search_codebase",
+    "find_definition",
+    "track_repo",
+    "list_repos",
+];
+
 async fn dispatch(
     request: &JsonRpcRequest,
     id: &serde_json::Value,
     state: &Arc<ServerState>,
     conn_ctx: &mut Option<ConnectionContext>,
-    db: &mut Option<Arc<Mutex<Database>>>,
+    conn_db: &mut Option<Arc<Mutex<Database>>>,
 ) -> JsonRpcResponse {
-    // `init` is special — it doesn't require prior initialization
+    // `init` doesn't require prior initialization
     if request.method == "init" {
-        return handle_init(&request.params, id, state, conn_ctx, db).await;
+        return api::handle_init(&request.params, id, state, conn_ctx, conn_db).await;
     }
 
     // All other methods require initialization
-    let (_ctx, _db) = match (conn_ctx.as_ref(), db.as_ref()) {
-        (Some(c), Some(d)) => (c, d),
-        _ => {
-            return JsonRpcResponse::error(
-                id.clone(),
-                ERR_NOT_INITIALIZED,
-                "Connection not initialized. Send 'init' first.".to_string(),
-            );
-        }
-    };
-
-    // Dispatch to API stubs
-    match request.method.as_str() {
-        "list_changed_files" | "get_file_diff" | "get_file_content" | "mark_reviewed"
-        | "unmark_reviewed" | "reset_reviews" | "create_comment" | "list_comments"
-        | "get_comment" | "update_comment" | "resolve_comment" | "unresolve_comment"
-        | "delete_comment" | "apply_comments" | "clear_comments" | "search_codebase"
-        | "find_definition" | "track_repo" | "list_repos" => JsonRpcResponse::error(
-            id.clone(),
-            ERR_NOT_IMPLEMENTED,
-            format!("Method '{}' is not yet implemented", request.method),
-        ),
-        _ => JsonRpcResponse::error(
-            id.clone(),
-            ERR_METHOD_NOT_FOUND,
-            format!("Method '{}' not found", request.method),
-        ),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// init handler
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct InitParams {
-    worktree: String,
-    base_ref: String,
-}
-
-#[derive(Debug, Serialize)]
-struct InitResult {
-    repo_root: String,
-    worktree: String,
-    head_ref: String,
-    base_ref: String,
-}
-
-async fn handle_init(
-    params: &serde_json::Value,
-    id: &serde_json::Value,
-    state: &Arc<ServerState>,
-    conn_ctx: &mut Option<ConnectionContext>,
-    db: &mut Option<Arc<Mutex<Database>>>,
-) -> JsonRpcResponse {
-    let init_params: InitParams = match serde_json::from_value(params.clone()) {
-        Ok(p) => p,
-        Err(e) => {
-            return JsonRpcResponse::error(
-                id.clone(),
-                ERR_INVALID_PARAMS,
-                format!("Invalid init params: {e}"),
-            );
-        }
-    };
-
-    let worktree_path = PathBuf::from(&init_params.worktree);
-
-    // Resolve repo context via git module
-    let repo = match git::Repo::open(&worktree_path) {
-        Ok(r) => r,
-        Err(e) => {
-            return JsonRpcResponse::error(
-                id.clone(),
-                ERR_INTERNAL,
-                format!("Failed to open repository: {e}"),
-            );
-        }
-    };
-
-    let git_ctx = match repo.context() {
-        Ok(c) => c,
-        Err(e) => {
-            return JsonRpcResponse::error(
-                id.clone(),
-                ERR_INTERNAL,
-                format!("Failed to resolve repository context: {e}"),
-            );
-        }
-    };
-
-    // Validate the base ref
-    if let Err(e) = repo.resolve_commit(&init_params.base_ref) {
+    if conn_ctx.is_none() || conn_db.is_none() {
         return JsonRpcResponse::error(
             id.clone(),
-            ERR_INVALID_PARAMS,
-            format!("Failed to resolve base ref '{}': {e}", init_params.base_ref),
+            ERR_NOT_INITIALIZED,
+            "Connection not initialized. Send 'init' first.".to_string(),
         );
     }
 
-    // Ensure .crt directory exists
-    let crt_dir = git_ctx.repo_root.join(".crt");
-    if !crt_dir.exists() {
-        if let Err(e) = std::fs::create_dir_all(&crt_dir) {
-            return JsonRpcResponse::error(
-                id.clone(),
-                ERR_INTERNAL,
-                format!("Failed to create .crt directory: {e}"),
-            );
-        }
+    // Check if it's a known stub method
+    if STUB_METHODS.contains(&request.method.as_str()) {
+        return JsonRpcResponse::error(
+            id.clone(),
+            ERR_NOT_IMPLEMENTED,
+            format!("Method '{}' is not yet implemented", request.method),
+        );
     }
 
-    let db_path = crt_dir.join("reviews.db");
-
-    // Open database
-    let db_handle = match state.get_db(&db_path).await {
-        Ok(d) => d,
-        Err(e) => {
-            return JsonRpcResponse::error(
-                id.clone(),
-                ERR_INTERNAL,
-                format!("Failed to open database: {e}"),
-            );
-        }
-    };
-
-    let ctx = ConnectionContext {
-        repo_root: git_ctx.repo_root.clone(),
-        worktree: worktree_path.clone(),
-        base_ref: init_params.base_ref.clone(),
-        head_ref: git_ctx.head_ref.clone(),
-        db_path,
-    };
-
-    let result = InitResult {
-        repo_root: git_ctx.repo_root.to_string_lossy().into_owned(),
-        worktree: worktree_path.to_string_lossy().into_owned(),
-        head_ref: git_ctx.head_ref,
-        base_ref: init_params.base_ref,
-    };
-
-    *conn_ctx = Some(ctx);
-    *db = Some(db_handle);
-
-    JsonRpcResponse::success(
+    // Unknown method
+    JsonRpcResponse::error(
         id.clone(),
-        serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
+        ERR_METHOD_NOT_FOUND,
+        format!("Method '{}' not found", request.method),
     )
 }
