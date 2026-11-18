@@ -342,25 +342,40 @@ pub struct Comment {
     pub merge_base: String,
     pub head_ref: String,
     pub created_head_commit: String,
-    pub anchor: CommentAnchor,
-    pub file_path: String,
-    pub line_start: i64,
-    pub line_end: i64,
+    anchor: CommentAnchor,
+    file_path: String,
+    line_start: i64,
+    line_end: i64,
     /// Character start within the line (None for full-line selections).
-    pub char_start: Option<i64>,
+    char_start: Option<i64>,
     /// Character end within the line (None for full-line selections).
-    pub char_end: Option<i64>,
+    char_end: Option<i64>,
     /// The exact lines the comment is attached to.
-    pub anchor_text: String,
+    anchor_text: String,
     /// Lines preceding the anchor in the diff.
-    pub context_before: String,
+    context_before: String,
     /// Lines following the anchor in the diff.
-    pub context_after: String,
+    context_after: String,
     pub body: String,
     pub resolved: bool,
     pub created_at: String,
     pub updated_at: String,
     /// How well the anchor was resolved (computed at runtime).
+    anchor_status: AnchorStatus,
+}
+
+/// Construction data for a review comment.
+#[derive(Debug, Clone)]
+pub struct CommentInit {
+    pub id: i64,
+    pub merge_base: String,
+    pub head_ref: String,
+    pub created_head_commit: String,
+    pub anchor: CommentAnchor,
+    pub body: String,
+    pub resolved: bool,
+    pub created_at: String,
+    pub updated_at: String,
     pub anchor_status: AnchorStatus,
 }
 
@@ -653,11 +668,116 @@ pub struct ActiveReviewSession {
 // ---------------------------------------------------------------------------
 
 impl Comment {
+    /// Create a comment by projecting its display location from the anchor.
+    ///
+    /// The head segment is used when present because the head side is the
+    /// default list/panel projection. Base-only comments project from their
+    /// base segment.
+    pub fn new(init: CommentInit) -> Result<Self, CommentAnchorValidationError> {
+        CommentAnchor::try_with_aggregate_status(
+            init.anchor.segments.clone(),
+            init.anchor.aggregate_status,
+        )?;
+        let projected =
+            projected_comment_segment(&init.anchor).ok_or(CommentAnchorValidationError::Empty)?;
+        let file_path = projected.file_path.clone();
+        let line_start = projected.line_start;
+        let line_end = projected.line_end;
+        let char_start = projected.char_start;
+        let char_end = projected.char_end;
+        let anchor_text = projected.anchor_text.clone();
+        let context_before = projected.context_before.clone();
+        let context_after = projected.context_after.clone();
+        Ok(Self {
+            id: init.id,
+            merge_base: init.merge_base,
+            head_ref: init.head_ref,
+            created_head_commit: init.created_head_commit,
+            anchor: init.anchor,
+            file_path,
+            line_start,
+            line_end,
+            char_start,
+            char_end,
+            anchor_text,
+            context_before,
+            context_after,
+            body: init.body,
+            resolved: init.resolved,
+            created_at: init.created_at,
+            updated_at: init.updated_at,
+            anchor_status: init.anchor_status,
+        })
+    }
+
+    pub fn anchor(&self) -> &CommentAnchor {
+        &self.anchor
+    }
+
+    pub fn file_path(&self) -> &str {
+        &self.file_path
+    }
+
+    pub fn line_start(&self) -> i64 {
+        self.line_start
+    }
+
+    pub fn line_end(&self) -> i64 {
+        self.line_end
+    }
+
+    pub fn char_start(&self) -> Option<i64> {
+        self.char_start
+    }
+
+    pub fn char_end(&self) -> Option<i64> {
+        self.char_end
+    }
+
+    pub fn anchor_text(&self) -> &str {
+        &self.anchor_text
+    }
+
+    pub fn context_before(&self) -> &str {
+        &self.context_before
+    }
+
+    pub fn context_after(&self) -> &str {
+        &self.context_after
+    }
+
+    pub fn anchor_status(&self) -> AnchorStatus {
+        self.anchor_status
+    }
+
+    pub fn set_anchor_status(&mut self, anchor_status: AnchorStatus) {
+        self.anchor_status = anchor_status;
+    }
+
+    pub fn replace_anchor(
+        &mut self,
+        anchor: CommentAnchor,
+    ) -> Result<(), CommentAnchorValidationError> {
+        CommentAnchor::try_with_aggregate_status(anchor.segments.clone(), anchor.aggregate_status)?;
+        let projected =
+            projected_comment_segment(&anchor).ok_or(CommentAnchorValidationError::Empty)?;
+        self.file_path = projected.file_path.clone();
+        self.line_start = projected.line_start;
+        self.line_end = projected.line_end;
+        self.char_start = projected.char_start;
+        self.char_end = projected.char_end;
+        self.anchor_text = projected.anchor_text.clone();
+        self.context_before = projected.context_before.clone();
+        self.context_after = projected.context_after.clone();
+        self.anchor = anchor;
+        Ok(())
+    }
+
     /// Create a `Comment` from a `db::StoredComment`.
     ///
     /// This is the bridge between the database layer and the model layer.
     pub fn from_stored(stored: &crate::db::StoredComment) -> Self {
-        Self {
+        let mut comment = Self {
             id: stored.id,
             merge_base: stored.merge_base.clone(),
             head_ref: stored.head_ref.clone(),
@@ -676,8 +796,31 @@ impl Comment {
             created_at: stored.created_at.clone(),
             updated_at: stored.updated_at.clone(),
             anchor_status: stored.anchor_status,
+        };
+        comment.project_from_anchor();
+        comment
+    }
+
+    fn project_from_anchor(&mut self) {
+        if let Some(projected) = projected_comment_segment(&self.anchor) {
+            self.file_path = projected.file_path.clone();
+            self.line_start = projected.line_start;
+            self.line_end = projected.line_end;
+            self.char_start = projected.char_start;
+            self.char_end = projected.char_end;
+            self.anchor_text = projected.anchor_text.clone();
+            self.context_before = projected.context_before.clone();
+            self.context_after = projected.context_after.clone();
         }
     }
+}
+
+fn projected_comment_segment(anchor: &CommentAnchor) -> Option<&CommentAnchorSegment> {
+    anchor
+        .segments
+        .iter()
+        .find(|segment| segment.side == CommentAnchorSide::Head)
+        .or_else(|| anchor.segments.first())
 }
 
 // ---------------------------------------------------------------------------

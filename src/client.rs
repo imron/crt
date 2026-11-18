@@ -956,26 +956,19 @@ mod tests {
     }
 
     fn comment(id: i64) -> Comment {
-        Comment {
+        Comment::new(crate::review_types::CommentInit {
             id,
             merge_base: "merge-base".to_string(),
             head_ref: "HEAD".to_string(),
             created_head_commit: "head-commit".to_string(),
             anchor: test_anchor(id),
-            file_path: "src/lib.rs".to_string(),
-            line_start: id,
-            line_end: id,
-            char_start: None,
-            char_end: None,
-            anchor_text: String::new(),
-            context_before: String::new(),
-            context_after: String::new(),
             body: format!("comment {id}"),
             resolved: false,
             created_at: "2026-07-01T00:00:00+10:00".to_string(),
             updated_at: "2026-07-01T00:00:00+10:00".to_string(),
             anchor_status: AnchorStatus::Anchored,
-        }
+        })
+        .expect("test comment anchor should be valid")
     }
 
     fn test_anchor(line: i64) -> CommentAnchor {

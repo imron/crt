@@ -551,7 +551,7 @@ pub fn selected_comment_visible_in_current_view(state: &AppState) -> bool {
             crate::review_types::ContentMode::FullFile,
             crate::review_types::RenderVariant::BaseVersion,
         ) => comment
-            .anchor
+            .anchor()
             .segments
             .iter()
             .any(|segment| segment.side == crate::review_types::CommentAnchorSide::Base),
@@ -559,7 +559,7 @@ pub fn selected_comment_visible_in_current_view(state: &AppState) -> bool {
             crate::review_types::ContentMode::FullFile,
             crate::review_types::RenderVariant::HeadVersion,
         ) => comment
-            .anchor
+            .anchor()
             .segments
             .iter()
             .any(|segment| segment.side == crate::review_types::CommentAnchorSide::Head),
@@ -590,23 +590,21 @@ fn unresolved_comment_targets(state: &AppState) -> Vec<UnresolvedCommentTarget> 
         let mut comments: Vec<_> = state
             .comments
             .iter()
-            .filter(|comment| !comment.resolved && comment.file_path == entry.change.path)
+            .filter(|comment| !comment.resolved && comment.file_path() == entry.change.path)
             .collect();
-        comments.sort_by_key(|comment| (comment.line_start, comment.line_end, comment.id));
+        comments.sort_by_key(|comment| (comment.line_start(), comment.line_end(), comment.id));
         targets.extend(comments.into_iter().map(|comment| UnresolvedCommentTarget {
             file_index: Some(file_index),
             order_index: file_index,
             comment_id: comment.id,
-            line_start: comment.line_start,
+            line_start: comment.line_start(),
         }));
     }
     let mut external_paths: Vec<&str> = state
         .comments
         .iter()
-        .filter(|comment| {
-            !comment.resolved && !current_file_paths.contains(comment.file_path.as_str())
-        })
-        .map(|comment| comment.file_path.as_str())
+        .filter(|comment| !comment.resolved && !current_file_paths.contains(comment.file_path()))
+        .map(|comment| comment.file_path())
         .collect();
     external_paths.sort_unstable();
     external_paths.dedup();
@@ -615,14 +613,14 @@ fn unresolved_comment_targets(state: &AppState) -> Vec<UnresolvedCommentTarget> 
         let mut comments: Vec<_> = state
             .comments
             .iter()
-            .filter(|comment| !comment.resolved && comment.file_path == path)
+            .filter(|comment| !comment.resolved && comment.file_path() == path)
             .collect();
-        comments.sort_by_key(|comment| (comment.line_start, comment.line_end, comment.id));
+        comments.sort_by_key(|comment| (comment.line_start(), comment.line_end(), comment.id));
         targets.extend(comments.into_iter().map(|comment| UnresolvedCommentTarget {
             file_index: None,
             order_index: external_start + offset,
             comment_id: comment.id,
-            line_start: comment.line_start,
+            line_start: comment.line_start(),
         }));
     }
     targets
