@@ -313,7 +313,7 @@ fn current_head_line(state: &AppState) -> Option<u32> {
     }
 }
 
-pub(super) fn current_head_line_for_navigation(state: &AppState) -> Option<u32> {
+pub fn current_head_line_for_navigation(state: &AppState) -> Option<u32> {
     current_head_line(state).or_else(|| match state.content_mode {
         ContentMode::Diff => diff_insertion_head_line_before_row(state, state.diff_line_cursor),
         ContentMode::FullFile => None,

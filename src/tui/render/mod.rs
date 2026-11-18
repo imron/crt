@@ -546,7 +546,7 @@ fn keep_comment_cursor_visible(
     tui_state.comment_scroll = tui_state.comment_scroll.min(max_scroll);
 }
 
-pub(super) fn comment_visual_lines(text: &str, wrap_width: usize) -> Vec<String> {
+pub fn comment_visual_lines(text: &str, wrap_width: usize) -> Vec<String> {
     let wrap_width = wrap_width.max(1);
     if text.is_empty() {
         return vec![String::new()];
