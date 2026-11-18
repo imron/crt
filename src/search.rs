@@ -264,7 +264,7 @@ mod tests {
         let re = regex::Regex::new(&patterns[0]).unwrap();
         assert!(re.is_match("pub fn foo_bar(x: i32) -> bool {"));
         assert!(re.is_match("fn foo_bar() {"));
-        assert!(re.is_match("pub(crate) fn foo_bar() {"));
+        assert!(re.is_match("pub async fn foo_bar() {"));
         assert!(!re.is_match("fn foo_baz() {"));
     }
 

@@ -64,8 +64,11 @@ Do not rebuild structural rows for:
 - selected/current comment changes,
 - comment body/resolved changes,
 - search query changes,
-- visual selection changes,
-- `show_blame` toggles.
+- visual selection changes.
+
+Rebuild structural rows for `show_blame` toggles. Blame visibility changes the
+rendered document shape because blame is attached to content rows and reserves
+the blame column.
 
 When an incremental overlay update is unclear, rebuilding from raw app state is
 allowed. The raw `AppState` fields remain authoritative.
@@ -112,7 +115,7 @@ Add tests for:
 - scroll movement does not change `DocumentKey`.
 - search changes do not change `DocumentKey`.
 - comment resolve/unresolve does not change `DocumentKey`.
-- `show_blame` does not change `DocumentKey`.
+- `show_blame` changes `DocumentKey`.
 - `App::model()` returns the existing active document projection.
 
 ## Acceptance Criteria

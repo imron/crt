@@ -133,9 +133,9 @@ the model and marker behavior should be tested in this slice.
   kind.
 - Spacer rows can render overlay-only markers and selection state through
   `RenderLine::Spacer`.
-- `DocumentKey` includes only structural inputs.
+- `DocumentKey` includes structural inputs and blame visibility.
 - `DocumentKey` excludes cursor, scroll, comments, search, selection, and
-  `show_blame`.
+  selected comment.
 - `HunkSpan.first_change` is the hunk navigation target.
 - `HunkSpan.full_span` describes the complete hunk in document row space.
 - Blame is attached only when loaded and only to relevant content rows.
@@ -163,9 +163,10 @@ No generic `Document` API should expose base/head-specific blame lookup.
 
 Add unit tests for:
 
-- `DocumentKey` changes when structural inputs change.
+- `DocumentKey` changes when document inputs change, including
+  `show_blame`.
 - `DocumentKey` does not change for cursor, scroll, comments, search,
-  selection, selected comment, or `show_blame`.
+  selection, or selected comment.
 - unified document rows match current inline row count and line ordering.
 - head document rows contain only head-side source lines.
 - base document rows contain only base-side source lines.

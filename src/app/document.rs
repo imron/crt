@@ -46,6 +46,7 @@ pub struct DocumentKey {
     pub render_variant: RenderVariant,
     pub diff_algorithm: DiffAlgorithm,
     pub ignore_whitespace: bool,
+    pub show_blame: bool,
     pub head_content_id: Option<ContentId>,
     pub base_content_id: Option<ContentId>,
 }
@@ -472,9 +473,9 @@ pub struct Gutter {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlameInfo {
-    pub hash: String,
-    pub author: String,
-    pub date: String,
+    pub hash: Rc<str>,
+    pub author: Rc<str>,
+    pub date: Rc<str>,
 }
 
 impl From<&BlameLine> for BlameInfo {
@@ -2311,6 +2312,7 @@ mod tests {
             render_variant,
             diff_algorithm: DiffAlgorithm::Myers,
             ignore_whitespace: false,
+            show_blame: false,
             head_content_id: Some(ContentId::from("head-a")),
             base_content_id: Some(ContentId::from("base-a")),
         }
@@ -2334,6 +2336,14 @@ mod tests {
             comments,
             selected_comment_id: None,
             cursor: None,
+        }
+    }
+
+    fn blame_line(hash: &str, author: &str, date: &str) -> BlameLine {
+        BlameLine {
+            hash: Rc::from(hash),
+            author: Rc::from(author),
+            date: Rc::from(date),
         }
     }
 
@@ -2458,7 +2468,7 @@ mod tests {
     }
 
     #[test]
-    fn document_key_changes_when_structural_inputs_change() {
+    fn document_key_changes_when_document_inputs_change() {
         let base = key(ContentMode::Diff, RenderVariant::Inline);
 
         let mut changed = base.clone();
@@ -2483,6 +2493,10 @@ mod tests {
 
         let mut changed = base.clone();
         changed.ignore_whitespace = true;
+        assert_ne!(base, changed);
+
+        let mut changed = base.clone();
+        changed.show_blame = true;
         assert_ne!(base, changed);
 
         let mut changed = base.clone();
@@ -3135,16 +3149,8 @@ mod tests {
         let hunk = replacement_hunk();
         let hunks = vec![hunk];
         let head_blame = vec![
-            BlameLine {
-                hash: "aaaaaaa".to_string(),
-                author: "Ada".to_string(),
-                date: "2026-01-01".to_string(),
-            },
-            BlameLine {
-                hash: "bbbbbbb".to_string(),
-                author: "Bea".to_string(),
-                date: "2026-01-02".to_string(),
-            },
+            blame_line("aaaaaaa", "Ada", "2026-01-01"),
+            blame_line("bbbbbbb", "Bea", "2026-01-02"),
         ];
         let mut input = input(
             key(ContentMode::Diff, RenderVariant::Inline),
@@ -3161,7 +3167,7 @@ mod tests {
             content(&document, 2)
                 .blame
                 .as_ref()
-                .map(|blame| blame.author.as_str()),
+                .map(|blame| blame.author.as_ref()),
             Some("Bea")
         );
         assert_eq!(content(&document, 1).blame, None);
@@ -3171,33 +3177,13 @@ mod tests {
     fn blame_is_routed_by_document_variant_and_source_side() {
         let hunk = replacement_hunk();
         let head_blame = vec![
-            BlameLine {
-                hash: "head-1".to_string(),
-                author: "Head One".to_string(),
-                date: "2026-01-01".to_string(),
-            },
-            BlameLine {
-                hash: "head-2".to_string(),
-                author: "Head Two".to_string(),
-                date: "2026-01-02".to_string(),
-            },
-            BlameLine {
-                hash: "head-3".to_string(),
-                author: "Head Three".to_string(),
-                date: "2026-01-03".to_string(),
-            },
+            blame_line("head-1", "Head One", "2026-01-01"),
+            blame_line("head-2", "Head Two", "2026-01-02"),
+            blame_line("head-3", "Head Three", "2026-01-03"),
         ];
         let base_blame = vec![
-            BlameLine {
-                hash: "base-1".to_string(),
-                author: "Base One".to_string(),
-                date: "2026-01-01".to_string(),
-            },
-            BlameLine {
-                hash: "base-2".to_string(),
-                author: "Base Two".to_string(),
-                date: "2026-01-02".to_string(),
-            },
+            blame_line("base-1", "Base One", "2026-01-01"),
+            blame_line("base-2", "Base Two", "2026-01-02"),
         ];
         let mut input = input(
             key(ContentMode::Diff, RenderVariant::Inline),
@@ -3211,19 +3197,28 @@ mod tests {
 
         let unified = build_unified_document(&input);
         assert_eq!(
-            content(&unified, 1).blame.as_ref().map(|blame| &blame.hash),
-            Some(&"base-2".to_string())
+            content(&unified, 1)
+                .blame
+                .as_ref()
+                .map(|blame| blame.hash.as_ref()),
+            Some("base-2")
         );
         assert_eq!(
-            content(&unified, 2).blame.as_ref().map(|blame| &blame.hash),
-            Some(&"head-2".to_string())
+            content(&unified, 2)
+                .blame
+                .as_ref()
+                .map(|blame| blame.hash.as_ref()),
+            Some("head-2")
         );
 
         input.key = key(ContentMode::FullFile, RenderVariant::BaseVersion);
         let base = build_base_document(&input);
         assert_eq!(
-            content(&base, 1).blame.as_ref().map(|blame| &blame.hash),
-            Some(&"base-2".to_string())
+            content(&base, 1)
+                .blame
+                .as_ref()
+                .map(|blame| blame.hash.as_ref()),
+            Some("base-2")
         );
         assert!(
             base.rows()
@@ -3238,8 +3233,11 @@ mod tests {
         input.key = key(ContentMode::FullFile, RenderVariant::HeadVersion);
         let head = build_head_document(&input);
         assert_eq!(
-            content(&head, 1).blame.as_ref().map(|blame| &blame.hash),
-            Some(&"head-2".to_string())
+            content(&head, 1)
+                .blame
+                .as_ref()
+                .map(|blame| blame.hash.as_ref()),
+            Some("head-2")
         );
         assert!(
             head.rows()
@@ -3257,15 +3255,15 @@ mod tests {
             content(side_by_side.base(), 1)
                 .blame
                 .as_ref()
-                .map(|blame| &blame.hash),
-            Some(&"base-2".to_string())
+                .map(|blame| blame.hash.as_ref()),
+            Some("base-2")
         );
         assert_eq!(
             content(side_by_side.head(), 1)
                 .blame
                 .as_ref()
-                .map(|blame| &blame.hash),
-            Some(&"head-2".to_string())
+                .map(|blame| blame.hash.as_ref()),
+            Some("head-2")
         );
     }
 

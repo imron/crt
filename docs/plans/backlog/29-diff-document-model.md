@@ -130,6 +130,7 @@ pub struct DocumentKey {
     pub render_variant: RenderVariant,
     pub diff_algorithm: DiffAlgorithm,
     pub ignore_whitespace: bool,
+    pub show_blame: bool,
     pub head_content_id: Option<ContentId>,
     pub base_content_id: Option<ContentId>,
 }
@@ -142,8 +143,7 @@ It should not include cheap overlay or viewport state:
 - selected/current comment id,
 - comment bodies or resolved state,
 - search query,
-- visual selection,
-- `show_blame`.
+- visual selection.
 
 If `DocumentKey` changes, rebuild the structural `DiffDocument`. If it does
 not change, update overlays and lightweight state.
@@ -276,12 +276,13 @@ should not be eagerly required for every document.
 
 `ContentRow` may contain `blame: Option<BlameInfo>`.
 
-`show_blame` controls whether the TUI renders available blame. It should not be
-part of `DocumentKey` and should not force a structural document rebuild.
+`show_blame` controls whether the document is built with available blame.
+Because blame changes per-row render content and the reserved blame column, it
+is part of `DocumentKey` and forces an active document rebuild.
 
 When blame is toggled on and blame is not loaded, the app may load blame for
-the active file and update the active document rows. This is an update to
-per-row optional data, not a rebuild of the row axis.
+the active file before rebuilding the active document. When blame is toggled
+off, the rebuilt active document should omit per-row blame data.
 
 Blame loading should match the active document shape:
 
@@ -340,6 +341,7 @@ pub struct DocumentKey {
     pub render_variant: RenderVariant,
     pub diff_algorithm: DiffAlgorithm,
     pub ignore_whitespace: bool,
+    pub show_blame: bool,
     pub head_content_id: Option<ContentId>,
     pub base_content_id: Option<ContentId>,
 }
@@ -720,6 +722,10 @@ This plan should be implemented in focused subplans:
 - `29f-remove-legacy-diff-projections.md`: remove obsolete projections and
   TUI-owned semantic reconstruction.
 
+Until 29f is complete, the TUI may keep a local `*` toggle between the legacy
+renderer and the document renderer. The final state should remove the toggle
+and render only from `DiffDocument`.
+
 The first implementation should prefer correctness and clear ownership over
 micro-optimized incremental updates. Once behavior is equivalent, comment,
 search, blame, and cursor overlays can be updated incrementally.
@@ -736,7 +742,7 @@ search, blame, and cursor overlays can be updated incrementally.
 - [ ] Diff search runs against document text, not terminal rendered text.
 - [ ] Comment navigation uses document comment spans.
 - [ ] Comment creation captures anchors from document source metadata.
-- [ ] `show_blame` does not force structural document rebuilds.
+- [ ] `show_blame` changes `DocumentKey` and rebuilds the active document.
 - [ ] `AppState` owns the active document projection.
 - [ ] `AppModel` no longer rebuilds the full diff projection every render.
 - [ ] Existing comment, search, selection, hunk, and side-by-side tests remain
