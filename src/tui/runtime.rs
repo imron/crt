@@ -262,6 +262,7 @@ impl Tui {
     }
 
     fn render_current_frame(&mut self) -> Result<u64> {
+        self.app.state.ensure_active_document();
         let model = self.app.model();
         let revision = model.revision;
         let styles = &self.app.config.style;
@@ -383,8 +384,10 @@ impl Tui {
 
     /// Handle mouse events: selection, scroll wheel, border drag.
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
-        let model = self.app.model();
-        let input_event = input::input_event_from_mouse(&model, &self.tui_state, &mouse);
+        let input_event = {
+            let model = self.app.model();
+            input::input_event_from_mouse(&model, &self.tui_state, &mouse)
+        };
         let semantic_content_hit = input_event.as_ref().and_then(mouse_content_hit);
         let pending_core_effects = input_event
             .map(|event| self.core_effects_for_input(CoreInputDispatch::Interaction(event)))
@@ -460,6 +463,7 @@ impl Tui {
                         }
                         let drag_content_hit = semantic_content_hit.or_else(|| {
                             let (pane, _) = self.tui_state.mouse_down_anchor?;
+                            let model = self.app.model();
                             self.tui_state
                                 .pointer_text_anchor_for_pane(
                                     &model,

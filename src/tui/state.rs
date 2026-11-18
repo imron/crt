@@ -584,7 +584,7 @@ impl AppViewport for TuiState {
     }
 }
 
-fn model_file_path(model: &AppModel, file_index: usize) -> Option<&str> {
+fn model_file_path<'a>(model: &'a AppModel<'_>, file_index: usize) -> Option<&'a str> {
     model
         .file_list
         .sections
