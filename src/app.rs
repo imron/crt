@@ -1587,7 +1587,42 @@ mod tests {
             app.pending_work.pop_front(),
             Some(AppWork::CreateComment {
                 anchor,
-                body: "please fix".to_string(),
+                body: "  please fix".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn comment_body_submit_strips_trailing_whitespace_only() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        let anchor = CommentAnchorCapture {
+            file_path: "src/main.rs".to_string(),
+            line_start: 1,
+            line_end: 1,
+            char_start: None,
+            char_end: None,
+            anchor_text: "fn main() {}".to_string(),
+            context_before: String::new(),
+            context_after: String::new(),
+        };
+        app.state.pending_comment_anchor = Some(anchor.clone());
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::Comment(CommentEffect::SubmitBody {
+                body: "  please fix  \n\t ".to_string(),
+            })],
+        );
+
+        assert_eq!(
+            app.pending_work.pop_front(),
+            Some(AppWork::CreateComment {
+                anchor,
+                body: "  please fix".to_string(),
             })
         );
     }

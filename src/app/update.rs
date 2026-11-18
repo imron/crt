@@ -77,7 +77,7 @@ pub fn apply_core_effects(
                 diff_search::clear_diff_search(state);
             }
             CoreEffect::Comment(CommentEffect::SubmitBody { body }) => {
-                let body = body.trim().to_string();
+                let body = body.trim_end().to_string();
                 if body.is_empty() {
                     update.set_status("Comment body is empty");
                 } else if let Some(anchor) = state.pending_comment_anchor.clone() {

@@ -306,8 +306,14 @@ fn handle_comment_input(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> Key
             }
             tui_state.clear_prompt();
         }
-        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('E') | KeyCode::Char('e')
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && key.modifiers.contains(KeyModifiers::SHIFT) =>
+        {
             return KeyInputResult::OpenEditor;
+        }
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            tui_state.comment_cursor = line_end(&tui_state.comment_input, tui_state.comment_cursor);
         }
         KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             delete_comment_word_before_cursor(tui_state);
@@ -320,6 +326,9 @@ fn handle_comment_input(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> Key
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             delete_comment_char_at_cursor(tui_state);
+        }
+        KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            delete_comment_char_before_cursor(tui_state);
         }
         KeyCode::Tab | KeyCode::BackTab => {
             tui_state
@@ -334,14 +343,7 @@ fn handle_comment_input(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> Key
             tui_state.comment_cursor += 1;
         }
         KeyCode::Backspace => {
-            if tui_state.comment_cursor > 0 {
-                let previous =
-                    previous_char_boundary(&tui_state.comment_input, tui_state.comment_cursor);
-                tui_state
-                    .comment_input
-                    .replace_range(previous..tui_state.comment_cursor, "");
-                tui_state.comment_cursor = previous;
-            }
+            delete_comment_char_before_cursor(tui_state);
         }
         KeyCode::Delete => {
             if tui_state.comment_cursor < tui_state.comment_input.len() {
@@ -435,6 +437,16 @@ fn delete_comment_word_before_cursor(tui_state: &mut TuiState) {
         .comment_input
         .replace_range(start..tui_state.comment_cursor, "");
     tui_state.comment_cursor = start;
+}
+
+fn delete_comment_char_before_cursor(tui_state: &mut TuiState) {
+    if tui_state.comment_cursor > 0 {
+        let previous = previous_char_boundary(&tui_state.comment_input, tui_state.comment_cursor);
+        tui_state
+            .comment_input
+            .replace_range(previous..tui_state.comment_cursor, "");
+        tui_state.comment_cursor = previous;
+    }
 }
 
 fn previous_word_boundary(text: &str, cursor: usize) -> usize {
@@ -780,16 +792,52 @@ mod tests {
     }
 
     #[test]
-    fn comment_prompt_ctrl_e_requests_editor() {
+    fn comment_prompt_ctrl_shift_e_requests_editor() {
         let mut tui_state = TuiState::default();
         tui_state.open_comment_prompt(PromptId(9), "draft".to_string());
 
         let result = handle_key_event(
             &mut tui_state,
-            CrosstermKeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+            CrosstermKeyEvent::new(
+                KeyCode::Char('E'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
         );
 
         assert_eq!(result, KeyInputResult::OpenEditor);
+    }
+
+    #[test]
+    fn comment_prompt_ctrl_e_moves_to_line_end() {
+        let mut tui_state = TuiState::default();
+        tui_state.open_comment_prompt(PromptId(9), "one\ntwo three".to_string());
+        tui_state.comment_cursor = "one\nt".len();
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(tui_state.comment_cursor, "one\ntwo three".len());
+    }
+
+    #[test]
+    fn comment_prompt_ctrl_h_deletes_previous_character() {
+        let mut tui_state = TuiState::default();
+        tui_state.open_comment_prompt(PromptId(9), "éx".to_string());
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+            ),
+            KeyInputResult::Local
+        );
+
+        assert_eq!(tui_state.comment_input, "é");
+        assert_eq!(tui_state.comment_cursor, "é".len());
     }
 
     #[test]
