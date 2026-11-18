@@ -28,6 +28,7 @@ pub use update::{AppOutput, AppViewport, StatusUpdate};
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AppWork {
     ToggleSelectedReview,
+    UndoLastAction,
     ReloadFileSnapshot,
     RunCommand(Command),
     CreateComment {
@@ -47,6 +48,12 @@ enum AppWork {
     DeleteComment {
         id: i64,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UndoAction {
+    UnresolveComment { id: i64 },
+    UnapproveReview { file_path: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,6 +175,7 @@ pub struct App {
     client: Option<Client>,
     config_path: Option<PathBuf>,
     pending_work: VecDeque<AppWork>,
+    last_undo_action: Option<UndoAction>,
 }
 
 impl App {
@@ -183,6 +191,7 @@ impl App {
             client: None,
             config_path: None,
             pending_work: VecDeque::new(),
+            last_undo_action: None,
         }
     }
 
@@ -399,6 +408,7 @@ impl App {
         while let Some(work) = self.pending_work.pop_front() {
             let work_status = match work {
                 AppWork::ToggleSelectedReview => self.toggle_selected_review().await,
+                AppWork::UndoLastAction => self.undo_last_action().await,
                 AppWork::ReloadFileSnapshot => self.reload_file_snapshot().await,
                 AppWork::RunCommand(command) => self.run_command(command).await,
                 AppWork::CreateComment { anchor, body } => {
@@ -465,6 +475,9 @@ impl App {
         if output.take_pending_review_toggle() {
             self.pending_work.push_back(AppWork::ToggleSelectedReview);
         }
+        if output.take_pending_undo() {
+            self.pending_work.push_back(AppWork::UndoLastAction);
+        }
         if let Some(command) = output.take_pending_command() {
             self.pending_work.push_back(AppWork::RunCommand(command));
         }
@@ -525,12 +538,39 @@ impl App {
 
         match result {
             Ok(action_result) => {
+                if !is_reviewed {
+                    self.last_undo_action = Some(UndoAction::UnapproveReview {
+                        file_path: path.clone(),
+                    });
+                }
                 self.apply_review_result(&action_result);
                 None
             }
             Err(e) => {
                 let verb = if is_reviewed { "unmark" } else { "mark" };
                 Some(StatusUpdate::Set(format!("Failed to {verb} reviewed: {e}")))
+            }
+        }
+    }
+
+    async fn undo_last_action(&mut self) -> Option<StatusUpdate> {
+        let Some(action) = self.last_undo_action.take() else {
+            return Some(StatusUpdate::Set("Nothing to undo".to_string()));
+        };
+
+        match action {
+            UndoAction::UnresolveComment { id } => {
+                let status = self.unresolve_comment(id).await;
+                status.or_else(|| Some(StatusUpdate::Set(format!("Undid resolve #{id}"))))
+            }
+            UndoAction::UnapproveReview { file_path } => {
+                match self.unmark_reviewed(&file_path).await {
+                    Ok(action_result) => {
+                        self.apply_review_result(&action_result);
+                        Some(StatusUpdate::Set(format!("Undid approval for {file_path}")))
+                    }
+                    Err(e) => Some(StatusUpdate::Set(format!("Failed to undo approval: {e}"))),
+                }
             }
         }
     }
@@ -696,6 +736,9 @@ impl App {
         match client.resolve_comment(id).await {
             Ok(result) => {
                 upsert_comment(&mut self.state.comments, result.comment.clone());
+                self.last_undo_action = Some(UndoAction::UnresolveComment {
+                    id: result.comment.id,
+                });
                 self.state.mark_model_changed();
                 Some(StatusUpdate::Set(format!(
                     "Resolved comment #{}",
@@ -1661,6 +1704,16 @@ mod tests {
             app.pending_work.pop_front(),
             Some(AppWork::ToggleSelectedReview)
         );
+    }
+
+    #[test]
+    fn undo_effect_queues_undo_work_in_app() {
+        let mut app = App::new(Config::default(), test_context(), vec![test_file("a.rs")]);
+
+        let output = app.apply_core_effects(&EmptyViewport, vec![CoreEffect::Undo]);
+
+        assert!(output.handled);
+        assert_eq!(app.pending_work.pop_front(), Some(AppWork::UndoLastAction));
     }
 
     #[test]

@@ -27,6 +27,7 @@ pub enum CoreEffect {
     Suspend,
     ShowHelp,
     DismissHelp,
+    Undo,
     ReviewToggle,
     NavigateFile(Direction),
     NavigateFileSection(Direction),
@@ -403,6 +404,13 @@ impl CoreInteractionEngine {
             }
             InputEvent::Key(key)
                 if key.kind == KeyEventKind::Press
+                    && key_has_no_modifier(key.modifiers)
+                    && key.key == Key::Char('u') =>
+            {
+                vec![CoreEffect::Undo]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
                     && key_has_control_modifier_only(key.modifiers)
                     && key.key == Key::Char('b') =>
             {
@@ -430,12 +438,16 @@ impl CoreInteractionEngine {
                 vec![CoreEffect::NavigateFileSection(Direction::Prev)]
             }
             InputEvent::Key(key)
-                if key.kind == KeyEventKind::Press && unresolved_comment_next_key(&key) =>
+                if key.kind == KeyEventKind::Press
+                    && key_has_no_modifier(key.modifiers)
+                    && key.key == Key::Char('}') =>
             {
                 vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)]
             }
             InputEvent::Key(key)
-                if key.kind == KeyEventKind::Press && unresolved_comment_prev_key(&key) =>
+                if key.kind == KeyEventKind::Press
+                    && key_has_no_modifier(key.modifiers)
+                    && key.key == Key::Char('{') =>
             {
                 vec![CoreEffect::NavigateUnresolvedComment(Direction::Prev)]
             }
@@ -649,28 +661,6 @@ fn key_has_control_shift_modifier_only(modifiers: super::input::InputModifiers) 
     modifiers.ctrl && !modifiers.alt && modifiers.shift
 }
 
-fn unresolved_comment_next_key(key: &super::input::KeyEvent) -> bool {
-    match key.key {
-        Key::Char(']') => key_has_control_shift_modifier_only(key.modifiers),
-        Key::Char('}') => {
-            key_has_control_shift_modifier_only(key.modifiers)
-                || key_has_control_modifier_only(key.modifiers)
-        }
-        _ => false,
-    }
-}
-
-fn unresolved_comment_prev_key(key: &super::input::KeyEvent) -> bool {
-    match key.key {
-        Key::Char('[') => key_has_control_shift_modifier_only(key.modifiers),
-        Key::Char('{') => {
-            key_has_control_shift_modifier_only(key.modifiers)
-                || key_has_control_modifier_only(key.modifiers)
-        }
-        _ => false,
-    }
-}
-
 fn approve_review_toggle_key(key: &super::input::KeyEvent) -> bool {
     match key.key {
         Key::Char('a') => key_has_no_modifier(key.modifiers),
@@ -759,12 +749,6 @@ fn comments_panel_key_effect(
     context: &InteractionContext,
 ) -> Option<CommentsPanelEffect> {
     match key.key {
-        Key::Char('}') if key_has_no_modifier(key.modifiers) => {
-            Some(CommentsPanelEffect::NavigateNextComment)
-        }
-        Key::Char('{') if key_has_no_modifier(key.modifiers) => {
-            Some(CommentsPanelEffect::NavigatePreviousComment)
-        }
         Key::Char('r') if key_has_no_modifier(key.modifiers) && context.current_comment_active => {
             Some(CommentsPanelEffect::ToggleResolvedCurrent)
         }
@@ -2041,78 +2025,6 @@ mod tests {
     }
 
     #[test]
-    fn shifted_control_brackets_navigate_unresolved_comments() {
-        let mut engine = CoreInteractionEngine::new();
-
-        let next = engine.handle_input(
-            key_event(
-                Key::Char(']'),
-                InputModifiers {
-                    ctrl: true,
-                    shift: true,
-                    ..Default::default()
-                },
-            ),
-            &InteractionContext::default(),
-        );
-        let previous = engine.handle_input(
-            key_event(
-                Key::Char('['),
-                InputModifiers {
-                    ctrl: true,
-                    shift: true,
-                    ..Default::default()
-                },
-            ),
-            &InteractionContext::default(),
-        );
-
-        assert_eq!(
-            next,
-            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)]
-        );
-        assert_eq!(
-            previous,
-            vec![CoreEffect::NavigateUnresolvedComment(Direction::Prev)]
-        );
-    }
-
-    #[test]
-    fn control_shifted_brace_chars_navigate_unresolved_comments() {
-        let mut engine = CoreInteractionEngine::new();
-
-        let next = engine.handle_input(
-            key_event(
-                Key::Char('}'),
-                InputModifiers {
-                    ctrl: true,
-                    ..Default::default()
-                },
-            ),
-            &InteractionContext::default(),
-        );
-        let previous = engine.handle_input(
-            key_event(
-                Key::Char('{'),
-                InputModifiers {
-                    ctrl: true,
-                    ..Default::default()
-                },
-            ),
-            &InteractionContext::default(),
-        );
-
-        assert_eq!(
-            next,
-            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)]
-        );
-        assert_eq!(
-            previous,
-            vec![CoreEffect::NavigateUnresolvedComment(Direction::Prev)]
-        );
-    }
-
-    #[test]
     fn control_bracket_requests_definition_navigation() {
         let mut engine = CoreInteractionEngine::new();
 
@@ -2511,7 +2423,7 @@ mod tests {
     }
 
     #[test]
-    fn brace_keys_navigate_comments() {
+    fn brace_keys_navigate_unresolved_comments() {
         let mut engine = CoreInteractionEngine::new();
 
         let next = engine.handle_input(
@@ -2525,16 +2437,24 @@ mod tests {
 
         assert_eq!(
             next,
-            vec![CoreEffect::CommentsPanel(
-                CommentsPanelEffect::NavigateNextComment
-            )]
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)]
         );
         assert_eq!(
             previous,
-            vec![CoreEffect::CommentsPanel(
-                CommentsPanelEffect::NavigatePreviousComment
-            )]
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Prev)]
         );
+    }
+
+    #[test]
+    fn u_requests_undo() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(Key::Char('u'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(effects, vec![CoreEffect::Undo]);
     }
 
     #[test]

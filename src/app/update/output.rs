@@ -7,6 +7,7 @@ pub struct AppOutput {
     pub handled: bool,
     pub status: Option<StatusUpdate>,
     pending_review_toggle: bool,
+    pending_undo: bool,
     pub should_suspend: bool,
     pub should_quit: bool,
     pending_command: Option<Command>,
@@ -49,6 +50,16 @@ impl AppOutput {
     pub fn take_pending_review_toggle(&mut self) -> bool {
         let pending = self.pending_review_toggle;
         self.pending_review_toggle = false;
+        pending
+    }
+
+    pub fn request_undo(&mut self) {
+        self.pending_undo = true;
+    }
+
+    pub fn take_pending_undo(&mut self) -> bool {
+        let pending = self.pending_undo;
+        self.pending_undo = false;
         pending
     }
 

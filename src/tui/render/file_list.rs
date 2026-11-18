@@ -187,16 +187,12 @@ fn comment_line(
     pane_focused: bool,
     max_width: usize,
 ) -> (Line<'static>, String) {
-    let id = row
-        .comment_id
-        .map(|id| format!("#{id}"))
-        .unwrap_or_else(|| "#?".to_string());
     let line = row
         .comment_line_start
         .map(|line| format!("L{line} "))
         .unwrap_or_default();
     let preview = row.comment_preview.as_deref().unwrap_or("");
-    let prefix = format!("  {id} {line}");
+    let prefix = format!("  {line}");
     let preview_budget = max_width.saturating_sub(prefix.chars().count());
     let preview_text = truncate_text(preview, preview_budget);
     let plain = format!("{prefix}{preview_text}");
@@ -215,8 +211,6 @@ fn comment_line(
     (
         Line::from(vec![
             Span::styled("  ".to_string(), Style::default()),
-            Span::styled(id, Style::default().fg(*fs.comment_fg)),
-            Span::styled(" ".to_string(), Style::default()),
             Span::styled(line, Style::default().fg(*fs.separator_fg)),
             Span::styled(preview_text, style),
         ]),
