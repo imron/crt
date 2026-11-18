@@ -31,12 +31,11 @@ use crate::core::{
     InputEvent, InputModifiers, MouseButton as CoreMouseButton, MouseEvent as CoreMouseEvent,
     MouseEventKind as CoreMouseEventKind, PaneId, PointerSemanticHit, TextAnchor,
 };
-use crate::keys;
 use crate::model::{
     ConnectionContext, ContentMode, DefinitionLocation, FileEntry, PaneFocus, RenderVariant,
     ReviewStatus, SearchMatch,
 };
-use crate::ui;
+use crate::tui::{input, render};
 
 // ---------------------------------------------------------------------------
 // Input mode
@@ -256,7 +255,7 @@ pub struct AppState {
     pub pending_refresh: bool,
     /// Cached diff content — avoids rebuilding all `Line<'static>` on every
     /// frame when only the scroll offset changed.
-    pub diff_cache: Option<crate::ui::diff_view::DiffCache>,
+    pub diff_cache: Option<crate::tui::render::diff_view::DiffCache>,
     /// Current input mode (Normal vs Command).
     pub input_mode: InputMode,
     /// Command-mode input buffer (the text after `:`).
@@ -929,7 +928,7 @@ impl App {
         loop {
             // Render current state.
             let state = &mut self.state;
-            self.terminal.draw(|frame| ui::draw(frame, state))?;
+            self.terminal.draw(|frame| render::draw(frame, state))?;
 
             // Wait for the next terminal event, with a timeout so that
             // transient status messages get cleared by re-rendering.
@@ -997,7 +996,7 @@ impl App {
                 // Any keypress clears mouse selection.
                 self.state.mouse_selection = None;
                 self.state.mouse_down_anchor = None;
-                keys::handle_key_event(&mut self.state, key);
+                input::handle_key_event(&mut self.state, key);
             }
             Event::Mouse(mouse) => {
                 self.handle_mouse_event(mouse);
@@ -1215,7 +1214,7 @@ impl App {
                 self.state.status_message = Some(("Searching...".to_string(), Instant::now()));
                 // Force a re-render so the user sees the searching message.
                 let state = &mut self.state;
-                let _ = self.terminal.draw(|frame| ui::draw(frame, state));
+                let _ = self.terminal.draw(|frame| render::draw(frame, state));
 
                 match self.client.search_codebase(&pattern, "all").await {
                     Ok(result) => match core_search::search_outcome(&pattern, false, result) {
@@ -1248,7 +1247,7 @@ impl App {
                 self.state.status_message =
                     Some(("Searching diff files...".to_string(), Instant::now()));
                 let state = &mut self.state;
-                let _ = self.terminal.draw(|frame| ui::draw(frame, state));
+                let _ = self.terminal.draw(|frame| render::draw(frame, state));
 
                 match self.client.search_codebase(&pattern, "diff").await {
                     Ok(result) => match core_search::search_outcome(&pattern, true, result) {
@@ -1283,7 +1282,7 @@ impl App {
                 self.state.status_message =
                     Some(("Finding definition...".to_string(), Instant::now()));
                 let state = &mut self.state;
-                let _ = self.terminal.draw(|frame| ui::draw(frame, state));
+                let _ = self.terminal.draw(|frame| render::draw(frame, state));
 
                 let context_file = self
                     .state

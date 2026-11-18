@@ -11,14 +11,13 @@ pub mod config;
 pub mod core;
 pub mod db;
 pub mod git;
-pub mod keys;
 pub mod markers;
 pub mod mcp;
 pub mod model;
 pub mod protocol;
 pub mod search;
 pub mod server;
-pub mod ui;
+pub mod tui;
 
 use std::path::PathBuf;
 use std::time::Duration;
