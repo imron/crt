@@ -1,16 +1,12 @@
 //! Application state and input dispatch.
 
-use crossterm::event::{self, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
 use crate::config::Config;
 use crate::core::diff;
 use crate::core::interaction::CoreInteractionEngine;
 use crate::core::review;
-use crate::core::{
-    InputEvent, InputModifiers, MouseButton as CoreMouseButton, MouseEvent as CoreMouseEvent,
-    MouseEventKind as CoreMouseEventKind, PaneId, PointerSemanticHit, TextAnchor,
-};
+use crate::core::{PaneId, PointerSemanticHit, TextAnchor};
 use crate::model::{ConnectionContext, ContentMode, FileEntry, PaneFocus, RenderVariant};
 
 // ---------------------------------------------------------------------------
@@ -295,8 +291,8 @@ impl AppState {
         self.clamp_diff_scroll();
     }
 
-    /// Determine which pane a terminal coordinate falls in.
-    fn pane_at(
+    /// Determine which pane a screen coordinate falls in.
+    pub fn pane_at(
         &self,
         col: u16,
         row: u16,
@@ -312,68 +308,25 @@ impl AppState {
         }
     }
 
-    pub fn input_event_from_mouse(
-        &self,
-        mouse: &MouseEvent,
-        show_file_list: bool,
-        show_diff_pane: bool,
-    ) -> Option<InputEvent> {
-        let (kind, button) = match mouse.kind {
-            MouseEventKind::Down(button) => {
-                (CoreMouseEventKind::Down, Some(core_mouse_button(button)?))
-            }
-            MouseEventKind::Up(button) => {
-                (CoreMouseEventKind::Up, Some(core_mouse_button(button)?))
-            }
-            MouseEventKind::Drag(button) => {
-                (CoreMouseEventKind::Drag, Some(core_mouse_button(button)?))
-            }
-            MouseEventKind::Moved => (CoreMouseEventKind::Move, None),
-            MouseEventKind::ScrollDown => (CoreMouseEventKind::ScrollDown, None),
-            MouseEventKind::ScrollUp => (CoreMouseEventKind::ScrollUp, None),
-            _ => return None,
-        };
-
-        let pane = self.pane_at(mouse.column, mouse.row, show_file_list, show_diff_pane);
-        let local_pos = pane.map(|pane| {
-            let area = self.area_for_pane(pane);
-            (
-                mouse.column.saturating_sub(area.x),
-                mouse.row.saturating_sub(area.y),
-            )
-        });
-
-        Some(InputEvent::Mouse(CoreMouseEvent {
-            kind,
-            button,
-            local_pos,
-            semantic_hit: pane.and_then(|pane| self.pointer_semantic_hit(pane, mouse)),
-            modifiers: InputModifiers {
-                ctrl: mouse.modifiers.contains(event::KeyModifiers::CONTROL),
-                alt: mouse.modifiers.contains(event::KeyModifiers::ALT),
-                shift: mouse.modifiers.contains(event::KeyModifiers::SHIFT),
-            },
-        }))
-    }
-
-    fn area_for_pane(&self, pane: PaneFocus) -> Rect {
+    pub fn area_for_pane(&self, pane: PaneFocus) -> Rect {
         match pane {
             PaneFocus::FileList => self.file_list_area,
             PaneFocus::Diff => self.diff_area,
         }
     }
 
-    fn pointer_semantic_hit(
+    pub fn pointer_semantic_hit(
         &self,
         pane: PaneFocus,
-        mouse: &MouseEvent,
+        column: u16,
+        row: u16,
     ) -> Option<PointerSemanticHit> {
         let pane_id = match pane {
             PaneFocus::FileList => PaneId::FileList,
             PaneFocus::Diff => PaneId::Diff,
         };
 
-        let text_anchor = self.pointer_text_anchor_for_pane(pane, mouse.column, mouse.row, false);
+        let text_anchor = self.pointer_text_anchor_for_pane(pane, column, row, false);
 
         Some(PointerSemanticHit {
             pane_id,
@@ -657,14 +610,6 @@ impl AppState {
     }
 }
 
-fn core_mouse_button(button: MouseButton) -> Option<CoreMouseButton> {
-    match button {
-        MouseButton::Left => Some(CoreMouseButton::Left),
-        MouseButton::Right => Some(CoreMouseButton::Right),
-        MouseButton::Middle => Some(CoreMouseButton::Middle),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -720,84 +665,46 @@ mod tests {
     }
 
     #[test]
-    fn mouse_input_event_maps_file_list_hit() {
+    fn pointer_semantic_hit_maps_file_list_anchor() {
         let mut state = test_state();
         state.file_list_area = Rect::new(0, 0, 30, 10);
         state.file_list_row_to_file = vec![Some(0)];
 
-        let event = state
-            .input_event_from_mouse(
-                &MouseEvent {
-                    kind: MouseEventKind::Down(MouseButton::Left),
-                    column: 5,
-                    row: 1,
-                    modifiers: event::KeyModifiers::CONTROL,
-                },
-                true,
-                true,
-            )
-            .expect("expected mouse input");
+        let hit = state
+            .pointer_semantic_hit(PaneFocus::FileList, 5, 1)
+            .expect("expected pointer hit");
 
         assert_eq!(
-            event,
-            InputEvent::Mouse(CoreMouseEvent {
-                kind: CoreMouseEventKind::Down,
-                button: Some(CoreMouseButton::Left),
-                local_pos: Some((5, 1)),
-                semantic_hit: Some(PointerSemanticHit {
-                    pane_id: PaneId::FileList,
-                    region_id: Some("file:src/lib.rs".to_string()),
-                    text_anchor: Some(TextAnchor { line: 0, column: 4 }),
-                }),
-                modifiers: InputModifiers {
-                    ctrl: true,
-                    alt: false,
-                    shift: false,
-                },
-            })
+            hit,
+            PointerSemanticHit {
+                pane_id: PaneId::FileList,
+                region_id: Some("file:src/lib.rs".to_string()),
+                text_anchor: Some(TextAnchor { line: 0, column: 4 }),
+            }
         );
     }
 
     #[test]
-    fn mouse_input_event_maps_diff_hit_to_content_anchor() {
+    fn pointer_semantic_hit_maps_diff_anchor() {
         let mut state = test_state();
         state.diff_area = Rect::new(0, 0, 80, 20);
         state.diff_scroll = 10;
         state.diff_gutter_cols = 4;
 
-        let event = state
-            .input_event_from_mouse(
-                &MouseEvent {
-                    kind: MouseEventKind::ScrollDown,
-                    column: 12,
-                    row: 3,
-                    modifiers: event::KeyModifiers::SHIFT,
-                },
-                false,
-                true,
-            )
-            .expect("expected mouse input");
+        let hit = state
+            .pointer_semantic_hit(PaneFocus::Diff, 12, 3)
+            .expect("expected pointer hit");
 
         assert_eq!(
-            event,
-            InputEvent::Mouse(CoreMouseEvent {
-                kind: CoreMouseEventKind::ScrollDown,
-                button: None,
-                local_pos: Some((12, 3)),
-                semantic_hit: Some(PointerSemanticHit {
-                    pane_id: PaneId::Diff,
-                    region_id: Some("diff-line:12".to_string()),
-                    text_anchor: Some(TextAnchor {
-                        line: 12,
-                        column: 4,
-                    }),
+            hit,
+            PointerSemanticHit {
+                pane_id: PaneId::Diff,
+                region_id: Some("diff-line:12".to_string()),
+                text_anchor: Some(TextAnchor {
+                    line: 12,
+                    column: 4,
                 }),
-                modifiers: InputModifiers {
-                    ctrl: false,
-                    alt: false,
-                    shift: true,
-                },
-            })
+            }
         );
     }
 }

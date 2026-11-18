@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use crossterm::event::{
     KeyCode, KeyEvent as CrosstermKeyEvent, KeyEventKind as CrosstermKeyEventKind, KeyModifiers,
+    MouseButton as CrosstermMouseButton, MouseEvent as CrosstermMouseEvent,
+    MouseEventKind as CrosstermMouseEventKind,
 };
 
 use super::state::{InputMode, TuiState};
@@ -14,7 +16,8 @@ use crate::app::AppState;
 use crate::app_update;
 use crate::core::{
     CoreEffect, InputEvent, InputModifiers, InteractionContext, Key as CoreKey,
-    KeyEvent as CoreKeyEvent, KeyEventKind as CoreKeyEventKind,
+    KeyEvent as CoreKeyEvent, KeyEventKind as CoreKeyEventKind, MouseButton as CoreMouseButton,
+    MouseEvent as CoreMouseEvent, MouseEventKind as CoreMouseEventKind,
 };
 
 /// How long the "Press Ctrl-C again" prompt stays active.
@@ -51,6 +54,63 @@ fn input_event_from_key(key: CrosstermKeyEvent) -> Option<InputEvent> {
             shift: key.modifiers.contains(KeyModifiers::SHIFT),
         },
     }))
+}
+
+pub fn input_event_from_mouse(
+    state: &AppState,
+    tui_state: &TuiState,
+    mouse: &CrosstermMouseEvent,
+) -> Option<InputEvent> {
+    let (kind, button) = match mouse.kind {
+        CrosstermMouseEventKind::Down(button) => {
+            (CoreMouseEventKind::Down, Some(core_mouse_button(button)?))
+        }
+        CrosstermMouseEventKind::Up(button) => {
+            (CoreMouseEventKind::Up, Some(core_mouse_button(button)?))
+        }
+        CrosstermMouseEventKind::Drag(button) => {
+            (CoreMouseEventKind::Drag, Some(core_mouse_button(button)?))
+        }
+        CrosstermMouseEventKind::Moved => (CoreMouseEventKind::Move, None),
+        CrosstermMouseEventKind::ScrollDown => (CoreMouseEventKind::ScrollDown, None),
+        CrosstermMouseEventKind::ScrollUp => (CoreMouseEventKind::ScrollUp, None),
+        _ => return None,
+    };
+
+    let pane = state.pane_at(
+        mouse.column,
+        mouse.row,
+        tui_state.show_file_list,
+        tui_state.show_diff_pane,
+    );
+    let local_pos = pane.map(|pane| {
+        let area = state.area_for_pane(pane);
+        (
+            mouse.column.saturating_sub(area.x),
+            mouse.row.saturating_sub(area.y),
+        )
+    });
+
+    Some(InputEvent::Mouse(CoreMouseEvent {
+        kind,
+        button,
+        local_pos,
+        semantic_hit: pane
+            .and_then(|pane| state.pointer_semantic_hit(pane, mouse.column, mouse.row)),
+        modifiers: InputModifiers {
+            ctrl: mouse.modifiers.contains(KeyModifiers::CONTROL),
+            alt: mouse.modifiers.contains(KeyModifiers::ALT),
+            shift: mouse.modifiers.contains(KeyModifiers::SHIFT),
+        },
+    }))
+}
+
+fn core_mouse_button(button: CrosstermMouseButton) -> Option<CoreMouseButton> {
+    match button {
+        CrosstermMouseButton::Left => Some(CoreMouseButton::Left),
+        CrosstermMouseButton::Right => Some(CoreMouseButton::Right),
+        CrosstermMouseButton::Middle => Some(CoreMouseButton::Middle),
+    }
 }
 
 fn dispatch_core_input(
@@ -271,11 +331,15 @@ fn handle_diff_search_input(
 mod tests {
     use super::*;
     use crate::config::DiffAlgorithm;
-    use crate::core::PromptKind;
+    use crate::core::{
+        MouseButton as CoreMouseButton, MouseEvent as CoreMouseEvent,
+        MouseEventKind as CoreMouseEventKind, PaneId, PointerSemanticHit, PromptKind, TextAnchor,
+    };
     use crate::model::{
         ChangeKind, ConnectionContext, DiffContent, FileChange, FileEntry, ReviewStatus,
     };
     use crossterm::event::KeyEvent as CrosstermKeyEvent;
+    use ratatui::layout::Rect;
 
     fn test_context() -> ConnectionContext {
         ConnectionContext {
@@ -379,5 +443,90 @@ mod tests {
             other => panic!("unexpected effects: {other:?}"),
         }
         assert_eq!(tui_state.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn mouse_input_event_maps_file_list_hit() {
+        let mut state = test_state();
+        state.file_list_area = Rect::new(0, 0, 30, 10);
+        state.file_list_row_to_file = vec![Some(0)];
+        let tui_state = TuiState::default();
+
+        let event = input_event_from_mouse(
+            &state,
+            &tui_state,
+            &CrosstermMouseEvent {
+                kind: CrosstermMouseEventKind::Down(CrosstermMouseButton::Left),
+                column: 5,
+                row: 1,
+                modifiers: KeyModifiers::CONTROL,
+            },
+        )
+        .expect("expected mouse input");
+
+        assert_eq!(
+            event,
+            InputEvent::Mouse(CoreMouseEvent {
+                kind: CoreMouseEventKind::Down,
+                button: Some(CoreMouseButton::Left),
+                local_pos: Some((5, 1)),
+                semantic_hit: Some(PointerSemanticHit {
+                    pane_id: PaneId::FileList,
+                    region_id: Some("file:src/lib.rs".to_string()),
+                    text_anchor: Some(TextAnchor { line: 0, column: 4 }),
+                }),
+                modifiers: InputModifiers {
+                    ctrl: true,
+                    alt: false,
+                    shift: false,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn mouse_input_event_maps_diff_hit_to_content_anchor() {
+        let mut state = test_state();
+        state.diff_area = Rect::new(0, 0, 80, 20);
+        state.diff_scroll = 10;
+        state.diff_gutter_cols = 4;
+        let tui_state = TuiState {
+            show_file_list: false,
+            ..TuiState::default()
+        };
+
+        let event = input_event_from_mouse(
+            &state,
+            &tui_state,
+            &CrosstermMouseEvent {
+                kind: CrosstermMouseEventKind::ScrollDown,
+                column: 12,
+                row: 3,
+                modifiers: KeyModifiers::SHIFT,
+            },
+        )
+        .expect("expected mouse input");
+
+        assert_eq!(
+            event,
+            InputEvent::Mouse(CoreMouseEvent {
+                kind: CoreMouseEventKind::ScrollDown,
+                button: None,
+                local_pos: Some((12, 3)),
+                semantic_hit: Some(PointerSemanticHit {
+                    pane_id: PaneId::Diff,
+                    region_id: Some("diff-line:12".to_string()),
+                    text_anchor: Some(TextAnchor {
+                        line: 12,
+                        column: 4,
+                    }),
+                }),
+                modifiers: InputModifiers {
+                    ctrl: false,
+                    alt: false,
+                    shift: true,
+                },
+            })
+        );
     }
 }

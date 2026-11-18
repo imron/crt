@@ -151,6 +151,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   shared style access out of `TuiState` to app-owned configuration.
 - Changed the TUI key input adapter to emit core effects instead of applying
   them, keeping effect application at the TUI runtime boundary.
+- Moved crossterm mouse-event normalization out of `AppState` and into the
+  TUI input adapter while keeping app hit mapping UI-neutral.
 
 ## Acceptance Criteria
 
