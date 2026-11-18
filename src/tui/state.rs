@@ -91,6 +91,8 @@ pub struct TuiState {
     pub show_file_list: bool,
     /// Whether the diff pane is visible.
     pub show_diff_pane: bool,
+    /// Whether inline comments are visible in the diff pane.
+    pub show_comments: bool,
     pub diff_cache: Option<DiffCache>,
     /// Active mouse text selection, if any.
     pub mouse_selection: Option<MouseSelection>,
@@ -146,6 +148,7 @@ impl Default for TuiState {
             config_path: None,
             show_file_list: true,
             show_diff_pane: true,
+            show_comments: false,
             diff_cache: None,
             mouse_selection: None,
             mouse_down_anchor: None,
@@ -206,6 +209,9 @@ impl TuiState {
         self.should_quit |= update.should_quit;
         if let Some(command) = update.pending_command {
             self.pending_command = Some(command);
+        }
+        if let Some(show_comments) = update.show_comments {
+            self.show_comments = show_comments;
         }
     }
 
@@ -277,6 +283,7 @@ mod tests {
         assert_eq!(state.config_path, Some(PathBuf::from("/tmp/crt.toml")));
         assert!(state.show_file_list);
         assert!(state.show_diff_pane);
+        assert!(!state.show_comments);
     }
 
     #[test]
@@ -324,12 +331,14 @@ mod tests {
                 pattern: "needle".to_string(),
             }),
             save_layout: false,
+            show_comments: Some(true),
         });
 
         assert!(state.has_status_message());
         assert!(state.pending_review_toggle);
         assert!(state.should_suspend);
         assert!(state.should_quit);
+        assert!(state.show_comments);
         assert!(matches!(
             state.pending_command,
             Some(Command::SearchAll { ref pattern }) if pattern == "needle"
