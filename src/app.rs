@@ -108,6 +108,9 @@ pub struct MouseSelection {
     /// Current end position in terminal coordinates.
     pub end_col: u16,
     pub end_row: u16,
+    /// Set when selection was created by double-click word selection.
+    /// The Up event should not re-extract text (it was already copied).
+    pub word_selected: bool,
 }
 
 impl MouseSelection {
@@ -956,6 +959,7 @@ impl App {
                         start_row: mouse.row,
                         end_col: mouse.column,
                         end_row: mouse.row,
+                        word_selected: false,
                     });
                 }
             }
@@ -986,9 +990,13 @@ impl App {
                 }
                 // Finish selection: extract text and copy to clipboard.
                 if let Some(sel) = self.state.mouse_selection.take() {
-                    let text = extract_selected_text(&self.state, &sel);
-                    if !text.is_empty() {
-                        copy_to_clipboard(&text);
+                    if !sel.word_selected {
+                        // Only re-extract for drag selections — word selections
+                        // were already copied by select_word_at().
+                        let text = extract_selected_text(&self.state, &sel);
+                        if !text.is_empty() {
+                            copy_to_clipboard(&text);
+                        }
                     }
                     // Keep the selection visible until next keypress.
                     self.state.mouse_selection = Some(sel);
@@ -1363,6 +1371,7 @@ impl App {
                 start_row: row,
                 end_col: row_chars[end].0,
                 end_row: row,
+                word_selected: true,
             });
         }
     }
@@ -1618,6 +1627,7 @@ mod tests {
             start_row: 2,
             end_col: 10,
             end_row: 4,
+            word_selected: false,
         };
         assert_eq!(sel.normalized(), (5, 2, 10, 4));
 
@@ -1629,6 +1639,7 @@ mod tests {
             start_row: 4,
             end_col: 5,
             end_row: 2,
+            word_selected: false,
         };
         assert_eq!(sel.normalized(), (5, 2, 10, 4));
     }
