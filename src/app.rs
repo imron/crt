@@ -20,7 +20,7 @@ use ratatui::layout::Rect;
 
 use crate::client::Client;
 use crate::keys;
-use crate::model::{ConnectionContext, ContentMode, FileEntry, PaneFocus, RenderVariant};
+use crate::model::{ConnectionContext, ContentMode, FileEntry, PaneFocus, RenderVariant, ReviewStatus};
 use crate::ui;
 
 /// Polling interval for crossterm events. Re-render happens after each
@@ -96,6 +96,8 @@ pub struct AppState {
     pub diff_rendered_text: Vec<String>,
     /// Plain text of rendered file list lines (set during render, for clipboard).
     pub file_list_rendered_text: Vec<String>,
+    /// Vertical scroll offset in the file list (in display rows).
+    pub file_list_scroll: usize,
     /// Screen area of the file list pane (set during render, for mouse hit testing).
     pub file_list_area: Rect,
     /// Screen area of the diff pane (set during render, for mouse hit testing).
@@ -114,10 +116,21 @@ pub struct AppState {
 }
 
 impl AppState {
-    fn new(context: ConnectionContext, files: Vec<FileEntry>) -> Self {
+    fn new(context: ConnectionContext, mut files: Vec<FileEntry>) -> Self {
+        // Sort: unreviewed (including changed) first, then reviewed.
+        // Alphabetical by path within each group.
+        files.sort_by(|a, b| {
+            let a_reviewed = matches!(a.status, ReviewStatus::Reviewed { .. });
+            let b_reviewed = matches!(b.status, ReviewStatus::Reviewed { .. });
+            a_reviewed
+                .cmp(&b_reviewed)
+                .then(a.change.path.cmp(&b.change.path))
+        });
+
         Self {
             context,
             files,
+            // Index 0 is the first unreviewed file (due to sort order).
             selected_file: 0,
             pane_focus: PaneFocus::FileList,
             content_mode: ContentMode::Diff,
@@ -131,6 +144,7 @@ impl AppState {
             mouse_selection: None,
             diff_rendered_text: Vec::new(),
             file_list_rendered_text: Vec::new(),
+            file_list_scroll: 0,
             file_list_area: Rect::default(),
             diff_area: Rect::default(),
             status_message: None,
@@ -144,6 +158,15 @@ impl AppState {
     /// The currently selected file, if any.
     pub fn selected_file_entry(&self) -> Option<&FileEntry> {
         self.files.get(self.selected_file)
+    }
+
+    /// Number of unreviewed files (Unreviewed + Changed status).
+    /// Since files are sorted unreviewed-first, these are files[0..count].
+    pub fn unreviewed_count(&self) -> usize {
+        self.files
+            .iter()
+            .filter(|f| !matches!(f.status, ReviewStatus::Reviewed { .. }))
+            .count()
     }
 
     /// Maximum scroll offset: the last line sits at the top of the viewport.

@@ -13,12 +13,12 @@ use std::time::Duration;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::AppState;
 use crate::git;
-use crate::model::{ChangeKind, PaneFocus, ReviewStatus};
+use crate::model::{PaneFocus, ReviewStatus};
 
 /// File list pane width as a percentage of terminal width.
 const FILE_LIST_PCT: u16 = 30;
@@ -46,13 +46,13 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) {
                 .split(main_area);
             state.file_list_area = panes[0];
             state.diff_area = panes[1];
-            draw_file_list(frame, state, panes[0]);
+            file_list::draw(frame, state, panes[0]);
             draw_diff_pane(frame, state, panes[1]);
         }
         (true, false) => {
             state.file_list_area = main_area;
             state.diff_area = Rect::default();
-            draw_file_list(frame, state, main_area);
+            file_list::draw(frame, state, main_area);
         }
         (false, true) => {
             state.file_list_area = Rect::default();
@@ -76,74 +76,6 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) {
     if state.show_help {
         draw_help_overlay(frame);
     }
-}
-
-// ---------------------------------------------------------------------------
-// File list pane (placeholder — full implementation in Stage 7)
-// ---------------------------------------------------------------------------
-
-fn draw_file_list(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    let focused = state.pane_focus == PaneFocus::FileList;
-    let border_style = pane_border_style(focused);
-
-    let file_count = state.files.len();
-    let title = format!(" Files ({file_count}) ");
-
-    let mut rendered_text = Vec::new();
-
-    let items: Vec<ListItem> = state
-        .files
-        .iter()
-        .enumerate()
-        .map(|(i, entry)| {
-            let marker = match &entry.status {
-                ReviewStatus::Unreviewed => "\u{2717}",      // ✗
-                ReviewStatus::Reviewed { .. } => "\u{2713}", // ✓
-                ReviewStatus::Changed { .. } => "~",
-            };
-            let kind_marker = match entry.change.kind {
-                ChangeKind::Added => "+",
-                ChangeKind::Deleted => "-",
-                ChangeKind::Modified => " ",
-                ChangeKind::Renamed => "R",
-            };
-
-            let display = match &entry.change.old_path {
-                Some(old) => format!(
-                    "{marker} {kind_marker} {} \u{2190} {old}",
-                    entry.change.path
-                ),
-                None => format!("{marker} {kind_marker} {}", entry.change.path),
-            };
-
-            rendered_text.push(display.clone());
-
-            let style = if i == state.selected_file {
-                if focused {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White)
-                }
-            } else {
-                Style::default().fg(Color::Gray)
-            };
-
-            ListItem::new(display).style(style)
-        })
-        .collect();
-
-    state.file_list_rendered_text = rendered_text;
-
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(border_style)
-            .title(title),
-    );
-
-    frame.render_widget(list, area);
 }
 
 // ---------------------------------------------------------------------------
