@@ -11,8 +11,8 @@ are present.
 
 Clients whose API version is higher than the running server should
 automatically take over server ownership. Clients whose API version is lower
-than the running server should show a clear user-facing warning and only
-continue if the user accepts the risk of protocol errors.
+than the running server should continue without takeover and surface a clear
+warning that protocol errors are possible.
 
 MCP should be able to start a low-priority fallback server when no other
 server exists, but must relinquish server ownership when a same-version
@@ -80,9 +80,9 @@ Version direction matters:
 - `client_api_version == server_api_version`: normal operation; role priority
   may still trigger handoff.
 - `client_api_version < server_api_version`: the client is older. Interactive
-  clients must show a warning and require explicit user acceptance before
-  continuing. Non-interactive clients should fail unless an explicit
-  allow-incompatible option is provided.
+  clients should flash a status-banner warning and continue. Non-interactive
+  clients should surface the warning through their normal diagnostic channel
+  and continue.
 
 ### Client Kind
 
@@ -219,8 +219,7 @@ the existing supervisor loop.
 5. If this binary has a lower API version than the server:
    - show a clear warning that the running server is newer,
    - explain that continuing may produce protocol errors,
-   - continue only after explicit user acceptance,
-   - otherwise exit without requesting handoff.
+   - continue without requesting handoff.
 6. If the server role is `LowPriorityMcp` with the same API version:
    - request handoff with `InteractiveReplacingLowPriorityMcp`,
    - wait for socket release,
@@ -239,8 +238,7 @@ and verify `server_info` again.
 3. If this binary has a higher API version than the server, request handoff
    with `NewerApiVersion` and then bind.
 4. If this binary has a lower API version than the server, print a clear
-   warning/error and exit unless an explicit allow-incompatible option is
-   provided.
+   warning and continue without requesting handoff.
 5. If a same-version `LowPriorityMcp` server exists, request handoff and then
    bind.
 
@@ -248,10 +246,10 @@ and verify `server_info` again.
 
 1. Try to connect to the default socket.
 2. If a server is reachable, use it and do not attempt to become server.
-3. If no server is reachable, MCP may start a `LowPriorityMcp` server.
+3. If no server is reachable, MCP starts a `LowPriorityMcp` server.
 4. If the reachable server has a higher API version than this MCP binary, MCP
-   returns a clear error unless explicitly configured to allow incompatible
-   operation.
+   surfaces a clear warning through its normal diagnostic channel and
+   continues without requesting handoff.
 5. If that server later receives an interactive handoff request, it accepts and
    shuts down.
 6. MCP reconnects through the shared client supervisor and re-selects its
@@ -302,7 +300,7 @@ pub enum StartupRole {
 
 - discover `server_info` before `init`;
 - request handoff when this binary has a higher API version than the server;
-- warn or reject when this binary has a lower API version than the server;
+- warn and continue when this binary has a lower API version than the server;
 - decide whether to request handoff;
 - perform handoff wait/reconnect/bind race;
 - preserve existing reconnect behavior after transport loss.
@@ -326,7 +324,8 @@ Once this feature ships:
 
 - newer clients can take over older servers automatically;
 - same-version role handoffs are handled automatically;
-- older clients connecting to newer servers require explicit user choice.
+- older clients connecting to newer servers continue after surfacing a clear
+  warning.
 
 ## Interaction With Stage 30
 
@@ -344,8 +343,10 @@ addresses:
 
 - Higher-version interactive client should request takeover.
 - Higher-version persistent server should request takeover.
-- Lower-version interactive client should require user acceptance.
-- Lower-version non-interactive client should fail unless explicitly allowed.
+- Lower-version interactive client should surface a status warning and
+  continue.
+- Lower-version non-interactive client should surface a diagnostic warning and
+  continue.
 - Same-version interactive client should not replace `Primary`.
 - Same-version interactive client should replace `LowPriorityMcp`.
 - MCP should not replace `Primary`.
@@ -364,7 +365,7 @@ addresses:
 
 - Interactive startup replaces a same-version MCP fallback server.
 - Higher-version interactive startup replaces an older API server.
-- Lower-version interactive startup shows a warning and respects user choice.
+- Lower-version interactive startup shows a warning and continues.
 - Two same-version interactive clients racing after MCP handoff produce one
   server.
 - Clients connected to the old server reconnect to the winner.
@@ -375,7 +376,7 @@ addresses:
 
 - Missing `server_info` returns an actionable incompatible-server error.
 - Higher client/server API mismatch performs automatic takeover.
-- Lower client/server API mismatch shows an actionable warning.
+- Lower client/server API mismatch shows an actionable warning and continues.
 - Existing normal same-version startup behavior remains unchanged.
 
 ## Acceptance Criteria
@@ -383,8 +384,8 @@ addresses:
 - [ ] Server exposes typed API version and role metadata.
 - [ ] Startup clients check server metadata before `init`.
 - [ ] Higher-version clients automatically request handoff from older servers.
-- [ ] Lower-version clients show a clear user-facing warning and require
-      explicit acceptance before continuing.
+- [ ] Lower-version clients surface a clear warning and continue without
+      requesting handoff.
 - [ ] MCP can start a low-priority fallback server when no server exists.
 - [ ] Interactive `crt` replaces a low-priority MCP fallback server.
 - [ ] MCP reconnects after relinquishing server status.
@@ -394,13 +395,10 @@ addresses:
 - [ ] Older servers without `server_info` produce a clear error instead of
       undefined socket takeover behavior.
 
-## Open Questions
+## Resolved Decisions
 
-- What is the exact UI for lower-version interactive acceptance: a startup
-  prompt, command-line flag, or both?
-- What explicit option should allow lower-version MCP/non-interactive clients
-  to continue?
-- Should MCP fallback startup be enabled by default, or gated behind an option
-  for MCP hosts that should never start background work?
-- Should low-priority MCP fallback have an idle timeout when no MCP tools are
-  active?
+- Lower-version interactive clients only need a status-banner warning. They do
+  not need an explicit acceptance prompt.
+- MCP fallback startup is always enabled when no shared server is reachable.
+- MCP fallback server lifetime remains process-coupled to the MCP host. No
+  separate idle-timeout policy is needed.
