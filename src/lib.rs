@@ -36,8 +36,12 @@ pub struct Cli {
     command: Option<Command>,
 
     /// Base ref to diff against (e.g. "main", "v1.0", a commit hash)
-    #[arg(value_name = "BASE")]
+    #[arg(value_name = "BASE", conflicts_with = "root")]
     base: Option<String>,
+
+    /// Review all changes from the repository root commit
+    #[arg(long)]
+    root: bool,
 
     /// Clear all review state for the current (base, branch) pair and exit
     #[arg(long)]
@@ -84,9 +88,9 @@ pub fn run_with_cli(cli: Cli) -> Result<()> {
     match cli.command {
         Some(Command::Server) => cmd_server(),
         Some(Command::McpServer) => {
-            if cli.base.is_some() || cli.reset || cli.standalone {
+            if cli.base.is_some() || cli.root || cli.reset || cli.standalone {
                 anyhow::bail!(
-                    "`crt mcp-server` does not accept a base ref, --reset, or --standalone"
+                    "`crt mcp-server` does not accept a base ref, --root, --reset, or --standalone"
                 );
             }
             cmd_mcp_server()
@@ -99,7 +103,7 @@ pub fn run_with_cli(cli: Cli) -> Result<()> {
             println!("crt clear-comments: not yet implemented");
             Ok(())
         }
-        None => cmd_review(cli.base, cli.reset, cli.standalone),
+        None => cmd_review(cli.base, cli.root, cli.reset, cli.standalone),
     }
 }
 
@@ -115,13 +119,21 @@ fn cmd_server() -> Result<()> {
 }
 
 /// Default `crt <base>` — review mode.
-fn cmd_review(base: Option<String>, reset: bool, standalone: bool) -> Result<()> {
-    let base = base.context("A base ref is required.\n\nUsage: crt <BASE>\n\nExample: crt main")?;
+fn cmd_review(base: Option<String>, root: bool, reset: bool, standalone: bool) -> Result<()> {
+    if root && base.is_some() {
+        anyhow::bail!("--root cannot be combined with a base ref");
+    }
+    if !root && base.is_none() {
+        anyhow::bail!(
+            "A base ref is required unless --root is specified.\n\n\
+             Usage: crt <BASE>\n       crt --root\n\nExample: crt main"
+        );
+    }
 
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
 
     rt.block_on(async {
-        match app::App::start_review(&base, reset, standalone).await? {
+        match app::App::start_review(base.as_deref(), root, reset, standalone).await? {
             app::ReviewStartup::Reset(summary) => {
                 println!(
                     "Reset review state for (merge_base: {}, head: {}): {} review(s) cleared.",
@@ -184,6 +196,27 @@ mod tests {
 
         assert!(
             err.to_string().contains("--standalone"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn root_rejects_base_ref() {
+        let err = match Cli::try_parse_from(["crt", "--root", "main"]) {
+            Ok(_) => panic!("--root should conflict with BASE"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn mcp_server_rejects_root_flag() {
+        let cli = Cli::parse_from(["crt", "--root", "mcp-server"]);
+        let err = run_with_cli(cli).unwrap_err();
+
+        assert!(
+            err.to_string().contains("--root"),
             "unexpected error: {err}"
         );
     }
