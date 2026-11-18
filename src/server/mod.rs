@@ -17,6 +17,7 @@ use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
 
 use crate::db::Database;
+use crate::git::{CommitId, HeadIdentity, ReviewBase};
 use crate::protocol::{
     ERR_METHOD_NOT_FOUND, ERR_NOT_IMPLEMENTED, ERR_NOT_INITIALIZED, ERR_PARSE, JsonRpcRequest,
     JsonRpcResponse, Notification,
@@ -31,14 +32,21 @@ use crate::protocol::{
 pub struct ConnectionContext {
     pub repo_root: PathBuf,
     pub worktree: PathBuf,
-    /// The original base ref string passed to `init`.
-    pub base_ref: String,
-    /// Whether `base_ref` resolved through a named branch, remote branch, or tag.
-    pub base_ref_is_named_ref: bool,
+    pub review_base: ReviewBase,
     /// The merge-base commit hash (stable scope key).
-    pub merge_base: String,
-    pub head_ref: String,
+    pub merge_base: CommitId,
+    pub head: HeadIdentity,
     pub db_path: PathBuf,
+}
+
+impl ConnectionContext {
+    pub fn merge_base_key(&self) -> &str {
+        self.merge_base.as_ref()
+    }
+
+    pub fn head_scope_key(&self) -> String {
+        self.head.scope_key()
+    }
 }
 
 /// Shared state across all connections.
