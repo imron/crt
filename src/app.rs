@@ -2929,6 +2929,7 @@ mod tests {
         );
         assert_eq!(app.state.selected_comment_id, Some(59));
         assert_eq!(app.state.diff_line_cursor, 1504);
+        assert_eq!(app.state.diff_scroll, 1504);
     }
 
     #[test]
@@ -4721,7 +4722,7 @@ mod tests {
     }
 
     #[test]
-    fn comment_navigation_starts_large_comment_after_bounded_context() {
+    fn comment_navigation_top_aligns_large_comment_that_cannot_fit() {
         let mut app = App::new(
             Config::default(),
             test_context(),
@@ -4748,7 +4749,7 @@ mod tests {
 
         assert_eq!(app.state.selected_comment_id, Some(7));
         assert_eq!(app.state.diff_line_cursor, 11);
-        assert_eq!(app.state.diff_scroll, 6);
+        assert_eq!(app.state.diff_scroll, 11);
     }
 
     #[test]
