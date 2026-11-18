@@ -81,7 +81,8 @@ completed through the more specific follow-on plans:
 ### 5) Mode Semantics
 
 - `crt <base>`: connect-or-start + runtime failover enabled.
-- `crt mcp-server`: same connect-or-start + runtime failover behavior.
+- `crt mcp-server`: connect to the existing shared server and select an
+  active review session.
 - `crt server`: explicit persistent mode; no auto-shutdown on client count.
 
 ### 6) Recovery UX and Retry Policy
@@ -122,7 +123,8 @@ completed through the more specific follow-on plans:
       and bind-race failover.
 - [x] `crt server` remains explicit persistent mode and is unaffected by
       embedded auto-shutdown.
-- [x] `crt mcp-server` uses the same connect-or-start lifecycle semantics.
+- [x] `crt mcp-server` uses the shared server socket and does not own review
+      state directly.
 - [x] Multi-repo/session discovery is supported through `list_repos` /
       `list_review_sessions`.
 - [ ] Full multi-client, multi-repo, peer-takeover integration coverage is
@@ -153,8 +155,9 @@ completed through the more specific follow-on plans:
   transport-loss classification, reconnect attempts, embedded startup,
   bind-race behavior, re-init, snapshot reload hooks, and connection-state
   events.
-- Stage 25 aligned embedded lifecycle so `crt`, `crt mcp-server`, and future
-  clients share the same connect-or-start behavior.
+- Stage 25 aligned embedded lifecycle so `crt` and future interactive clients
+  share connect-or-start behavior, while MCP remains an adapter to the shared
+  server.
 - Persistent `crt server` remains an explicit user-started server mode.
 - Active review sessions are tracked server-side and exposed through
   `list_repos`, allowing MCP to start unscoped and select from connected
