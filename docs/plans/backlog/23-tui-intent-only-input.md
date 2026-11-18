@@ -127,6 +127,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   AppState.
 - Moved event-loop runtime intents for review toggles, pending commands,
   suspend, quit, and focus refresh into TUI-owned state.
+- Moved file-list layout width and config path into TUI-owned state, with app
+  updates requesting layout persistence through the TUI boundary.
 
 ## Acceptance Criteria
 

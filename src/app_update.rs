@@ -22,6 +22,7 @@ pub struct AppUpdate {
     pub should_suspend: bool,
     pub should_quit: bool,
     pub pending_command: Option<Command>,
+    pub save_layout: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +61,10 @@ impl AppUpdate {
 
     fn request_command(&mut self, command: Command) {
         self.pending_command = Some(command);
+    }
+
+    fn request_layout_save(&mut self) {
+        self.save_layout = true;
     }
 }
 
@@ -654,13 +659,7 @@ fn cycle_diff_algorithm(state: &mut AppState, update: &mut AppUpdate) {
     state.diff_algorithm = state.diff_algorithm.next();
     state.reload_current_diff();
     update.set_status(format!("Diff algorithm: {}", state.diff_algorithm.label()));
-    if let Some(path) = &state.config_path {
-        let layout = crate::config::LayoutConfig {
-            file_list_width: state.file_list_width,
-            diff_algorithm: Some(state.diff_algorithm),
-        };
-        crate::config::save_layout(path, &layout);
-    }
+    update.request_layout_save();
 }
 
 fn toggle_diff_base(state: &mut AppState, update: &mut AppUpdate) {

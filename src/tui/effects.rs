@@ -42,6 +42,20 @@ pub fn apply_core_effects(
 
     let app_update = app_update::apply_core_effects(state, app_effects);
     let app_handled = app_update.handled;
+    let save_layout = app_update.save_layout;
     tui_state.apply_app_update(app_update);
+    if save_layout {
+        save_layout_config(state, tui_state);
+    }
     app_handled || handled
+}
+
+fn save_layout_config(state: &AppState, tui_state: &TuiState) {
+    if let Some(path) = &tui_state.config_path {
+        let layout = crate::config::LayoutConfig {
+            file_list_width: tui_state.file_list_width,
+            diff_algorithm: Some(state.diff_algorithm),
+        };
+        crate::config::save_layout(path, &layout);
+    }
 }
