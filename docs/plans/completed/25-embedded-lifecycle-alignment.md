@@ -8,7 +8,7 @@
 
 ## Depends On
 
-- Stage 19 (`19-shared-server-failover-lifecycle.md`)
+- Stage 19 (`../completed/19-shared-server-failover-lifecycle.md`)
 - Stage 20 (`20-thin-client-api-contract.md`)
 - Stage 24 (`24-client-reconnect-failover-supervisor.md`)
 

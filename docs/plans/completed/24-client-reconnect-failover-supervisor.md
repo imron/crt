@@ -15,7 +15,7 @@ architecture before reuse or discarded if stale.
 
 ## Depends On
 
-- Stage 19 (`19-shared-server-failover-lifecycle.md`)
+- Stage 19 (`../completed/19-shared-server-failover-lifecycle.md`)
 - Stage 20 (`20-thin-client-api-contract.md`)
 - Stage 21 (`21-protocol-type-decoupling.md`)
 - Stage 23 (`23-tui-intent-only-input.md`)
