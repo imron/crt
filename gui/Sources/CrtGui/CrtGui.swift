@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import SwiftUI
 
@@ -213,6 +214,7 @@ private func makeMainMenu() -> NSMenu {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store: GuiStore
     private var window: NSWindow?
+    private var cancellables = Set<AnyCancellable>()
 
     init(store: GuiStore) {
         self.store = store
@@ -228,12 +230,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         window.isReleasedWhenClosed = false
-        window.title = "Code Review Tool"
         window.contentView = hosting
         window.center()
         window.makeKeyAndOrderFront(nil)
         self.window = window
+        applyWindowDocument(store.snapshot)
+        store.$snapshot
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] snapshot in
+                self?.applyWindowDocument(snapshot)
+            }
+            .store(in: &cancellables)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func applyWindowDocument(_ snapshot: GuiSnapshot) {
+        guard let window else {
+            return
+        }
+        if let path = snapshot.selectedPath, !path.isEmpty {
+            window.title = URL(fileURLWithPath: path).lastPathComponent
+            let fileURL = URL(fileURLWithPath: snapshot.worktree)
+                .appendingPathComponent(path)
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                window.representedURL = fileURL
+            } else {
+                window.representedURL = nil
+            }
+        } else {
+            window.title = "Code Review Tool"
+            window.representedURL = nil
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
