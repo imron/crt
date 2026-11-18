@@ -1,0 +1,1 @@
+-- No-op: SQLite cannot drop a column portably for the supported schema repair.

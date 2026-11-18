@@ -1,0 +1,3 @@
+-- Fresh databases get this column from migration 0005. This migration version
+-- exists so databases created while 0005 lacked the column can be repaired by
+-- Database::repair_comment_resolution_patch_id_column without re-running 0005.
