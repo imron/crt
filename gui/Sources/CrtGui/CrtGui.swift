@@ -9,6 +9,9 @@ private var retainedStore: GuiStore?
 @_silgen_name("crt_gui_submit_action")
 func crt_gui_submit_action(_ data: UnsafePointer<UInt8>, _ size: Int)
 
+@_silgen_name("crt_gui_bootstrap")
+func crt_gui_bootstrap()
+
 @_cdecl("crt_gui_run")
 public func crtGuiRun(
     _ data: UnsafePointer<UInt8>,
@@ -219,6 +222,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         self.window = window
         applyWindowDocument(store.snapshot)
+        DispatchQueue.main.async {
+            crt_gui_bootstrap()
+        }
         store.$snapshot
             .receive(on: DispatchQueue.main)
             .sink { [weak self] snapshot in

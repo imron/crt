@@ -21,9 +21,17 @@ unsafe extern "C" {
 const APP_ICON_PNG: &[u8] =
     include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/gui/crt-icon.png"));
 
+struct LaunchArgs {
+    base: Option<String>,
+    root: bool,
+    standalone: bool,
+}
+
 // App is !Send (Rc document rows). Keep it on the GUI/main thread.
 thread_local! {
     static SESSION: RefCell<Option<app::App>> = const { RefCell::new(None) };
+    static RUNTIME: RefCell<Option<tokio::runtime::Runtime>> = const { RefCell::new(None) };
+    static LAUNCH: RefCell<Option<LaunchArgs>> = const { RefCell::new(None) };
 }
 
 #[derive(Serialize)]
@@ -89,37 +97,56 @@ pub fn run_gui(
     }
 
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
-    match rt.block_on(app::App::start_review(base, root, reset, standalone))? {
-        app::ReviewStartup::Reset(summary) => {
-            println!(
-                "Reset review state for (merge_base: {}, head: {}): {} review(s) cleared.",
-                summary.merge_base_short, summary.head_ref, summary.cleared
-            );
-            Ok(())
-        }
-        app::ReviewStartup::Review(app) => {
-            let snapshot = snapshot_from_app(&app);
-            let json = encode_snapshot(&snapshot)?;
-            store_session(app);
-
-            // NSApplication.run() blocks until the window closes. Worker
-            // threads keep driving the embedded server for that whole time.
-            // Swift copies `json` at the start of crt_gui_run.
-            unsafe {
-                crt_gui_run(
-                    json.as_ptr(),
-                    json.len(),
-                    APP_ICON_PNG.as_ptr(),
-                    APP_ICON_PNG.len(),
+    if reset {
+        return match rt.block_on(app::App::start_review(base, root, true, standalone))? {
+            app::ReviewStartup::Reset(summary) => {
+                println!(
+                    "Reset review state for (merge_base: {}, head: {}): {} review(s) cleared.",
+                    summary.merge_base_short, summary.head_ref, summary.cleared
                 );
+                Ok(())
             }
+            app::ReviewStartup::Review(app) => {
+                rt.block_on(app.shutdown());
+                Ok(())
+            }
+        };
+    }
 
-            if let Some(app) = take_session() {
+    LAUNCH.with(|launch| {
+        *launch.borrow_mut() = Some(LaunchArgs {
+            base: base.map(str::to_string),
+            root,
+            standalone,
+        });
+    });
+    RUNTIME.with(|runtime| {
+        *runtime.borrow_mut() = Some(rt);
+    });
+
+    let json = encode_snapshot(&loading_snapshot())?;
+    // Show the window first; start_review runs from crt_gui_bootstrap
+    // after NSApplication has painted.
+    unsafe {
+        crt_gui_run(
+            json.as_ptr(),
+            json.len(),
+            APP_ICON_PNG.as_ptr(),
+            APP_ICON_PNG.len(),
+        );
+    }
+
+    if let Some(app) = take_session() {
+        RUNTIME.with(|runtime| {
+            if let Some(rt) = runtime.borrow().as_ref() {
                 rt.block_on(app.shutdown());
             }
-            Ok(())
-        }
+        });
     }
+    RUNTIME.with(|runtime| {
+        runtime.borrow_mut().take();
+    });
+    Ok(())
 }
 
 enum ForkRole {
@@ -180,6 +207,34 @@ fn take_session() -> Option<app::App> {
 fn encode_snapshot(snapshot: &GuiSnapshot) -> Result<Vec<u8>> {
     serde_json::to_vec(&SnapshotEnvelope { data: snapshot })
         .context("Failed to serialize GUI snapshot")
+}
+
+fn loading_snapshot() -> GuiSnapshot {
+    let worktree = std::env::current_dir()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let repo_name = std::path::Path::new(&worktree)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| worktree.clone());
+    GuiSnapshot {
+        version: format!("{} ({})", env!("CARGO_PKG_VERSION"), env!("CRT_BUILD_HASH")),
+        repo_name,
+        worktree,
+        head_ref: String::new(),
+        merge_base: String::new(),
+        status: "Loading…".to_string(),
+        files: Vec::new(),
+        selected_path: None,
+        diff: None,
+    }
+}
+
+fn error_snapshot(message: &str) -> GuiSnapshot {
+    let mut snapshot = loading_snapshot();
+    snapshot.status = message.to_string();
+    snapshot
 }
 
 fn snapshot_from_app(app: &app::App) -> GuiSnapshot {
@@ -286,6 +341,39 @@ fn apply_action(app: &mut app::App, action: GuiAction) {
             let focus = app.state.focus_for_file(index);
             app.state.select_file(index, focus, true);
         }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn crt_gui_bootstrap() {
+    let Some(args) = LAUNCH.with(|launch| launch.borrow_mut().take()) else {
+        return;
+    };
+    let started = RUNTIME.with(|runtime| {
+        let runtime = runtime.borrow();
+        let rt = runtime.as_ref()?;
+        Some(rt.block_on(app::App::start_review(
+            args.base.as_deref(),
+            args.root,
+            false,
+            args.standalone,
+        )))
+    });
+    let json = match started {
+        Some(Ok(app::ReviewStartup::Review(app))) => {
+            let json = encode_snapshot(&snapshot_from_app(&app));
+            store_session(app);
+            json.ok()
+        }
+        Some(Ok(app::ReviewStartup::Reset(_))) => None,
+        Some(Err(err)) => encode_snapshot(&error_snapshot(&err.to_string())).ok(),
+        None => None,
+    };
+    let Some(json) = json else {
+        return;
+    };
+    unsafe {
+        crt_gui_apply_snapshot(json.as_ptr(), json.len());
     }
 }
 

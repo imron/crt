@@ -56,7 +56,10 @@ struct ContentView: View {
 
     @ViewBuilder
     private var diffPane: some View {
-        if let diff = store.snapshot.diff {
+        if store.snapshot.status == "Loading…" {
+            ProgressView("Loading review…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let diff = store.snapshot.diff {
             DiffView(diff: diff)
         } else {
             Text("Choose a file from the sidebar.")
