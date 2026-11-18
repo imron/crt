@@ -62,25 +62,13 @@ pub fn draw(
     }
 
     if diff.is_binary {
-        let title = diff_title(diff, tui_state, 0);
+        let title = diff_title(diff, &[]);
         draw_placeholder(frame, area, border_style, &title, "  Binary file");
         reset_tui_document_state(tui_state);
         return;
     }
 
-    let hunk_spans = document.diff.hunk_spans();
-    tui_state.hunk_start_rows = hunk_spans
-        .iter()
-        .map(|span| span.full_span.start.0)
-        .collect();
-    tui_state.hunk_end_rows = hunk_spans.iter().map(|span| span.full_span.end.0).collect();
-    tui_state.hunk_first_change_rows = hunk_spans.iter().map(|span| span.first_change.0).collect();
     tui_state.diff_content_height = document.diff.len();
-
-    if tui_state.document_diff_rendered_text_key.as_ref() != Some(&document.key) {
-        tui_state.diff_rendered_text = rendered_text(&document.diff, diff.show_blame);
-        tui_state.document_diff_rendered_text_key = Some(document.key.clone());
-    }
 
     let layout = DocumentLayout::new(&document.diff, diff.show_blame, inner_w);
     tui_state.diff_gutter_cols = layout.gutter_cols;
@@ -95,7 +83,7 @@ pub fn draw(
         diff_view_height,
         inner_w,
     );
-    let title = diff_title(diff, tui_state, hunk_spans.len());
+    let title = diff_title(diff, document.diff.hunk_spans());
     let paragraph = Paragraph::new(visible).block(
         Block::default()
             .borders(Borders::ALL)
@@ -107,14 +95,9 @@ pub fn draw(
 }
 
 fn reset_tui_document_state(tui_state: &mut TuiState) {
-    tui_state.hunk_start_rows.clear();
-    tui_state.hunk_end_rows.clear();
-    tui_state.hunk_first_change_rows.clear();
     tui_state.diff_gutter_cols = 0;
     tui_state.diff_content_start_col = 0;
     tui_state.diff_content_height = 0;
-    tui_state.diff_rendered_text.clear();
-    tui_state.document_diff_rendered_text_key = None;
 }
 
 fn draw_placeholder(
@@ -728,6 +711,7 @@ fn format_optional_line(line: Option<u32>, gutter_w: usize) -> String {
         .unwrap_or_else(|| " ".repeat(gutter_w))
 }
 
+#[cfg(test)]
 fn push_reserved_gutter_text(
     text: &mut String,
     source: SourceLocation,
@@ -840,69 +824,7 @@ fn format_blame(blame: Option<&BlameInfo>) -> String {
     }
 }
 
-fn rendered_text(document: &DiffDocument, show_blame: bool) -> Vec<String> {
-    match document {
-        DiffDocument::Unified(document) => {
-            let gutter_w = unified_gutter_width(document);
-            (0..document.len())
-                .filter_map(|row| document.line(crate::app::document::RowIndex(row)))
-                .map(|line| render_line_text(line, show_blame, GutterMode::Unified, gutter_w))
-                .collect()
-        }
-        DiffDocument::Base(document) => {
-            let gutter_w = single_gutter_width(document);
-            (0..document.len())
-                .filter_map(|row| document.line(crate::app::document::RowIndex(row)))
-                .map(|line| render_line_text(line, show_blame, GutterMode::ReservedBase, gutter_w))
-                .collect()
-        }
-        DiffDocument::Head(document) => {
-            let gutter_w = single_gutter_width(document);
-            (0..document.len())
-                .filter_map(|row| document.line(crate::app::document::RowIndex(row)))
-                .map(|line| render_line_text(line, show_blame, GutterMode::ReservedHead, gutter_w))
-                .collect()
-        }
-        DiffDocument::SideBySide(document) => {
-            let base_gutter_w = single_gutter_width(document.base());
-            let head_gutter_w = single_gutter_width(document.head());
-            (0..document.len())
-                .map(|row| {
-                    let row = crate::app::document::RowIndex(row);
-                    format!(
-                        "{}{}{}",
-                        document
-                            .base()
-                            .line(row)
-                            .map(|line| {
-                                render_line_text(
-                                    line,
-                                    show_blame,
-                                    GutterMode::Single,
-                                    base_gutter_w,
-                                )
-                            })
-                            .unwrap_or_default(),
-                        SIDE_BY_SIDE_DIVIDER,
-                        document
-                            .head()
-                            .line(row)
-                            .map(|line| {
-                                render_line_text(
-                                    line,
-                                    show_blame,
-                                    GutterMode::Single,
-                                    head_gutter_w,
-                                )
-                            })
-                            .unwrap_or_default()
-                    )
-                })
-                .collect()
-        }
-    }
-}
-
+#[cfg(test)]
 fn render_line_text(
     line: RenderLine<'_>,
     show_blame: bool,
@@ -1552,8 +1474,7 @@ mod tests {
 
 fn diff_title(
     diff: &crate::app::model::DiffPanel,
-    tui_state: &TuiState,
-    total_hunks: usize,
+    hunk_spans: &[crate::app::document::HunkSpan],
 ) -> String {
     let path = diff.path.as_deref().unwrap_or("Diff");
     let mode_label: String = match diff.content_mode {
@@ -1594,9 +1515,16 @@ fn diff_title(
     } else {
         ""
     };
+    let total_hunks = hunk_spans.len();
     let hunk_info = if total_hunks == 0 {
         String::new()
-    } else if let Some(idx) = tui_state.current_hunk_index_at(diff.cursor.line) {
+    } else if let Some(idx) = hunk_spans
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, span)| span.full_span.start.0 <= diff.cursor.line)
+        .map(|(idx, _)| idx)
+    {
         format!(" - {}/{total_hunks}", idx + 1)
     } else {
         String::new()

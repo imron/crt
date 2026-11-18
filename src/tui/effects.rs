@@ -104,7 +104,6 @@ mod tests {
         tui_state.diff_area = Rect::new(0, 0, 100, 30);
         tui_state.diff_content_height = 60;
         tui_state.diff_view_height = 28;
-        tui_state.diff_rendered_text = (1..=60).map(|n| n.to_string()).collect();
 
         apply_core_effects(
             &mut app,
@@ -142,7 +141,6 @@ mod tests {
         tui_state.diff_area = Rect::new(0, 0, 100, 30);
         tui_state.diff_content_height = 60;
         tui_state.diff_view_height = 28;
-        tui_state.diff_rendered_text = (1..=60).map(|n| n.to_string()).collect();
 
         apply_core_effects(
             &mut app,
@@ -180,7 +178,6 @@ mod tests {
         tui_state.diff_area = Rect::new(0, 0, 100, 30);
         tui_state.diff_content_height = 60;
         tui_state.diff_view_height = 28;
-        tui_state.diff_rendered_text = (1..=60).map(|n| n.to_string()).collect();
 
         apply_core_effects(
             &mut app,

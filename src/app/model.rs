@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::app::diff_rows::{
-    LinearDiffRow, LinearDiffRows, SideBySideDiffRows, inline_diff_rows, side_by_side_diff_rows,
+    LinearDiffRow, LinearDiffRows, inline_diff_rows, side_by_side_diff_rows,
 };
 use crate::app::document::{
     ActiveDocument, ColumnIndex, ContentId as DocumentContentId, DiffDocumentBuilder,
@@ -121,23 +121,11 @@ pub struct DiffPanel {
     pub is_binary: bool,
     pub diff_hash: Option<String>,
     pub hunks: Vec<DiffHunk>,
-    pub inline_rows: LinearDiffRows,
-    pub full_file_head_rows: LinearDiffRows,
-    pub full_file_base_rows: LinearDiffRows,
-    pub side_by_side_rows: SideBySideDiffRows,
-    pub head_content: Option<String>,
-    pub base_content: Option<String>,
-    pub head_blame: Vec<BlameLine>,
-    pub base_blame: Vec<BlameLine>,
     pub scroll: usize,
     pub cursor: TextAnchor,
     pub search_query: Option<String>,
-    pub search_highlights: Vec<TextRange>,
-    pub current_search_highlight: Option<usize>,
-    pub visual_selection: Option<VisualSelection>,
     pub pending_comment_anchor: Option<CommentAnchorCapture>,
     pub comments: Vec<CommentAttachment>,
-    pub comment_markers: CommentMarkerSet,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -901,20 +889,6 @@ impl CommentMarkerKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TextRange {
-    pub line: usize,
-    pub column_start: usize,
-    pub column_end: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VisualSelection {
-    pub mode: VisualSelectionMode,
-    pub start: TextAnchor,
-    pub end: TextAnchor,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchResultsOverlay {
     pub query: String,
@@ -1026,19 +1000,13 @@ pub fn document_visible_selection(
     let selection = selection?;
     match selection.mode {
         VisualSelectionMode::Line => {
-            let start = RowIndex(selection.start.line.min(selection.end.line));
-            let end = RowIndex(selection.start.line.max(selection.end.line));
+            let start = selection.start.row.min(selection.end.row);
+            let end = selection.start.row.max(selection.end.row);
             Some(DocumentVisibleSelection::Line(RowSpan { start, end }))
         }
         VisualSelectionMode::Text => Some(DocumentVisibleSelection::Text {
-            start: DocumentPosition {
-                row: RowIndex(selection.start.line),
-                column: ColumnIndex(selection.start.column),
-            },
-            end: DocumentPosition {
-                row: RowIndex(selection.end.line),
-                column: ColumnIndex(selection.end.column),
-            },
+            start: selection.start,
+            end: selection.end,
         }),
     }
 }
@@ -1370,42 +1338,9 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
                 .collect()
         })
         .unwrap_or_default();
-    let mut side_by_side_rows = SideBySideDiffRows::default();
-    let mut inline_rows = LinearDiffRows::default();
-    let mut full_file_head_rows = LinearDiffRows::default();
-    let mut full_file_base_rows = LinearDiffRows::default();
-    if let Some(entry) = selected {
-        match (state.content_mode, state.render_variant) {
-            (ContentMode::Diff, RenderVariant::SideBySide) => {
-                side_by_side_rows = side_by_side_diff_rows(
-                    &entry.diff.hunks,
-                    state.base_content.as_deref(),
-                    state.head_content.as_deref(),
-                );
-            }
-            (ContentMode::Diff, _) => {
-                inline_rows = inline_diff_rows(&entry.diff.hunks, state.head_content.as_deref());
-            }
-            (ContentMode::FullFile, RenderVariant::HeadVersion) => {
-                full_file_head_rows = crate::app::diff_rows::full_file_head_rows(
-                    &entry.diff.hunks,
-                    state.head_content.as_deref(),
-                );
-            }
-            (ContentMode::FullFile, RenderVariant::BaseVersion) => {
-                full_file_base_rows = crate::app::diff_rows::full_file_base_rows(
-                    &entry.diff.hunks,
-                    state.base_content.as_deref(),
-                );
-            }
-            _ => {}
-        }
-    }
     let comments = selected
         .map(|entry| comment_attachments_for_current_view(state, &entry.change.path))
         .unwrap_or_default();
-    let comment_markers =
-        comment_marker_set_for_current_view(state, &comments, &inline_rows, &side_by_side_rows);
     let document_scroll = state
         .active_document
         .as_ref()
@@ -1437,123 +1372,11 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
         is_binary: selected.is_some_and(|entry| entry.diff.is_binary),
         diff_hash: selected.map(|entry| entry.diff.diff_hash.clone()),
         hunks,
-        inline_rows,
-        full_file_head_rows,
-        full_file_base_rows,
-        side_by_side_rows,
-        head_content: state.head_content.clone(),
-        base_content: state.base_content.clone(),
-        head_blame: state.head_blame.clone(),
-        base_blame: state.base_blame.clone(),
         scroll: document_scroll,
         cursor: document_cursor,
         search_query: state.diff_search_query.clone(),
-        search_highlights: state
-            .diff_search_matches
-            .iter()
-            .map(|(line, start, end)| TextRange {
-                line: *line,
-                column_start: *start,
-                column_end: *end,
-            })
-            .collect(),
-        current_search_highlight: state
-            .diff_search_matches
-            .get(state.diff_search_current)
-            .map(|_| state.diff_search_current),
-        visual_selection: state
-            .visual_selection
-            .as_ref()
-            .map(|selection| VisualSelection {
-                mode: selection.mode,
-                start: selection.start,
-                end: selection.end,
-            }),
         pending_comment_anchor: state.pending_comment_anchor.clone(),
         comments,
-        comment_markers,
-    }
-}
-
-fn comment_marker_set_for_current_view(
-    state: &AppState,
-    comments: &[CommentAttachment],
-    inline_rows: &LinearDiffRows,
-    side_by_side_rows: &SideBySideDiffRows,
-) -> CommentMarkerSet {
-    let current_line =
-        current_visible_line_for_projected_rows(state, inline_rows, side_by_side_rows);
-    match state.content_mode {
-        ContentMode::FullFile => match state.render_variant {
-            RenderVariant::HeadVersion | RenderVariant::BaseVersion => {
-                CommentMarkerSet::new_with_current_comment(
-                    comments,
-                    current_line,
-                    state.selected_comment_id,
-                )
-            }
-            _ => CommentMarkerSet::new_with_current_comment(
-                comments,
-                current_line,
-                state.selected_comment_id,
-            ),
-        },
-        ContentMode::Diff if state.render_variant == RenderVariant::SideBySide => {
-            let current_row = side_by_side_rows.rows.get(state.diff_line_cursor);
-            let base_current_line =
-                current_row.and_then(|row| row.base.as_ref().map(|cell| cell.line_number));
-            let head_current_line =
-                current_row.and_then(|row| row.head.as_ref().map(|cell| cell.line_number));
-            CommentMarkerSet::new_with_current_side_lines(
-                comments,
-                current_line,
-                base_current_line,
-                head_current_line,
-                state.selected_comment_id,
-            )
-        }
-        ContentMode::Diff if state.render_variant == RenderVariant::Inline => {
-            CommentMarkerSet::new_with_current_inline_rows(
-                comments,
-                current_line,
-                Some(state.diff_line_cursor),
-                inline_rows,
-                state.selected_comment_id,
-            )
-        }
-        ContentMode::Diff => CommentMarkerSet::new_with_current_comment(
-            comments,
-            current_line,
-            state.selected_comment_id,
-        ),
-    }
-}
-
-fn current_visible_line_for_projected_rows(
-    state: &AppState,
-    inline_rows: &LinearDiffRows,
-    side_by_side_rows: &SideBySideDiffRows,
-) -> Option<u32> {
-    match state.content_mode {
-        ContentMode::FullFile => match state.render_variant {
-            RenderVariant::HeadVersion | RenderVariant::BaseVersion => {
-                Some(state.diff_line_cursor.saturating_add(1) as u32)
-            }
-            _ => None,
-        },
-        ContentMode::Diff if state.render_variant == RenderVariant::SideBySide => side_by_side_rows
-            .rows
-            .get(state.diff_line_cursor)
-            .and_then(|row| {
-                row.head
-                    .as_ref()
-                    .map(|cell| cell.line_number)
-                    .or_else(|| row.base.as_ref().map(|cell| cell.line_number))
-            }),
-        ContentMode::Diff => inline_rows
-            .rows
-            .get(state.diff_line_cursor)
-            .and_then(|row| row.new_lineno.or(row.old_lineno)),
     }
 }
 
@@ -2405,178 +2228,6 @@ mod tests {
     }
 
     #[test]
-    fn side_by_side_current_comment_uses_side_specific_row_lines() {
-        let hunk = review_types::DiffHunk {
-            old_start: 23,
-            old_lines: 2,
-            new_start: 26,
-            new_lines: 2,
-            header: "@@ -23,2 +26,2 @@".to_string(),
-            lines: vec![
-                review_types::DiffLine {
-                    kind: LineKind::Context,
-                    content: "shared one".to_string(),
-                    old_lineno: Some(23),
-                    new_lineno: Some(26),
-                },
-                review_types::DiffLine {
-                    kind: LineKind::Context,
-                    content: "shared two".to_string(),
-                    old_lineno: Some(24),
-                    new_lineno: Some(27),
-                },
-            ],
-        };
-        let mut app = App::new(
-            Config::default(),
-            test_context(),
-            vec![file(
-                "src/lib.rs",
-                review_types::ReviewStatus::Unreviewed,
-                vec![hunk],
-            )],
-        );
-        app.state.content_mode = ContentMode::Diff;
-        app.state.render_variant = RenderVariant::SideBySide;
-        app.state.base_content = Some(
-            (1..=24)
-                .map(|n| format!("base {n}"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
-        app.state.head_content = Some(
-            (1..=27)
-                .map(|n| format!("head {n}"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
-        app.state.diff_line_cursor = 26;
-        app.state.selected_comment_id = Some(1);
-        app.state.comments = vec![compound_comment(
-            1,
-            "src/lib.rs",
-            vec![
-                anchor_segment(
-                    review_types::CommentAnchorSide::Base,
-                    "src/lib.rs",
-                    23,
-                    24,
-                    "base",
-                ),
-                anchor_segment(
-                    review_types::CommentAnchorSide::Head,
-                    "src/lib.rs",
-                    26,
-                    27,
-                    "head",
-                ),
-            ],
-        )];
-
-        let model = app.model();
-
-        assert_side_marker(
-            &model.diff.comment_markers,
-            review_types::CommentAnchorSide::Base,
-            24,
-            Some(CommentMarkerKind::End),
-            false,
-            true,
-        );
-        assert_side_marker(
-            &model.diff.comment_markers,
-            review_types::CommentAnchorSide::Head,
-            27,
-            Some(CommentMarkerKind::End),
-            false,
-            true,
-        );
-    }
-
-    #[test]
-    fn inline_current_comment_uses_base_line_on_deletion_rows() {
-        let hunk = review_types::DiffHunk {
-            old_start: 192,
-            old_lines: 1,
-            new_start: 211,
-            new_lines: 1,
-            header: "@@ -192 +211 @@".to_string(),
-            lines: vec![
-                review_types::DiffLine {
-                    kind: LineKind::Deletion,
-                    content: "fn navigate_to_comment(state: &mut AppState) {".to_string(),
-                    old_lineno: Some(192),
-                    new_lineno: None,
-                },
-                review_types::DiffLine {
-                    kind: LineKind::Addition,
-                    content: "fn navigate_to_comment(state: &mut AppState) -> bool {".to_string(),
-                    old_lineno: None,
-                    new_lineno: Some(211),
-                },
-            ],
-        };
-        let mut app = App::new(
-            Config::default(),
-            test_context(),
-            vec![file(
-                "src/lib.rs",
-                review_types::ReviewStatus::Unreviewed,
-                vec![hunk],
-            )],
-        );
-        app.state.content_mode = ContentMode::Diff;
-        app.state.render_variant = RenderVariant::Inline;
-        app.state.head_content = Some(
-            (1..=211)
-                .map(|n| format!("head {n}"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
-        app.state.diff_line_cursor = 210;
-        app.state.selected_comment_id = Some(1);
-        app.state.comments = vec![compound_comment(
-            1,
-            "src/lib.rs",
-            vec![
-                anchor_segment(
-                    review_types::CommentAnchorSide::Base,
-                    "src/lib.rs",
-                    192,
-                    192,
-                    "base",
-                ),
-                anchor_segment(
-                    review_types::CommentAnchorSide::Head,
-                    "src/lib.rs",
-                    211,
-                    211,
-                    "head",
-                ),
-            ],
-        )];
-
-        let model = app.model();
-
-        assert_side_marker(
-            &model.diff.comment_markers,
-            review_types::CommentAnchorSide::Base,
-            192,
-            Some(CommentMarkerKind::SingleLine),
-            false,
-            true,
-        );
-        assert_side_marker(
-            &model.diff.comment_markers,
-            review_types::CommentAnchorSide::Head,
-            211,
-            Some(CommentMarkerKind::SingleLine),
-            false,
-            true,
-        );
-    }
-
-    #[test]
     fn comments_panel_uses_logical_inline_comment_on_base_segment_row() {
         let hunk = review_types::DiffHunk {
             old_start: 130,
@@ -2656,14 +2307,19 @@ mod tests {
                 ),
             ],
         )];
+        app.state.rebuild_active_document();
         let deletion_row = app
-            .model()
-            .diff
-            .inline_rows
-            .rows
-            .iter()
-            .position(|row| row.old_lineno == Some(130))
-            .expect("deletion row should render");
+            .state
+            .active_document
+            .as_ref()
+            .and_then(|document| {
+                document
+                    .document()
+                    .diff
+                    .row_for_source_line(review_types::CommentAnchorSide::Base, 130)
+            })
+            .expect("deletion row should render")
+            .0;
         app.state.diff_line_cursor = deletion_row;
 
         let model = app.model();
@@ -3039,185 +2695,6 @@ mod tests {
         let model = app.model();
 
         assert_eq!(model.diff.comments.len(), 1);
-        assert_marker(
-            &model.diff.comment_markers,
-            2,
-            Some(CommentMarkerKind::SingleLine),
-            false,
-            false,
-        );
-    }
-
-    #[test]
-    fn full_file_head_view_hides_base_only_comment_markers() {
-        let mut app = App::new(
-            Config::default(),
-            test_context(),
-            vec![file(
-                "src/lib.rs",
-                review_types::ReviewStatus::Unreviewed,
-                Vec::new(),
-            )],
-        );
-        app.state.content_mode = ContentMode::FullFile;
-        app.state.render_variant = RenderVariant::HeadVersion;
-        app.state.base_content = Some("base one\nbase two\n".to_string());
-        app.state.head_content = Some("head one\nhead two\n".to_string());
-
-        let mut comment = stored_comment(7, "src/lib.rs", false);
-        comment
-            .replace_anchor(review_types::CommentAnchor {
-                segments: vec![review_types::CommentAnchorSegment {
-                    side: review_types::CommentAnchorSide::Base,
-                    file_path: "src/lib.rs".to_string(),
-                    line_start: 2,
-                    line_end: 2,
-                    char_start: None,
-                    char_end: None,
-                    anchor_text: "base two".to_string(),
-                    context_before: "base one".to_string(),
-                    context_after: String::new(),
-                    placement_status: review_types::AnchorPlacementStatus::Anchored,
-                    match_method: review_types::AnchorMatchMethod::ExactAtLine,
-                }],
-                aggregate_status: review_types::AnchorAggregateStatus::Anchored,
-            })
-            .expect("test comment anchor should be valid");
-        app.state.comments = vec![comment];
-
-        let model = app.model();
-
-        assert_marker(&model.diff.comment_markers, 2, None, false, false);
-    }
-
-    #[test]
-    fn full_file_base_view_uses_base_segment_from_paired_anchor() {
-        let mut app = App::new(
-            Config::default(),
-            test_context(),
-            vec![file(
-                "src/lib.rs",
-                review_types::ReviewStatus::Unreviewed,
-                Vec::new(),
-            )],
-        );
-        app.state.content_mode = ContentMode::FullFile;
-        app.state.render_variant = RenderVariant::BaseVersion;
-        app.state.base_content = Some("base one\nbase two\nbase three\n".to_string());
-        app.state.head_content = Some(
-            (1..=12)
-                .map(|n| format!("head {n}"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
-        app.state.comments = vec![compound_comment(
-            8,
-            "src/lib.rs",
-            vec![
-                anchor_segment(
-                    review_types::CommentAnchorSide::Base,
-                    "src/lib.rs",
-                    2,
-                    2,
-                    "base two",
-                ),
-                anchor_segment(
-                    review_types::CommentAnchorSide::Head,
-                    "src/lib.rs",
-                    10,
-                    10,
-                    "head ten",
-                ),
-            ],
-        )];
-
-        let model = app.model();
-
-        assert_marker(
-            &model.diff.comment_markers,
-            2,
-            Some(CommentMarkerKind::SingleLine),
-            false,
-            false,
-        );
-        assert_marker(&model.diff.comment_markers, 10, None, false, false);
-    }
-
-    #[test]
-    fn full_file_head_view_uses_head_segment_from_paired_anchor() {
-        let mut app = App::new(
-            Config::default(),
-            test_context(),
-            vec![file(
-                "src/lib.rs",
-                review_types::ReviewStatus::Unreviewed,
-                Vec::new(),
-            )],
-        );
-        app.state.content_mode = ContentMode::FullFile;
-        app.state.render_variant = RenderVariant::HeadVersion;
-        app.state.base_content = Some("base one\nbase two\nbase three\n".to_string());
-        app.state.head_content = Some(
-            (1..=12)
-                .map(|n| format!("head {n}"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
-        app.state.comments = vec![compound_comment(
-            9,
-            "src/lib.rs",
-            vec![
-                anchor_segment(
-                    review_types::CommentAnchorSide::Base,
-                    "src/lib.rs",
-                    2,
-                    2,
-                    "base two",
-                ),
-                anchor_segment(
-                    review_types::CommentAnchorSide::Head,
-                    "src/lib.rs",
-                    10,
-                    10,
-                    "head ten",
-                ),
-            ],
-        )];
-
-        let model = app.model();
-
-        assert_marker(&model.diff.comment_markers, 2, None, false, false);
-        assert_marker(
-            &model.diff.comment_markers,
-            10,
-            Some(CommentMarkerKind::SingleLine),
-            false,
-            false,
-        );
-    }
-
-    #[test]
-    fn full_file_base_view_hides_head_only_comment_markers() {
-        let mut app = App::new(
-            Config::default(),
-            test_context(),
-            vec![file(
-                "src/lib.rs",
-                review_types::ReviewStatus::Unreviewed,
-                Vec::new(),
-            )],
-        );
-        app.state.content_mode = ContentMode::FullFile;
-        app.state.render_variant = RenderVariant::BaseVersion;
-        app.state.base_content = Some("base one\nbase two\n".to_string());
-        app.state.head_content = Some("head one\nhead two\n".to_string());
-        let mut comment = stored_comment(8, "src/lib.rs", false);
-        move_comment_head_range(&mut comment, 2, 2);
-        app.state.comments = vec![comment];
-
-        let model = app.model();
-
-        assert_marker(&model.diff.comment_markers, 2, None, false, false);
     }
 
     #[test]
@@ -3291,8 +2768,14 @@ mod tests {
         app.state.diff_search_current = 1;
         app.state.visual_selection = Some(crate::app::VisualSelection {
             mode: VisualSelectionMode::Text,
-            start: TextAnchor { line: 1, column: 2 },
-            end: TextAnchor { line: 3, column: 4 },
+            start: DocumentPosition {
+                row: RowIndex(1),
+                column: ColumnIndex(2),
+            },
+            end: DocumentPosition {
+                row: RowIndex(3),
+                column: ColumnIndex(4),
+            },
         });
         app.state.ensure_active_document();
 
@@ -3323,6 +2806,16 @@ mod tests {
         );
         assert_eq!(model.diff.search_query, Some("run".to_string()));
         let active_document = model.active_document.as_ref().expect("active document");
+        assert_eq!(
+            active_document.document().diff.all_search_matches(),
+            vec![crate::app::document::SearchMatch {
+                row: RowIndex(1),
+                columns: crate::app::document::ColumnSpan {
+                    start: ColumnIndex(4),
+                    end: ColumnIndex(7),
+                },
+            }]
+        );
         let DiffDocument::Unified(document) = &active_document.document().diff else {
             panic!("expected unified active document");
         };
@@ -3339,60 +2832,6 @@ mod tests {
                 }
             })
         );
-        assert_eq!(
-            model.diff.search_highlights,
-            vec![
-                TextRange {
-                    line: 3,
-                    column_start: 10,
-                    column_end: 13,
-                },
-                TextRange {
-                    line: 8,
-                    column_start: 2,
-                    column_end: 5,
-                },
-            ]
-        );
-        assert_eq!(model.diff.current_search_highlight, Some(1));
-    }
-
-    #[test]
-    fn model_projects_only_active_render_rows() {
-        let mut app = App::new(
-            Config::default(),
-            test_context(),
-            vec![file(
-                "src/main.rs",
-                review_types::ReviewStatus::Unreviewed,
-                vec![hunk()],
-            )],
-        );
-        app.state.base_content = Some("fn main() {\n}\n".to_string());
-        app.state.head_content = Some("fn main() {\n    run();\n}\n".to_string());
-
-        app.state.content_mode = ContentMode::Diff;
-        app.state.render_variant = RenderVariant::Inline;
-        let inline = app.model().diff;
-        assert!(!inline.inline_rows.rows.is_empty());
-        assert!(inline.side_by_side_rows.rows.is_empty());
-        assert!(inline.full_file_head_rows.rows.is_empty());
-        assert!(inline.full_file_base_rows.rows.is_empty());
-
-        app.state.render_variant = RenderVariant::SideBySide;
-        let side_by_side = app.model().diff;
-        assert!(side_by_side.inline_rows.rows.is_empty());
-        assert!(!side_by_side.side_by_side_rows.rows.is_empty());
-        assert!(side_by_side.full_file_head_rows.rows.is_empty());
-        assert!(side_by_side.full_file_base_rows.rows.is_empty());
-
-        app.state.content_mode = ContentMode::FullFile;
-        app.state.render_variant = RenderVariant::HeadVersion;
-        let full_file_head = app.model().diff;
-        assert!(full_file_head.inline_rows.rows.is_empty());
-        assert!(full_file_head.side_by_side_rows.rows.is_empty());
-        assert!(!full_file_head.full_file_head_rows.rows.is_empty());
-        assert!(full_file_head.full_file_base_rows.rows.is_empty());
     }
 
     #[test]

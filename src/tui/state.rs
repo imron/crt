@@ -2,8 +2,6 @@
 
 use std::time::{Duration, Instant};
 
-use super::render::diff_view::DiffCache;
-use crate::app::document::DocumentKey;
 use crate::app::model::{AppModel, FileList};
 use crate::app::{AppOutput, AppState, AppViewport, FileListSectionFocus, StatusUpdate};
 use crate::core::{AppTarget, ConnectionState, PaneId, PointerSemanticHit, PromptId, TextAnchor};
@@ -64,15 +62,6 @@ pub struct LastPointerClick {
 pub struct TuiState {
     /// Whether inline comments are visible in the diff pane.
     pub show_comments: bool,
-    /// TUI-local document renderer toggle.
-    pub use_document_diff_view: bool,
-    pub diff_cache: Option<DiffCache>,
-    /// Display row indices where each hunk starts in the rendered TUI diff.
-    pub hunk_start_rows: Vec<usize>,
-    /// Display row indices where each hunk ends in the rendered TUI diff.
-    pub hunk_end_rows: Vec<usize>,
-    /// Display row of the first actual change (+/-) in each rendered hunk.
-    pub hunk_first_change_rows: Vec<usize>,
     /// Number of columns occupied by line-number gutters in the TUI diff pane.
     pub diff_gutter_cols: usize,
     /// Column where semantic diff text starts in the rendered TUI diff pane.
@@ -81,10 +70,6 @@ pub struct TuiState {
     pub diff_content_height: usize,
     /// Visible rendered line count in the diff pane.
     pub diff_view_height: usize,
-    /// Plain text of rendered diff lines, used for search and clipboard.
-    pub diff_rendered_text: Vec<String>,
-    /// Document key for plain text produced by the document renderer.
-    pub document_diff_rendered_text_key: Option<DocumentKey>,
     /// Plain text of rendered file-list lines, used for clipboard.
     pub file_list_rendered_text: Vec<String>,
     /// Mapping from rendered file-list rows to file indices.
@@ -148,17 +133,10 @@ impl Default for TuiState {
     fn default() -> Self {
         Self {
             show_comments: false,
-            use_document_diff_view: false,
-            diff_cache: None,
-            hunk_start_rows: Vec::new(),
-            hunk_end_rows: Vec::new(),
-            hunk_first_change_rows: Vec::new(),
             diff_gutter_cols: 0,
             diff_content_start_col: 0,
             diff_content_height: 0,
             diff_view_height: 0,
-            diff_rendered_text: Vec::new(),
-            document_diff_rendered_text_key: None,
             file_list_rendered_text: Vec::new(),
             file_list_row_to_file: Vec::new(),
             file_list_row_to_comment: Vec::new(),
@@ -196,15 +174,6 @@ impl TuiState {
     /// Maximum diff scroll offset for the last rendered line.
     pub fn max_diff_scroll(&self) -> usize {
         self.diff_content_height.saturating_sub(1)
-    }
-
-    pub fn current_hunk_index_at(&self, cursor_line: usize) -> Option<usize> {
-        self.hunk_start_rows
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, start)| **start <= cursor_line)
-            .map(|(idx, _)| idx)
     }
 
     pub fn clamp_diff_scroll(&self, state: &mut AppState) {
@@ -550,36 +519,12 @@ impl TuiState {
 }
 
 impl AppViewport for TuiState {
-    fn hunk_start_rows(&self) -> &[usize] {
-        &self.hunk_start_rows
-    }
-
-    fn hunk_end_rows(&self) -> &[usize] {
-        &self.hunk_end_rows
-    }
-
-    fn hunk_first_change_rows(&self) -> &[usize] {
-        &self.hunk_first_change_rows
-    }
-
-    fn diff_gutter_cols(&self) -> usize {
-        self.diff_gutter_cols
-    }
-
-    fn diff_content_start_col(&self) -> usize {
-        TuiState::diff_content_start_col(self)
-    }
-
     fn diff_content_height(&self) -> usize {
         self.diff_content_height
     }
 
     fn diff_view_height(&self) -> usize {
         self.diff_view_height
-    }
-
-    fn diff_rendered_text(&self) -> &[String] {
-        &self.diff_rendered_text
     }
 }
 

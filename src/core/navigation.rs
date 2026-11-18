@@ -14,12 +14,6 @@ pub enum FileNavigationScope {
     FileListPane,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HunkJump {
-    pub cursor: usize,
-    pub scroll: usize,
-}
-
 pub fn map_new_to_old_line(entry: Option<&FileEntry>, new_line: usize) -> usize {
     let Some(entry) = entry else {
         return new_line;
@@ -101,55 +95,6 @@ pub fn navigate_file(
 
     let new_idx = range_start + new_pos;
     (new_idx != selected_file).then_some(new_idx)
-}
-
-pub fn jump_to_next_hunk(
-    current_cursor: usize,
-    current_scroll: usize,
-    view_height: usize,
-    first_change_rows: &[usize],
-    hunk_end_rows: &[usize],
-) -> Option<HunkJump> {
-    let idx = first_change_rows.iter().position(|&r| r > current_cursor)?;
-    jump_to_hunk(
-        idx,
-        current_scroll,
-        view_height,
-        first_change_rows,
-        hunk_end_rows,
-    )
-}
-
-pub fn jump_to_prev_hunk(
-    current_cursor: usize,
-    current_scroll: usize,
-    view_height: usize,
-    first_change_rows: &[usize],
-    hunk_end_rows: &[usize],
-) -> Option<HunkJump> {
-    let idx = first_change_rows
-        .iter()
-        .rposition(|&r| r < current_cursor)?;
-    jump_to_hunk(
-        idx,
-        current_scroll,
-        view_height,
-        first_change_rows,
-        hunk_end_rows,
-    )
-}
-
-fn jump_to_hunk(
-    idx: usize,
-    current_scroll: usize,
-    view_height: usize,
-    first_change_rows: &[usize],
-    hunk_end_rows: &[usize],
-) -> Option<HunkJump> {
-    let cursor = *first_change_rows.get(idx)?;
-    let hunk_end = hunk_end_rows.get(idx).copied().unwrap_or(cursor + 1);
-    let scroll = scroll_to_show_hunk(cursor, hunk_end, current_scroll, view_height);
-    Some(HunkJump { cursor, scroll })
 }
 
 pub fn scroll_to_show_hunk(
@@ -247,32 +192,6 @@ mod tests {
         assert_eq!(
             navigate_file(2, 5, 2, FileNavigationScope::FileListPane, Direction::Prev,),
             Some(4)
-        );
-    }
-
-    #[test]
-    fn hunk_jump_selects_next_change_and_preserves_visible_scroll() {
-        let jump = jump_to_next_hunk(3, 0, 10, &[5, 20], &[8, 25]).unwrap();
-
-        assert_eq!(
-            jump,
-            HunkJump {
-                cursor: 5,
-                scroll: 0
-            }
-        );
-    }
-
-    #[test]
-    fn hunk_jump_scrolls_large_hunk_to_top() {
-        let jump = jump_to_next_hunk(3, 0, 5, &[10], &[30]).unwrap();
-
-        assert_eq!(
-            jump,
-            HunkJump {
-                cursor: 10,
-                scroll: 10
-            }
         );
     }
 }

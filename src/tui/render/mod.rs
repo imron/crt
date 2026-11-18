@@ -5,10 +5,8 @@
 //! hidden to give the other full width.
 
 mod comments_panel;
-pub mod diff_view;
 mod document_diff_view;
 mod file_list;
-mod word_diff;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
@@ -140,11 +138,7 @@ fn draw_diff_view(
     styles: &StyleConfig,
     area: Rect,
 ) {
-    if tui_state.use_document_diff_view {
-        document_diff_view::draw(frame, model, tui_state, styles, area);
-    } else {
-        diff_view::draw(frame, model, tui_state, styles, area);
-    }
+    document_diff_view::draw(frame, model, tui_state, styles, area);
 }
 
 // ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ use super::effects::apply_core_effects;
 use super::input::{CoreInputDispatch, KeyInputResult};
 use super::state::{InputMode, LastPointerClick, MouseSelection, STATUS_MSG_TIMEOUT, TuiState};
 use super::{input, render};
-use crate::app::{App, VisualSelection};
+use crate::app::App;
 use crate::core::{
     CoreEffect, InputEvent, InteractionContext, PaneId, TextAnchor, VisualSelectionEffect,
 };
@@ -523,9 +523,8 @@ impl Tui {
                         }
                         let mouse_down_anchor = self.tui_state.mouse_down_anchor.take();
                         if matches!(mouse_down_anchor, Some((PaneFocus::Diff, _))) {
-                            if let Some(selection) = self.app.state.visual_selection.as_ref() {
-                                let text =
-                                    extract_diff_visual_selection_text(&self.tui_state, selection);
+                            if self.app.state.visual_selection.is_some() {
+                                let text = self.app.state.selected_diff_text().unwrap_or_default();
                                 if !text.is_empty() {
                                     copy_to_clipboard(&text);
                                 }
@@ -564,12 +563,45 @@ impl Tui {
 
     /// Select the word under the given semantic position and copy it.
     fn select_word_at(&mut self, pane: PaneFocus, anchor: TextAnchor) -> bool {
+        if pane == PaneFocus::Diff {
+            let Some(selection) = self
+                .app
+                .state
+                .diff_word_selection_at(anchor.line, anchor.column)
+            else {
+                return false;
+            };
+            if selection.word.is_empty() {
+                return false;
+            }
+
+            copy_to_clipboard(&selection.word);
+            apply_core_effects(
+                &mut self.app,
+                &mut self.tui_state,
+                vec![
+                    CoreEffect::VisualSelection(VisualSelectionEffect::StartText {
+                        anchor: TextAnchor {
+                            line: selection.start.row.0,
+                            column: selection.start.column.0,
+                        },
+                    }),
+                    CoreEffect::VisualSelection(VisualSelectionEffect::ExtendTo {
+                        anchor: TextAnchor {
+                            line: selection.end.row.0,
+                            column: selection.end.column.0,
+                        },
+                    }),
+                ],
+            );
+            self.tui_state
+                .set_status_message(format!("Copied identifier: {}", selection.word));
+            return true;
+        }
+
         let (text, base_col) = match pane {
-            PaneFocus::FileList => (&self.tui_state.file_list_rendered_text, 0),
-            PaneFocus::Diff => (
-                &self.tui_state.diff_rendered_text,
-                self.tui_state.diff_content_start_col(),
-            ),
+            PaneFocus::FileList => (&self.tui_state.file_list_rendered_text, 0usize),
+            PaneFocus::Diff => unreachable!("diff word selection is handled above"),
             PaneFocus::Comments => return false,
         };
         let line = match text.get(anchor.line) {
@@ -599,27 +631,12 @@ impl Tui {
             line: anchor.line,
             column: end.saturating_sub(base_col),
         };
-        if pane == PaneFocus::Diff {
-            apply_core_effects(
-                &mut self.app,
-                &mut self.tui_state,
-                vec![
-                    CoreEffect::VisualSelection(VisualSelectionEffect::StartText {
-                        anchor: start_anchor,
-                    }),
-                    CoreEffect::VisualSelection(VisualSelectionEffect::ExtendTo {
-                        anchor: end_anchor,
-                    }),
-                ],
-            );
-        } else {
-            self.tui_state.mouse_selection = Some(MouseSelection {
-                pane,
-                start: start_anchor,
-                end: end_anchor,
-                word_selected: true,
-            });
-        }
+        self.tui_state.mouse_selection = Some(MouseSelection {
+            pane,
+            start: start_anchor,
+            end: end_anchor,
+            word_selected: true,
+        });
         self.tui_state
             .set_status_message(format!("Copied identifier: {word}"));
         true
@@ -730,14 +747,11 @@ fn word_bounds_at_index(chars: &[char], click_idx: usize) -> Option<(usize, usiz
 // Text extraction from selection
 // ---------------------------------------------------------------------------
 
-/// Extract the selected text from the rendered content stored in TUI state.
+/// Extract selected file-list text from the rendered content stored in TUI state.
 fn extract_selected_text(tui_state: &TuiState, sel: &MouseSelection) -> String {
-    let (text, base_col) = match sel.pane {
-        PaneFocus::Diff => (
-            &tui_state.diff_rendered_text,
-            tui_state.diff_content_start_col(),
-        ),
-        PaneFocus::FileList => (&tui_state.file_list_rendered_text, 0),
+    let text = match sel.pane {
+        PaneFocus::Diff => return String::new(),
+        PaneFocus::FileList => &tui_state.file_list_rendered_text,
         PaneFocus::Comments => return String::new(),
     };
 
@@ -757,12 +771,12 @@ fn extract_selected_text(tui_state: &TuiState, sel: &MouseSelection) -> String {
         let chars: Vec<char> = line.chars().collect();
 
         let col_start = if line_idx == start.line {
-            base_col.saturating_add(start.column)
+            start.column
         } else {
-            base_col
+            0
         };
         let col_end = if line_idx == end.line {
-            base_col.saturating_add(end.column).saturating_add(1)
+            end.column.saturating_add(1)
         } else {
             chars.len()
         };
@@ -784,16 +798,6 @@ fn extract_selected_text(tui_state: &TuiState, sel: &MouseSelection) -> String {
         }
     }
     result
-}
-
-fn extract_diff_visual_selection_text(tui_state: &TuiState, selection: &VisualSelection) -> String {
-    let sel = MouseSelection {
-        pane: PaneFocus::Diff,
-        start: selection.start,
-        end: selection.end,
-        word_selected: false,
-    };
-    extract_selected_text(tui_state, &sel)
 }
 
 // ---------------------------------------------------------------------------
@@ -909,44 +913,67 @@ mod tests {
     }
 
     #[test]
-    fn extract_selected_text_uses_diff_content_anchors() {
-        let mut tui_state = TuiState::default();
-        tui_state.diff_gutter_cols = 4;
-        tui_state.diff_rendered_text = vec![
-            "     + first line".to_string(),
-            "       second line".to_string(),
-        ];
-
-        let sel = MouseSelection {
-            pane: PaneFocus::Diff,
-            start: TextAnchor { line: 0, column: 0 },
-            end: TextAnchor { line: 1, column: 5 },
-            word_selected: false,
-        };
-
-        assert_eq!(
-            extract_selected_text(&tui_state, &sel),
-            "first line\nsecond"
+    fn diff_visual_selection_text_comes_from_active_document() {
+        let mut state = crate::app::AppState::new(
+            crate::config::DiffAlgorithm::Myers,
+            crate::review_types::ConnectionContext {
+                repo_root: "/repo".to_string(),
+                worktree: "/repo".to_string(),
+                base_ref: "main".to_string(),
+                head_ref: "feature".to_string(),
+                merge_base: "abc123".to_string(),
+            },
+            vec![crate::review_types::FileEntry {
+                change: crate::review_types::FileChange {
+                    path: "src/lib.rs".to_string(),
+                    old_path: None,
+                    kind: crate::review_types::ChangeKind::Modified,
+                },
+                status: crate::review_types::ReviewStatus::Unreviewed,
+                diff: crate::review_types::DiffContent {
+                    hunks: vec![crate::review_types::DiffHunk {
+                        old_start: 1,
+                        old_lines: 2,
+                        new_start: 1,
+                        new_lines: 2,
+                        header: "@@ -1,2 +1,2 @@".to_string(),
+                        lines: vec![
+                            crate::review_types::DiffLine {
+                                kind: crate::review_types::LineKind::Context,
+                                content: "first line".to_string(),
+                                old_lineno: Some(1),
+                                new_lineno: Some(1),
+                            },
+                            crate::review_types::DiffLine {
+                                kind: crate::review_types::LineKind::Context,
+                                content: "second line".to_string(),
+                                old_lineno: Some(2),
+                                new_lineno: Some(2),
+                            },
+                        ],
+                    }],
+                    is_binary: false,
+                    diff_hash: "diff".to_string(),
+                },
+            }],
+            40,
         );
-    }
-
-    #[test]
-    fn extract_diff_visual_selection_uses_app_selection_anchors() {
-        let mut tui_state = TuiState::default();
-        tui_state.diff_gutter_cols = 4;
-        tui_state.diff_rendered_text = vec![
-            "     + first line".to_string(),
-            "       second line".to_string(),
-        ];
-        let selection = VisualSelection {
+        state.visual_selection = Some(crate::app::VisualSelection {
             mode: crate::app::VisualSelectionMode::Text,
-            start: TextAnchor { line: 0, column: 0 },
-            end: TextAnchor { line: 1, column: 5 },
-        };
+            start: crate::app::document::DocumentPosition {
+                row: crate::app::document::RowIndex(0),
+                column: crate::app::document::ColumnIndex(0),
+            },
+            end: crate::app::document::DocumentPosition {
+                row: crate::app::document::RowIndex(1),
+                column: crate::app::document::ColumnIndex(5),
+            },
+        });
+        state.rebuild_active_document();
 
         assert_eq!(
-            extract_diff_visual_selection_text(&tui_state, &selection),
-            "first line\nsecond"
+            state.selected_diff_text().as_deref(),
+            Some("first line\nsecond")
         );
     }
 

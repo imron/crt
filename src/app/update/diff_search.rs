@@ -2,8 +2,8 @@ use super::cursor::clamp_cursor_and_scroll;
 use super::output::AppOutput;
 use super::viewport::AppViewport;
 use crate::app::AppState;
+use crate::app::document::{ColumnIndex, DocumentPosition, RowIndex};
 use crate::core::navigation::Direction;
-use crate::core::text::char_to_byte_index;
 
 pub fn apply_diff_search(
     state: &mut AppState,
@@ -43,7 +43,7 @@ pub fn navigate_diff_search_match(
     }
 
     let cursor = state.diff_line_cursor;
-    let cursor_col = view.diff_content_start_col() + state.diff_col_cursor;
+    let cursor_col = state.diff_col_cursor;
     let len = state.diff_search_matches.len();
     let idx = match direction {
         Direction::Next => state
@@ -103,7 +103,7 @@ fn recompute_diff_search_matches(state: &mut AppState, view: &impl AppViewport) 
         Some(q) if !q.is_empty() => q.clone(),
         _ => return None,
     };
-    let re = match regex::RegexBuilder::new(&query)
+    let _re = match regex::RegexBuilder::new(&query)
         .case_insensitive(true)
         .build()
     {
@@ -119,19 +119,25 @@ fn recompute_diff_search_matches(state: &mut AppState, view: &impl AppViewport) 
             return Some(format!("Invalid regex: {short}"));
         }
     };
-    for (row, line) in view.diff_rendered_text().iter().enumerate() {
-        let search_start =
-            char_to_byte_index(line, view.diff_content_start_col()).unwrap_or(line.len());
-        let content = &line[search_start..];
-        for m in re.find_iter(content) {
-            if m.start() == m.end() {
-                continue;
-            }
-            let abs_start = search_start + m.start();
-            let abs_end = search_start + m.end();
-            state.diff_search_matches.push((row, abs_start, abs_end));
-        }
+    let current = DocumentPosition {
+        row: RowIndex(state.diff_line_cursor),
+        column: ColumnIndex(state.diff_col_cursor),
+    };
+    let Some(active) = state.active_document.as_mut() else {
+        return None;
+    };
+    active
+        .document_mut()
+        .diff
+        .search_with_current(query.clone(), Some(current));
+    for match_ in active.document().diff.all_search_matches() {
+        state.diff_search_matches.push((
+            match_.row.0,
+            match_.columns.start.0,
+            match_.columns.end.0,
+        ));
     }
+    let _ = view;
     None
 }
 
@@ -154,34 +160,23 @@ fn set_cursor_to_match(state: &mut AppState, view: &impl AppViewport, idx: usize
         return;
     };
     state.diff_line_cursor = row;
-    state.diff_col_cursor = start.saturating_sub(view.diff_content_start_col());
+    state.diff_col_cursor = start;
+    let _ = view;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::review_types::{
+        ChangeKind, ConnectionContext, DiffContent, DiffHunk, DiffLine, FileChange, FileEntry,
+        LineKind, ReviewStatus,
+    };
 
     struct View {
         lines: Vec<String>,
     }
 
     impl AppViewport for View {
-        fn hunk_start_rows(&self) -> &[usize] {
-            &[]
-        }
-
-        fn hunk_end_rows(&self) -> &[usize] {
-            &[]
-        }
-
-        fn hunk_first_change_rows(&self) -> &[usize] {
-            &[]
-        }
-
-        fn diff_gutter_cols(&self) -> usize {
-            8
-        }
-
         fn diff_content_height(&self) -> usize {
             self.lines.len()
         }
@@ -189,52 +184,75 @@ mod tests {
         fn diff_view_height(&self) -> usize {
             self.lines.len()
         }
-
-        fn diff_rendered_text(&self) -> &[String] {
-            &self.lines
-        }
     }
 
-    fn state() -> AppState {
+    fn state_with_lines(lines: Vec<DiffLine>) -> AppState {
         let mut state = AppState::new(
             crate::config::DiffAlgorithm::Myers,
-            crate::review_types::ConnectionContext {
+            ConnectionContext {
                 repo_root: "/repo".to_string(),
                 worktree: "/repo".to_string(),
                 base_ref: "main".to_string(),
                 head_ref: "feature".to_string(),
                 merge_base: "abc123".to_string(),
             },
-            Vec::new(),
+            vec![FileEntry {
+                change: FileChange {
+                    path: "src/lib.rs".to_string(),
+                    old_path: None,
+                    kind: ChangeKind::Modified,
+                },
+                status: ReviewStatus::Unreviewed,
+                diff: DiffContent {
+                    hunks: vec![DiffHunk {
+                        old_start: 1,
+                        old_lines: lines.len() as u32,
+                        new_start: 1,
+                        new_lines: lines.len() as u32,
+                        header: "@@ -1 +1 @@".to_string(),
+                        lines,
+                    }],
+                    is_binary: false,
+                    diff_hash: "diff".to_string(),
+                },
+            }],
             40,
         );
         state.diff_search_query = Some("specific".to_string());
+        state.rebuild_active_document();
         state
     }
 
+    fn context_line(content: &str, line: u32) -> DiffLine {
+        DiffLine {
+            kind: LineKind::Context,
+            content: content.to_string(),
+            old_lineno: Some(line),
+            new_lineno: Some(line),
+        }
+    }
+
     #[test]
-    fn diff_search_skips_multibyte_comment_marker_gutter() {
-        let mut state = state();
+    fn diff_search_uses_document_text_not_viewport_rendered_text() {
+        let mut state = state_with_lines(vec![context_line("on specific lines.", 1)]);
         let view = View {
-            lines: vec![" 25  25┃   on specific lines.".to_string()],
+            lines: vec!["viewport text is ignored".to_string()],
         };
 
         assert!(recompute_diff_search_matches(&mut state, &view).is_none());
 
         assert_eq!(state.diff_search_matches.len(), 1);
         let (_, start, end) = state.diff_search_matches[0];
-        assert_eq!(&view.lines[0][start..end], "specific");
+        assert_eq!((start, end), (3, 11));
     }
 
     #[test]
     fn diff_search_navigation_visits_multiple_matches_on_same_line() {
-        let mut state = state();
-        let view = View {
-            lines: vec![
-                "           specific and specific here".to_string(),
-                "           later specific".to_string(),
-            ],
-        };
+        let mut state = state_with_lines(vec![
+            context_line("specific and specific here", 1),
+            context_line("later specific", 2),
+        ]);
+        let view = View { lines: Vec::new() };
         assert!(recompute_diff_search_matches(&mut state, &view).is_none());
         assert_eq!(state.diff_search_matches.len(), 3);
         state.diff_search_current = 0;
