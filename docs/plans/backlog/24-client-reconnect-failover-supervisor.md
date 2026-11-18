@@ -20,6 +20,7 @@ architecture before reuse or discarded if stale.
 - Stage 21 (`21-protocol-type-decoupling.md`)
 - Stage 23 (`23-tui-intent-only-input.md`)
 - Stage 23g (`23g-remove-app-update.md`)
+- Stage 23k (`23k-thin-tui-runtime-cleanup.md`)
 
 ## Goal
 
@@ -30,7 +31,8 @@ active server disappears.
 
 Startup connect-or-start exists, but runtime loss recovery is not yet fully
 enforced. Thin clients need resilient transport behavior without embedding
-recovery logic in UI code.
+recovery logic in UI code. Stage 23h-23k should first ensure the app/session
+boundary, not the TUI runtime, owns client/service workflows.
 
 ## Scope
 
@@ -74,6 +76,8 @@ recovery logic in UI code.
 ## Implementation Notes
 
 - Keep supervisor separate from TUI event loop so GUI can reuse it unchanged.
+- Build on the app-owned session/service boundary from Stage 23h-23k rather
+  than introducing a new TUI-specific client owner.
 - Ensure notification stream resumes after reconnect.
 - Prefer idempotent reload-on-reconnect semantics for state consistency.
 - Keep retry jitter configurable in tests for deterministic failover coverage;

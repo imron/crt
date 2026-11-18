@@ -12,6 +12,7 @@
 - Stage 21 (`21-protocol-type-decoupling.md`)
 - Stage 22 (`22-extract-domain-usecases-from-tui.md`)
 - Stage 23 (`23-tui-intent-only-input.md`)
+- Stage 23k (`23k-thin-tui-runtime-cleanup.md`)
 - Stage 24 (`24-client-reconnect-failover-supervisor.md`)
 - Stage 25 (`25-embedded-lifecycle-alignment.md`)
 
@@ -68,6 +69,11 @@ state are likely.
 8. Add reconnect-state tests for Stage 24 core effects/events:
    - `Reconnecting...` and `Reconnected` signaling,
    - snapshot resync before steady-state delta processing.
+
+9. Add boundary regression tests or static checks for Stage 23h-23k:
+   - TUI runtime does not own the raw client,
+   - TUI runtime does not execute review/search/definition workflows directly,
+   - TUI state remains limited to terminal/render/prompt/pointer concerns.
 
 ## Implementation Notes
 
