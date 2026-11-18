@@ -145,8 +145,10 @@ fn cmd_review(base: Option<String>, reset: bool, standalone: bool) -> Result<()>
             return Ok(());
         }
 
+        let session = app::AppSession::load(client, init).await?;
+
         // Launch the TUI.
-        tui::run(client, init).await.context("TUI error")?;
+        tui::run(session).await.context("TUI error")?;
 
         // Clean shutdown of embedded server if we started one.
         shutdown_embedded(cancel_guard).await;

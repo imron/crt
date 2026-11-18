@@ -3,7 +3,10 @@
 pub mod model;
 mod update;
 
+use std::path::PathBuf;
+
 use self::model::AppModel;
+use crate::client::{Client, Notification};
 use crate::config::Config;
 use crate::core::InputEvent;
 use crate::core::diff;
@@ -13,8 +16,84 @@ use crate::review_types::{
     ConnectionContext, ContentMode, DefinitionLocation, FileEntry, PaneFocus, RenderVariant,
     SearchMatch,
 };
+use anyhow::Result;
 
 pub use update::{AppOutput, AppViewport, StatusUpdate};
+
+/// App-owned interactive session.
+///
+/// UI adapters hold this session and call into it. The raw server client,
+/// configuration loading, and initial review snapshot are app/session
+/// concerns, not TUI concerns.
+pub struct AppSession {
+    pub app: App,
+    client: Client,
+    config_path: Option<PathBuf>,
+}
+
+impl AppSession {
+    pub async fn load(client: Client, context: ConnectionContext) -> Result<Self> {
+        let config = crate::config::load();
+        let files = match client.list_changed_files().await {
+            Ok(result) => result.files,
+            Err(e) => {
+                eprintln!("Warning: could not load files: {e}");
+                Vec::new()
+            }
+        };
+        let config_path = crate::config::config_path();
+        let mut app = App::new(config, context, files);
+        app.state.on_file_changed();
+
+        Ok(Self {
+            app,
+            client,
+            config_path,
+        })
+    }
+
+    pub fn config_path(&self) -> Option<&PathBuf> {
+        self.config_path.as_ref()
+    }
+
+    pub async fn list_changed_files(&self) -> Result<crate::review_types::ListChangedFilesResult> {
+        self.client.list_changed_files().await
+    }
+
+    pub async fn mark_reviewed(
+        &self,
+        file_path: &str,
+    ) -> Result<crate::review_types::ReviewActionResult> {
+        self.client.mark_reviewed(file_path).await
+    }
+
+    pub async fn unmark_reviewed(
+        &self,
+        file_path: &str,
+    ) -> Result<crate::review_types::ReviewActionResult> {
+        self.client.unmark_reviewed(file_path).await
+    }
+
+    pub async fn search_codebase(
+        &self,
+        pattern: &str,
+        scope: &str,
+    ) -> Result<crate::review_types::SearchCodebaseResult> {
+        self.client.search_codebase(pattern, scope).await
+    }
+
+    pub async fn find_definition(
+        &self,
+        symbol: &str,
+        context_file: Option<&str>,
+    ) -> Result<crate::review_types::FindDefinitionResult> {
+        self.client.find_definition(symbol, context_file).await
+    }
+
+    pub async fn drain_notifications(&self) -> Vec<Notification> {
+        self.client.drain_notifications().await
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Jump stack

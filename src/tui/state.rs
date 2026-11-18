@@ -1,6 +1,5 @@
 //! TUI-owned presentation state.
 
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::render::diff_view::DiffCache;
@@ -86,8 +85,6 @@ pub struct DefinitionResults {
 pub struct TuiState {
     /// Current file list pane width (configurable, resizable by drag).
     pub file_list_width: u16,
-    /// Path to the config file (for persisting TUI layout changes).
-    pub config_path: Option<PathBuf>,
     /// Whether the file list pane is visible.
     pub show_file_list: bool,
     /// Whether the diff pane is visible.
@@ -168,7 +165,6 @@ impl Default for TuiState {
     fn default() -> Self {
         Self {
             file_list_width: 0,
-            config_path: None,
             show_file_list: true,
             show_diff_pane: true,
             show_comments: false,
@@ -208,10 +204,9 @@ impl Default for TuiState {
 }
 
 impl TuiState {
-    pub fn new(file_list_width: u16, config_path: Option<PathBuf>) -> Self {
+    pub fn new(file_list_width: u16) -> Self {
         Self {
             file_list_width,
-            config_path,
             ..Self::default()
         }
     }
@@ -532,11 +527,10 @@ mod tests {
     }
 
     #[test]
-    fn layout_config_is_tui_owned() {
-        let state = TuiState::new(48, Some(PathBuf::from("/tmp/crt.toml")));
+    fn layout_width_is_tui_presentation_state() {
+        let state = TuiState::new(48);
 
         assert_eq!(state.file_list_width, 48);
-        assert_eq!(state.config_path, Some(PathBuf::from("/tmp/crt.toml")));
         assert!(state.show_file_list);
         assert!(state.show_diff_pane);
         assert!(!state.show_comments);
