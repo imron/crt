@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 
 use self::model::AppModel;
-use crate::client::{Client, ClientEvent, Notification};
+use crate::client::{Client, ClientEvent, CommentScope, Notification};
 use crate::config::Config;
 use crate::core::TextAnchor;
 use crate::core::command::Command;
@@ -71,8 +71,12 @@ pub enum ReviewStartup {
 async fn list_current_and_previous_unresolved_comments(
     client: &Client,
 ) -> Result<ListCommentsResult> {
-    let mut result = client.list_comments(None, true, false).await?;
-    let previous_unresolved = client.list_comments(None, false, true).await?;
+    let mut result = client
+        .list_comments(None, CommentScope::CurrentWithResolved)
+        .await?;
+    let previous_unresolved = client
+        .list_comments(None, CommentScope::PreviousBasesUnresolved)
+        .await?;
     append_unique_comments(&mut result.comments, previous_unresolved.comments);
     Ok(result)
 }
