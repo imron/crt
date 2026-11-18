@@ -244,3 +244,52 @@ async fn assert_notification_for_path(client: &Client, expected_path: &str) {
     }
     panic!("did not receive notification for {expected_path}: {received:?}");
 }
+
+#[tokio::test]
+async fn peer_recovers_when_embedded_owner_shuts_down() {
+    let repo = TestRepo::new();
+    let options = ReconnectOptions {
+        jitter: Duration::from_millis(0)..=Duration::from_millis(0),
+        embedded_startup_delay: Duration::from_millis(10),
+    };
+    let owner = Client::connect_or_start_with_options(&repo.socket_path, false, options.clone())
+        .await
+        .unwrap();
+    owner
+        .init(&repo.repo_dir.to_string_lossy(), "HEAD")
+        .await
+        .unwrap();
+    let peer = Client::connect_or_start_with_options(&repo.socket_path, false, options)
+        .await
+        .unwrap();
+    peer.init(&repo.repo_dir.to_string_lossy(), "HEAD")
+        .await
+        .unwrap();
+
+    assert!(peer.list_changed_files().await.unwrap().files.is_empty());
+
+    owner.shutdown().await;
+    let failed = peer.list_changed_files().await.unwrap_err();
+    assert!(failed.to_string().contains("Transient transport error"));
+    assert_eq!(
+        peer.drain_events().await,
+        vec![ClientEvent::ConnectionState(ConnectionState::Reconnecting)]
+    );
+
+    let mut reconnected = false;
+    for _ in 0..20 {
+        if peer.recover_if_disconnected().await.unwrap() == Some(ConnectionState::Reconnected) {
+            reconnected = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert!(reconnected, "peer did not take over embedded server");
+    assert_eq!(
+        peer.drain_events().await,
+        vec![ClientEvent::ConnectionState(ConnectionState::Reconnected)]
+    );
+    assert!(peer.list_changed_files().await.unwrap().files.is_empty());
+    peer.shutdown().await;
+}
