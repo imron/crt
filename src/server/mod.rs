@@ -19,8 +19,8 @@ use tokio_util::sync::CancellationToken;
 use crate::db::Database;
 use crate::git::{CommitId, HeadIdentity, ReviewBase};
 use crate::protocol::{
-    ERR_METHOD_NOT_FOUND, ERR_NOT_IMPLEMENTED, ERR_NOT_INITIALIZED, ERR_PARSE, JsonRpcRequest,
-    JsonRpcResponse, Notification,
+    ERR_INTERNAL, ERR_METHOD_NOT_FOUND, ERR_NOT_IMPLEMENTED, ERR_NOT_INITIALIZED, ERR_PARSE,
+    JsonRpcRequest, JsonRpcResponse, Notification,
 };
 use crate::review_types::ActiveReviewSession;
 
@@ -410,6 +410,7 @@ async fn send_response(
 /// All API methods the server supports. As methods are implemented,
 /// their dispatch arms move from returning `ERR_NOT_IMPLEMENTED` to
 /// calling real handlers. The compiler enforces exhaustive matching.
+#[derive(Clone, Copy)]
 enum Method {
     Init,
     ListChangedFiles,
@@ -479,74 +480,57 @@ async fn dispatch(
         }
     };
 
-    // Dispatch — the compiler ensures every variant is handled.
-    // `init` and server-level session discovery do not require prior
-    // connection initialization.
     match method {
         Method::Init => api::handle_init(&request.params, id, state, conn_ctx, conn_db).await,
         Method::ListRepos => api::handle_list_repos(id, state).await,
-        _ if conn_ctx.is_none() || conn_db.is_none() => JsonRpcResponse::error(
+        _ => dispatch_initialized(request, id, method, state, conn_ctx, conn_db).await,
+    }
+}
+
+async fn dispatch_initialized(
+    request: &JsonRpcRequest,
+    id: &serde_json::Value,
+    method: Method,
+    state: &Arc<ServerState>,
+    conn_ctx: &mut Option<ConnectionContext>,
+    conn_db: &mut Option<Arc<Mutex<Database>>>,
+) -> JsonRpcResponse {
+    let (Some(ctx), Some(db)) = (conn_ctx.as_ref(), conn_db.as_ref()) else {
+        return JsonRpcResponse::error(
             id.clone(),
             ERR_NOT_INITIALIZED,
             "Connection not initialized. Send 'init' first.".to_string(),
-        ),
+        );
+    };
+
+    // Dispatch — the compiler ensures every variant is handled.
+    match method {
         Method::ListChangedFiles => {
-            let ctx = conn_ctx.as_ref().unwrap();
-            let db = conn_db.as_ref().unwrap();
             api::handle_list_changed_files(id, ctx, db, &state.notify_tx).await
         }
-        Method::GetFileDiff => {
-            let ctx = conn_ctx.as_ref().unwrap();
-            api::handle_get_file_diff(&request.params, id, ctx).await
-        }
+        Method::GetFileDiff => api::handle_get_file_diff(&request.params, id, ctx).await,
         Method::MarkReviewed => {
-            let ctx = conn_ctx.as_ref().unwrap();
-            let db = conn_db.as_ref().unwrap();
             api::handle_mark_reviewed(&request.params, id, ctx, db, &state.notify_tx).await
         }
         Method::UnmarkReviewed => {
-            let ctx = conn_ctx.as_ref().unwrap();
-            let db = conn_db.as_ref().unwrap();
             api::handle_unmark_reviewed(&request.params, id, ctx, db, &state.notify_tx).await
         }
-        Method::ResetReviews => {
-            let ctx = conn_ctx.as_ref().unwrap();
-            let db = conn_db.as_ref().unwrap();
-            api::handle_reset_reviews(id, ctx, db, &state.notify_tx).await
-        }
+        Method::ResetReviews => api::handle_reset_reviews(id, ctx, db, &state.notify_tx).await,
         Method::CreateComment => {
-            let ctx = conn_ctx.as_ref().unwrap();
-            let db = conn_db.as_ref().unwrap();
             api::handle_create_comment(&request.params, id, ctx, db, &state.notify_tx).await
         }
-        Method::ListComments => {
-            let ctx = conn_ctx.as_ref().unwrap();
-            let db = conn_db.as_ref().unwrap();
-            api::handle_list_comments(&request.params, id, ctx, db).await
-        }
-        Method::GetComment => {
-            let ctx = conn_ctx.as_ref().unwrap();
-            let db = conn_db.as_ref().unwrap();
-            api::handle_get_comment(&request.params, id, ctx, db).await
-        }
+        Method::ListComments => api::handle_list_comments(&request.params, id, ctx, db).await,
+        Method::GetComment => api::handle_get_comment(&request.params, id, ctx, db).await,
         Method::UpdateComment => {
-            let ctx = conn_ctx.as_ref().unwrap();
-            let db = conn_db.as_ref().unwrap();
             api::handle_update_comment(&request.params, id, ctx, db, &state.notify_tx).await
         }
         Method::ResolveComment => {
-            let ctx = conn_ctx.as_ref().unwrap();
-            let db = conn_db.as_ref().unwrap();
             api::handle_resolve_comment(&request.params, id, ctx, db, &state.notify_tx).await
         }
         Method::UnresolveComment => {
-            let ctx = conn_ctx.as_ref().unwrap();
-            let db = conn_db.as_ref().unwrap();
             api::handle_unresolve_comment(&request.params, id, ctx, db, &state.notify_tx).await
         }
         Method::DeleteComment => {
-            let ctx = conn_ctx.as_ref().unwrap();
-            let db = conn_db.as_ref().unwrap();
             api::handle_delete_comment(&request.params, id, ctx, db, &state.notify_tx).await
         }
         Method::GetFileContent
@@ -557,13 +541,15 @@ async fn dispatch(
             ERR_NOT_IMPLEMENTED,
             format!("Method '{}' is not yet implemented", request.method),
         ),
-        Method::SearchCodebase => {
-            let ctx = conn_ctx.as_ref().unwrap();
-            api::handle_search_codebase(&request.params, id, ctx).await
-        }
-        Method::FindDefinition => {
-            let ctx = conn_ctx.as_ref().unwrap();
-            api::handle_find_definition(&request.params, id, ctx).await
-        }
+        Method::SearchCodebase => api::handle_search_codebase(&request.params, id, ctx).await,
+        Method::FindDefinition => api::handle_find_definition(&request.params, id, ctx).await,
+        Method::Init | Method::ListRepos => JsonRpcResponse::error(
+            id.clone(),
+            ERR_INTERNAL,
+            format!(
+                "Method '{}' was dispatched through the wrong path",
+                request.method
+            ),
+        ),
     }
 }
