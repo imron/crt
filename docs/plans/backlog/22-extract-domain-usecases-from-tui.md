@@ -88,11 +88,13 @@ that contract.
   tests.
 - Extracted command parsing into `core::command` and replaced stringly typed
   pending commands with typed command requests.
+- Added focused `core::diff` tests for diff algorithm selection, content
+  loading, blame gating, and diff-base fallback behavior.
 
 ## Acceptance Criteria
 
 - [x] No direct git orchestration remains in TUI application state methods.
-- [ ] Review/diff/navigation/search rules are exercised by service-level tests.
+- [x] Review/diff/navigation/search rules are exercised by service-level tests.
 - [x] Command/search/definition semantics are no longer implemented in TUI
       business-logic helpers.
 - [ ] TUI behavior remains functionally equivalent for existing workflows.
