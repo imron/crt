@@ -13,6 +13,44 @@ use crate::core::{
 };
 use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
+pub trait AppView {
+    fn hunk_start_rows(&self) -> &[usize];
+    fn hunk_end_rows(&self) -> &[usize];
+    fn hunk_first_change_rows(&self) -> &[usize];
+    fn diff_gutter_cols(&self) -> usize;
+    fn diff_content_height(&self) -> usize;
+    fn diff_view_height(&self) -> usize;
+    fn diff_rendered_text(&self) -> &[String];
+    fn file_list_row_to_file(&self) -> &[Option<usize>];
+
+    fn max_diff_scroll(&self) -> usize {
+        self.diff_content_height().saturating_sub(1)
+    }
+
+    fn diff_content_start_col(&self) -> usize {
+        if self.diff_gutter_cols() > 0 {
+            self.diff_gutter_cols() + 3
+        } else {
+            0
+        }
+    }
+
+    fn line_content_trimmed(&self, row: usize) -> &str {
+        let line = match self.diff_rendered_text().get(row) {
+            Some(line) => line.as_str(),
+            None => return "",
+        };
+        let start = self.diff_content_start_col().min(line.len());
+        line[start..].trim_end()
+    }
+
+    fn current_line_text_len(&self, state: &AppState) -> usize {
+        self.line_content_trimmed(state.diff_line_cursor)
+            .chars()
+            .count()
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct AppUpdate {
     pub handled: bool,
@@ -85,14 +123,18 @@ pub fn interaction_context(state: &AppState) -> InteractionContext {
     }
 }
 
-pub fn prompt_submit_context(state: &AppState) -> InteractionContext {
+pub fn prompt_submit_context(state: &AppState, view: &impl AppView) -> InteractionContext {
     InteractionContext {
-        fallback_word: extract_word_at_cursor(state),
+        fallback_word: extract_word_at_cursor(state, view),
         ..InteractionContext::default()
     }
 }
 
-pub fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> AppUpdate {
+pub fn apply_core_effects(
+    state: &mut AppState,
+    view: &impl AppView,
+    effects: Vec<CoreEffect>,
+) -> AppUpdate {
     let mut update = AppUpdate::default();
     for effect in effects {
         update.handled = true;
@@ -106,23 +148,23 @@ pub fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> App
                 apply_command(state, &mut update, command);
             }
             CoreEffect::DiffSearch(DiffSearchEffect::Submit { query }) => {
-                apply_diff_search(state, &mut update, query);
+                apply_diff_search(state, view, &mut update, query);
             }
             CoreEffect::DiffSearch(DiffSearchEffect::NextMatch) => {
-                navigate_diff_search_match(state, &mut update, Direction::Next);
+                navigate_diff_search_match(state, view, &mut update, Direction::Next);
             }
             CoreEffect::DiffSearch(DiffSearchEffect::PreviousMatch) => {
-                navigate_diff_search_match(state, &mut update, Direction::Prev);
+                navigate_diff_search_match(state, view, &mut update, Direction::Prev);
             }
             CoreEffect::DiffSearch(DiffSearchEffect::Clear) => {
                 clear_diff_search(state);
             }
             CoreEffect::DiffCursor(effect) => {
-                apply_diff_cursor_effect(state, effect);
+                apply_diff_cursor_effect(state, view, effect);
             }
             CoreEffect::SearchResults(_) | CoreEffect::DefinitionResults(_) => {}
             CoreEffect::Pane(effect) => {
-                apply_pane_effect(state, effect);
+                apply_pane_effect(state, view, effect);
             }
             CoreEffect::Quit => {
                 update.request_quit();
@@ -140,18 +182,18 @@ pub fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> App
                 update.clear_status();
             }
             CoreEffect::JumpHunk(Direction::Next) => {
-                jump_to_next_hunk(state);
+                jump_to_next_hunk(state, view);
                 update.clear_status();
             }
             CoreEffect::JumpHunk(Direction::Prev) => {
-                jump_to_prev_hunk(state);
+                jump_to_prev_hunk(state, view);
                 update.clear_status();
             }
             CoreEffect::GoToDefinition => {
-                request_go_to_definition(state, &mut update);
+                request_go_to_definition(state, view, &mut update);
             }
             CoreEffect::PopJumpStack => {
-                pop_jump_stack(state, &mut update);
+                pop_jump_stack(state, view, &mut update);
             }
             CoreEffect::TogglePaneFocus | CoreEffect::TogglePaneVisibility(_) => {}
             CoreEffect::ToggleInlineDiff => {
@@ -159,7 +201,7 @@ pub fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> App
             }
             CoreEffect::CycleViewMode => {
                 update.clear_status();
-                cycle_view_mode(state);
+                cycle_view_mode(state, view);
             }
             CoreEffect::CycleDiffAlgorithm => {
                 cycle_diff_algorithm(state, &mut update);
@@ -236,20 +278,25 @@ fn apply_command(state: &mut AppState, update: &mut AppUpdate, command: CommandP
     }
 }
 
-fn apply_diff_search(state: &mut AppState, update: &mut AppUpdate, query: String) {
+fn apply_diff_search(
+    state: &mut AppState,
+    view: &impl AppView,
+    update: &mut AppUpdate,
+    query: String,
+) {
     if query.is_empty() {
         state.diff_search_query = None;
         state.diff_search_matches.clear();
         state.diff_search_current = 0;
     } else {
         state.diff_search_query = Some(query);
-        if let Some(err) = state.recompute_diff_search_matches() {
+        if let Some(err) = recompute_diff_search_matches(state, view) {
             state.diff_search_query = None;
             update.set_status(err);
         } else if state.diff_search_matches.is_empty() {
             update.set_status("No matches");
         } else {
-            state.diff_search_jump_to_current();
+            diff_search_jump_to_current(state, view);
             let total = state.diff_search_matches.len();
             let cur = state.diff_search_current + 1;
             update.set_status(format!("{cur}/{total}"));
@@ -257,7 +304,12 @@ fn apply_diff_search(state: &mut AppState, update: &mut AppUpdate, query: String
     }
 }
 
-fn navigate_diff_search_match(state: &mut AppState, update: &mut AppUpdate, direction: Direction) {
+fn navigate_diff_search_match(
+    state: &mut AppState,
+    view: &impl AppView,
+    update: &mut AppUpdate,
+    direction: Direction,
+) {
     if state.diff_search_query.is_none() || state.diff_search_matches.is_empty() {
         return;
     }
@@ -280,7 +332,7 @@ fn navigate_diff_search_match(state: &mut AppState, update: &mut AppUpdate, dire
     state.diff_search_current = idx;
     let (row, _, _) = state.diff_search_matches[idx];
     state.diff_line_cursor = row;
-    state.clamp_cursor_and_scroll();
+    clamp_cursor_and_scroll(state, view);
     let cur = idx + 1;
     update.set_status(format!("{cur}/{len}"));
 }
@@ -291,55 +343,55 @@ fn clear_diff_search(state: &mut AppState) {
     state.diff_search_current = 0;
 }
 
-fn apply_diff_cursor_effect(state: &mut AppState, effect: DiffCursorEffect) {
+fn apply_diff_cursor_effect(state: &mut AppState, view: &impl AppView, effect: DiffCursorEffect) {
     match effect {
         DiffCursorEffect::MoveTo { line, column } => {
             state.diff_line_cursor = line;
             state.diff_col_cursor = column;
-            state.clamp_cursor_and_scroll();
-            state.clamp_col_cursor();
+            clamp_cursor_and_scroll(state, view);
+            clamp_col_cursor(state, view);
         }
         DiffCursorEffect::LineDown => {
             state.diff_line_cursor = state.diff_line_cursor.saturating_add(1);
             state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
+            clamp_cursor_and_scroll(state, view);
         }
         DiffCursorEffect::LineUp => {
             state.diff_line_cursor = state.diff_line_cursor.saturating_sub(1);
             state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
+            clamp_cursor_and_scroll(state, view);
         }
         DiffCursorEffect::PageDown => {
-            let delta = state.diff_view_height;
+            let delta = view.diff_view_height();
             state.diff_line_cursor = state.diff_line_cursor.saturating_add(delta);
             state.diff_scroll = state.diff_scroll.saturating_add(delta);
             state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
+            clamp_cursor_and_scroll(state, view);
         }
         DiffCursorEffect::PageUp => {
-            let delta = state.diff_view_height;
+            let delta = view.diff_view_height();
             state.diff_line_cursor = state.diff_line_cursor.saturating_sub(delta);
             state.diff_scroll = state.diff_scroll.saturating_sub(delta);
             state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
+            clamp_cursor_and_scroll(state, view);
         }
         DiffCursorEffect::HalfPageDown => {
-            let delta = state.diff_view_height / 2;
+            let delta = view.diff_view_height() / 2;
             state.diff_line_cursor = state.diff_line_cursor.saturating_add(delta);
             state.diff_scroll = state.diff_scroll.saturating_add(delta);
             state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
+            clamp_cursor_and_scroll(state, view);
         }
         DiffCursorEffect::HalfPageUp => {
-            let delta = state.diff_view_height / 2;
+            let delta = view.diff_view_height() / 2;
             state.diff_line_cursor = state.diff_line_cursor.saturating_sub(delta);
             state.diff_scroll = state.diff_scroll.saturating_sub(delta);
             state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
+            clamp_cursor_and_scroll(state, view);
         }
         DiffCursorEffect::ScrollDown => {
             state.diff_scroll = state.diff_scroll.saturating_add(1);
-            state.clamp_diff_scroll();
+            clamp_diff_scroll(state, view);
             if state.diff_line_cursor < state.diff_scroll {
                 state.diff_line_cursor = state.diff_scroll;
                 state.diff_col_cursor = 0;
@@ -347,16 +399,16 @@ fn apply_diff_cursor_effect(state: &mut AppState, effect: DiffCursorEffect) {
         }
         DiffCursorEffect::ScrollUp => {
             state.diff_scroll = state.diff_scroll.saturating_sub(1);
-            if state.diff_view_height > 0
-                && state.diff_line_cursor >= state.diff_scroll + state.diff_view_height
+            if view.diff_view_height() > 0
+                && state.diff_line_cursor >= state.diff_scroll + view.diff_view_height()
             {
-                state.diff_line_cursor = state.diff_scroll + state.diff_view_height - 1;
+                state.diff_line_cursor = state.diff_scroll + view.diff_view_height() - 1;
                 state.diff_col_cursor = 0;
             }
         }
         DiffCursorEffect::WheelDown => {
             state.diff_scroll = state.diff_scroll.saturating_add(3);
-            state.clamp_diff_scroll();
+            clamp_diff_scroll(state, view);
             if state.diff_line_cursor < state.diff_scroll {
                 state.diff_line_cursor = state.diff_scroll;
             }
@@ -365,7 +417,7 @@ fn apply_diff_cursor_effect(state: &mut AppState, effect: DiffCursorEffect) {
             state.diff_scroll = state.diff_scroll.saturating_sub(3);
             let bottom = state
                 .diff_scroll
-                .saturating_add(state.diff_view_height.saturating_sub(1));
+                .saturating_add(view.diff_view_height().saturating_sub(1));
             if state.diff_line_cursor > bottom {
                 state.diff_line_cursor = bottom;
             }
@@ -376,31 +428,31 @@ fn apply_diff_cursor_effect(state: &mut AppState, effect: DiffCursorEffect) {
             state.diff_col_cursor = 0;
         }
         DiffCursorEffect::Bottom => {
-            state.diff_line_cursor = state.max_diff_scroll();
+            state.diff_line_cursor = view.max_diff_scroll();
             state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
+            clamp_cursor_and_scroll(state, view);
         }
         DiffCursorEffect::ViewTop => {
             state.diff_line_cursor = state.diff_scroll;
             state.diff_col_cursor = 0;
         }
         DiffCursorEffect::ViewMiddle => {
-            let mid = state.diff_view_height / 2;
+            let mid = view.diff_view_height() / 2;
             state.diff_line_cursor = state.diff_scroll + mid;
             state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
+            clamp_cursor_and_scroll(state, view);
         }
         DiffCursorEffect::ViewBottom => {
-            let bottom = state.diff_view_height.saturating_sub(1);
+            let bottom = view.diff_view_height().saturating_sub(1);
             state.diff_line_cursor = state.diff_scroll + bottom;
             state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
+            clamp_cursor_and_scroll(state, view);
         }
         DiffCursorEffect::CharLeft => {
             state.diff_col_cursor = state.diff_col_cursor.saturating_sub(1);
         }
         DiffCursorEffect::CharRight => {
-            let max = state.current_line_text_len().saturating_sub(1);
+            let max = view.current_line_text_len(state).saturating_sub(1);
             if state.diff_col_cursor < max {
                 state.diff_col_cursor += 1;
             }
@@ -409,24 +461,24 @@ fn apply_diff_cursor_effect(state: &mut AppState, effect: DiffCursorEffect) {
             state.diff_col_cursor = 0;
         }
         DiffCursorEffect::LineEnd => {
-            state.diff_col_cursor = state.current_line_text_len().saturating_sub(1);
+            state.diff_col_cursor = view.current_line_text_len(state).saturating_sub(1);
         }
         DiffCursorEffect::WordForward => {
-            word_forward(state);
+            word_forward(state, view);
         }
         DiffCursorEffect::WordBackward => {
-            word_backward(state);
+            word_backward(state, view);
         }
         DiffCursorEffect::BigWordForward => {
-            bigword_forward(state);
+            bigword_forward(state, view);
         }
         DiffCursorEffect::BigWordBackward => {
-            bigword_backward(state);
+            bigword_backward(state, view);
         }
     }
 }
 
-fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
+fn apply_pane_effect(state: &mut AppState, view: &impl AppView, effect: PaneEffect) {
     match effect {
         PaneEffect::ActivateFileListSelection => {}
         PaneEffect::ActivateDiffSelection => {
@@ -440,7 +492,7 @@ fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
             }
         }
         PaneEffect::SelectFileAt { row } => {
-            if let Some(&Some(file_idx)) = state.file_list_row_to_file.get(row) {
+            if let Some(&Some(file_idx)) = view.file_list_row_to_file().get(row) {
                 if file_idx < state.files.len() && file_idx != state.selected_file {
                     state.selected_file = file_idx;
                     state.on_file_changed();
@@ -450,25 +502,31 @@ fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
     }
 }
 
-pub fn navigate_to_search_match(state: &mut AppState, m: &crate::model::SearchMatch) -> AppUpdate {
+pub fn navigate_to_search_match(
+    state: &mut AppState,
+    view: &impl AppView,
+    m: &crate::model::SearchMatch,
+) -> AppUpdate {
     let mut update = AppUpdate::handled();
     let target = core_search::resolve_search_target(&state.files, m);
-    navigate_to_location_target(state, &mut update, target);
+    navigate_to_location_target(state, view, &mut update, target);
     update
 }
 
 pub fn navigate_to_definition(
     state: &mut AppState,
+    view: &impl AppView,
     def: &crate::model::DefinitionLocation,
 ) -> AppUpdate {
     let mut update = AppUpdate::handled();
     let target = core_search::resolve_definition_target(&state.files, def);
-    navigate_to_location_target(state, &mut update, target);
+    navigate_to_location_target(state, view, &mut update, target);
     update
 }
 
 fn navigate_to_location_target(
     state: &mut AppState,
+    view: &impl AppView,
     update: &mut AppUpdate,
     target: core_search::LocationTarget,
 ) {
@@ -481,7 +539,7 @@ fn navigate_to_location_target(
             state.selected_file = file_index;
             on_file_changed(state);
             state.diff_line_cursor = (line_number as usize).saturating_sub(1);
-            state.clamp_cursor_and_scroll();
+            clamp_cursor_and_scroll(state, view);
         }
         core_search::LocationTarget::External {
             file_path,
@@ -551,7 +609,7 @@ fn toggle_diff_base(state: &mut AppState, update: &mut AppUpdate) {
 }
 
 /// Pop the jump stack and restore the previous location.
-fn pop_jump_stack(state: &mut AppState, update: &mut AppUpdate) {
+fn pop_jump_stack(state: &mut AppState, view: &impl AppView, update: &mut AppUpdate) {
     if let Some(loc) = state.jump_stack.pop() {
         if loc.file_index != state.selected_file && loc.file_index < state.files.len() {
             state.selected_file = loc.file_index;
@@ -561,7 +619,7 @@ fn pop_jump_stack(state: &mut AppState, update: &mut AppUpdate) {
         state.diff_line_cursor = loc.diff_line_cursor;
         state.content_mode = loc.content_mode;
         state.render_variant = loc.render_variant;
-        state.clamp_cursor_and_scroll();
+        clamp_cursor_and_scroll(state, view);
         update.set_status(format!("Jump stack: {} remaining", state.jump_stack.len()));
     } else {
         update.set_status("Jump stack empty");
@@ -569,8 +627,8 @@ fn pop_jump_stack(state: &mut AppState, update: &mut AppUpdate) {
 }
 
 /// Request go-to-definition for the word under the cursor.
-fn request_go_to_definition(state: &mut AppState, update: &mut AppUpdate) {
-    let word = extract_word_at_cursor(state);
+fn request_go_to_definition(state: &mut AppState, view: &impl AppView, update: &mut AppUpdate) {
+    let word = extract_word_at_cursor(state, view);
     if let Some(word) = word {
         if word.is_empty() {
             update.set_status("No word under cursor");
@@ -583,14 +641,14 @@ fn request_go_to_definition(state: &mut AppState, update: &mut AppUpdate) {
 }
 
 /// Extract the identifier-like word under the current diff column cursor.
-fn extract_word_at_cursor(state: &AppState) -> Option<String> {
-    let content = content_for_word_extraction(state)?;
+fn extract_word_at_cursor(state: &AppState, view: &impl AppView) -> Option<String> {
+    let content = content_for_word_extraction(state, view)?;
     word_at_char_offset(content, state.diff_col_cursor)
 }
 
-fn content_for_word_extraction(state: &AppState) -> Option<&str> {
-    let line = state.diff_rendered_text.get(state.diff_line_cursor)?;
-    let gutter = state.diff_gutter_cols;
+fn content_for_word_extraction<'a>(state: &AppState, view: &'a impl AppView) -> Option<&'a str> {
+    let line = view.diff_rendered_text().get(state.diff_line_cursor)?;
+    let gutter = view.diff_gutter_cols();
     let content = if gutter < line.len() {
         &line[gutter..]
     } else {
@@ -639,12 +697,90 @@ fn is_identifier_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+fn clamp_diff_scroll(state: &mut AppState, view: &impl AppView) {
+    state.diff_scroll = state.diff_scroll.min(view.max_diff_scroll());
+}
+
+fn clamp_cursor_and_scroll(state: &mut AppState, view: &impl AppView) {
+    let max = view.max_diff_scroll();
+    state.diff_line_cursor = state.diff_line_cursor.min(max);
+    if state.diff_line_cursor < state.diff_scroll {
+        state.diff_scroll = state.diff_line_cursor;
+    }
+    if view.diff_view_height() > 0
+        && state.diff_line_cursor >= state.diff_scroll + view.diff_view_height()
+    {
+        state.diff_scroll = state
+            .diff_line_cursor
+            .saturating_sub(view.diff_view_height() - 1);
+    }
+    clamp_diff_scroll(state, view);
+}
+
+fn clamp_col_cursor(state: &mut AppState, view: &impl AppView) {
+    let max = view.current_line_text_len(state).saturating_sub(1);
+    state.diff_col_cursor = state.diff_col_cursor.min(max);
+}
+
+fn recompute_diff_search_matches(state: &mut AppState, view: &impl AppView) -> Option<String> {
+    state.diff_search_matches.clear();
+    state.diff_search_current = 0;
+    let query = match &state.diff_search_query {
+        Some(q) if !q.is_empty() => q.clone(),
+        _ => return None,
+    };
+    let re = match regex::RegexBuilder::new(&query)
+        .case_insensitive(true)
+        .build()
+    {
+        Ok(re) => re,
+        Err(e) => {
+            let msg = e.to_string();
+            let short = msg
+                .lines()
+                .next()
+                .unwrap_or(&msg)
+                .trim_start_matches("regex parse error:")
+                .trim();
+            return Some(format!("Invalid regex: {short}"));
+        }
+    };
+    for (row, line) in view.diff_rendered_text().iter().enumerate() {
+        let search_start = view.diff_gutter_cols().min(line.len());
+        let content = &line[search_start..];
+        for m in re.find_iter(content) {
+            if m.start() == m.end() {
+                continue;
+            }
+            let abs_start = search_start + m.start();
+            let abs_end = search_start + m.end();
+            state.diff_search_matches.push((row, abs_start, abs_end));
+        }
+    }
+    None
+}
+
+fn diff_search_jump_to_current(state: &mut AppState, view: &impl AppView) {
+    if state.diff_search_matches.is_empty() {
+        return;
+    }
+    let idx = state
+        .diff_search_matches
+        .iter()
+        .position(|(row, _, _)| *row >= state.diff_line_cursor)
+        .unwrap_or(0);
+    state.diff_search_current = idx;
+    let (row, _, _) = state.diff_search_matches[idx];
+    state.diff_line_cursor = row;
+    clamp_cursor_and_scroll(state, view);
+}
+
 fn on_file_changed(state: &mut AppState) {
     state.on_file_changed();
 }
 
-fn cycle_view_mode(state: &mut AppState) {
-    let approx_line = estimate_current_line(state);
+fn cycle_view_mode(state: &mut AppState, view: &impl AppView) {
+    let approx_line = estimate_current_line(state, view);
 
     match (&state.content_mode, &state.render_variant) {
         (ContentMode::Diff, _) => {
@@ -681,14 +817,14 @@ fn cycle_view_mode(state: &mut AppState) {
     }
 }
 
-fn estimate_current_line(state: &AppState) -> usize {
+fn estimate_current_line(state: &AppState, view: &impl AppView) -> usize {
     match state.content_mode {
         ContentMode::Diff => {
             let scroll = state.diff_line_cursor;
             if let Some(entry) = state.selected_file_entry() {
                 let mut deletions_above = 0usize;
-                for (i, &start) in state.hunk_start_rows.iter().enumerate() {
-                    let end = state.hunk_end_rows.get(i).copied().unwrap_or(start);
+                for (i, &start) in view.hunk_start_rows().iter().enumerate() {
+                    let end = view.hunk_end_rows().get(i).copied().unwrap_or(start);
                     if start > scroll {
                         break;
                     }
@@ -712,33 +848,33 @@ fn estimate_current_line(state: &AppState) -> usize {
     }
 }
 
-fn jump_to_next_hunk(state: &mut AppState) {
+fn jump_to_next_hunk(state: &mut AppState, view: &impl AppView) {
     if let Some(jump) = navigation::jump_to_next_hunk(
         state.diff_line_cursor,
         state.diff_scroll,
-        state.diff_view_height,
-        &state.hunk_first_change_rows,
-        &state.hunk_end_rows,
+        view.diff_view_height(),
+        view.hunk_first_change_rows(),
+        view.hunk_end_rows(),
     ) {
         state.diff_line_cursor = jump.cursor;
         state.diff_scroll = jump.scroll;
         state.diff_col_cursor = 0;
-        state.clamp_cursor_and_scroll();
+        clamp_cursor_and_scroll(state, view);
     }
 }
 
-fn jump_to_prev_hunk(state: &mut AppState) {
+fn jump_to_prev_hunk(state: &mut AppState, view: &impl AppView) {
     if let Some(jump) = navigation::jump_to_prev_hunk(
         state.diff_line_cursor,
         state.diff_scroll,
-        state.diff_view_height,
-        &state.hunk_first_change_rows,
-        &state.hunk_end_rows,
+        view.diff_view_height(),
+        view.hunk_first_change_rows(),
+        view.hunk_end_rows(),
     ) {
         state.diff_line_cursor = jump.cursor;
         state.diff_scroll = jump.scroll;
         state.diff_col_cursor = 0;
-        state.clamp_cursor_and_scroll();
+        clamp_cursor_and_scroll(state, view);
     }
 }
 
@@ -752,18 +888,18 @@ fn char_class(c: char) -> u8 {
     }
 }
 
-fn word_forward(state: &mut AppState) {
-    let content = state.line_content_trimmed(state.diff_line_cursor);
+fn word_forward(state: &mut AppState, view: &impl AppView) {
+    let content = view.line_content_trimmed(state.diff_line_cursor);
     let chars: Vec<char> = content.chars().collect();
     let text_len = chars.len();
 
     if text_len == 0 || state.diff_col_cursor >= text_len.saturating_sub(1) {
-        let max_line = state.diff_content_height.saturating_sub(1);
+        let max_line = view.diff_content_height().saturating_sub(1);
         if state.diff_line_cursor < max_line {
             state.diff_line_cursor += 1;
             state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
-            let new_content = state.line_content_trimmed(state.diff_line_cursor);
+            clamp_cursor_and_scroll(state, view);
+            let new_content = view.line_content_trimmed(state.diff_line_cursor);
             let new_chars: Vec<char> = new_content.chars().collect();
             let mut pos = 0;
             while pos < new_chars.len() && new_chars[pos].is_whitespace() {
@@ -783,12 +919,12 @@ fn word_forward(state: &mut AppState) {
         pos += 1;
     }
     if pos >= text_len {
-        let max_line = state.diff_content_height.saturating_sub(1);
+        let max_line = view.diff_content_height().saturating_sub(1);
         if state.diff_line_cursor < max_line {
             state.diff_line_cursor += 1;
             state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
-            let new_content = state.line_content_trimmed(state.diff_line_cursor);
+            clamp_cursor_and_scroll(state, view);
+            let new_content = view.line_content_trimmed(state.diff_line_cursor);
             let new_chars: Vec<char> = new_content.chars().collect();
             let mut p = 0;
             while p < new_chars.len() && new_chars[p].is_whitespace() {
@@ -803,12 +939,12 @@ fn word_forward(state: &mut AppState) {
     state.diff_col_cursor = pos;
 }
 
-fn word_backward(state: &mut AppState) {
+fn word_backward(state: &mut AppState, view: &impl AppView) {
     if state.diff_col_cursor == 0 {
         if state.diff_line_cursor > 0 {
             state.diff_line_cursor -= 1;
-            state.clamp_cursor_and_scroll();
-            let content = state.line_content_trimmed(state.diff_line_cursor);
+            clamp_cursor_and_scroll(state, view);
+            let content = view.line_content_trimmed(state.diff_line_cursor);
             let chars: Vec<char> = content.chars().collect();
             if chars.is_empty() {
                 state.diff_col_cursor = 0;
@@ -828,7 +964,7 @@ fn word_backward(state: &mut AppState) {
         return;
     }
 
-    let content = state.line_content_trimmed(state.diff_line_cursor);
+    let content = view.line_content_trimmed(state.diff_line_cursor);
     let chars: Vec<char> = content.chars().collect();
     if chars.is_empty() {
         return;
@@ -845,18 +981,18 @@ fn word_backward(state: &mut AppState) {
     state.diff_col_cursor = pos;
 }
 
-fn bigword_forward(state: &mut AppState) {
-    let content = state.line_content_trimmed(state.diff_line_cursor);
+fn bigword_forward(state: &mut AppState, view: &impl AppView) {
+    let content = view.line_content_trimmed(state.diff_line_cursor);
     let chars: Vec<char> = content.chars().collect();
     let text_len = chars.len();
 
     if text_len == 0 || state.diff_col_cursor >= text_len.saturating_sub(1) {
-        let max_line = state.diff_content_height.saturating_sub(1);
+        let max_line = view.diff_content_height().saturating_sub(1);
         if state.diff_line_cursor < max_line {
             state.diff_line_cursor += 1;
             state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
-            let new_content = state.line_content_trimmed(state.diff_line_cursor);
+            clamp_cursor_and_scroll(state, view);
+            let new_content = view.line_content_trimmed(state.diff_line_cursor);
             let new_chars: Vec<char> = new_content.chars().collect();
             let mut pos = 0;
             while pos < new_chars.len() && new_chars[pos].is_whitespace() {
@@ -875,12 +1011,12 @@ fn bigword_forward(state: &mut AppState) {
         pos += 1;
     }
     if pos >= text_len {
-        let max_line = state.diff_content_height.saturating_sub(1);
+        let max_line = view.diff_content_height().saturating_sub(1);
         if state.diff_line_cursor < max_line {
             state.diff_line_cursor += 1;
             state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
-            let new_content = state.line_content_trimmed(state.diff_line_cursor);
+            clamp_cursor_and_scroll(state, view);
+            let new_content = view.line_content_trimmed(state.diff_line_cursor);
             let new_chars: Vec<char> = new_content.chars().collect();
             let mut p = 0;
             while p < new_chars.len() && new_chars[p].is_whitespace() {
@@ -895,12 +1031,12 @@ fn bigword_forward(state: &mut AppState) {
     state.diff_col_cursor = pos;
 }
 
-fn bigword_backward(state: &mut AppState) {
+fn bigword_backward(state: &mut AppState, view: &impl AppView) {
     if state.diff_col_cursor == 0 {
         if state.diff_line_cursor > 0 {
             state.diff_line_cursor -= 1;
-            state.clamp_cursor_and_scroll();
-            let content = state.line_content_trimmed(state.diff_line_cursor);
+            clamp_cursor_and_scroll(state, view);
+            let content = view.line_content_trimmed(state.diff_line_cursor);
             let chars: Vec<char> = content.chars().collect();
             if chars.is_empty() {
                 state.diff_col_cursor = 0;
@@ -918,7 +1054,7 @@ fn bigword_backward(state: &mut AppState) {
         return;
     }
 
-    let content = state.line_content_trimmed(state.diff_line_cursor);
+    let content = view.line_content_trimmed(state.diff_line_cursor);
     let chars: Vec<char> = content.chars().collect();
     if chars.is_empty() {
         return;

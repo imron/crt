@@ -67,7 +67,7 @@ pub fn apply_core_effects(
         }
     }
 
-    let app_update = app_update::apply_core_effects(state, app_effects);
+    let app_update = app_update::apply_core_effects(state, tui_state, app_effects);
     let app_handled = app_update.handled;
     let save_layout = app_update.save_layout;
     tui_state.apply_app_update(app_update);
@@ -164,7 +164,7 @@ fn apply_search_results_effect(
                 .and_then(|results| results.matches.get(results.selected).cloned());
             tui_state.search_results = None;
             if let Some(search_match) = selected {
-                let update = app_update::navigate_to_search_match(state, &search_match);
+                let update = app_update::navigate_to_search_match(state, tui_state, &search_match);
                 tui_state.apply_app_update(update);
             }
         }
@@ -201,7 +201,7 @@ fn apply_definition_results_effect(
                 .and_then(|results| results.definitions.get(results.selected).cloned());
             tui_state.definition_results = None;
             if let Some(definition) = selected {
-                let update = app_update::navigate_to_definition(state, &definition);
+                let update = app_update::navigate_to_definition(state, tui_state, &definition);
                 tui_state.apply_app_update(update);
             }
         }

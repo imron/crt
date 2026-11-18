@@ -230,7 +230,10 @@ impl Tui {
         let (event, context) = match dispatch {
             CoreInputDispatch::Interaction(event) => (event, self.interaction_context()),
             CoreInputDispatch::PromptSubmit(event) => {
-                (event, app_update::prompt_submit_context(&self.app.state))
+                (
+                    event,
+                    app_update::prompt_submit_context(&self.app.state, &self.tui_state),
+                )
             }
             CoreInputDispatch::PromptCancel(event) => (event, InteractionContext::default()),
         };
@@ -273,10 +276,10 @@ impl Tui {
         if !self.tui_state.show_file_list || !self.tui_state.show_diff_pane {
             return false;
         }
-        let border_col = self.app.state.file_list_area.right().saturating_sub(1);
+        let border_col = self.tui_state.file_list_area.right().saturating_sub(1);
         col == border_col
-            && row >= self.app.state.file_list_area.y
-            && row < self.app.state.file_list_area.bottom()
+            && row >= self.tui_state.file_list_area.y
+            && row < self.tui_state.file_list_area.bottom()
     }
 
     /// Persist the current file list width to the config file.
@@ -364,8 +367,8 @@ impl Tui {
                             // Resize the file list pane. Minimum 10, maximum
                             // terminal width minus 20.
                             let min_w = 10u16;
-                            let max_w = self.app.state.file_list_area.width
-                                + self.app.state.diff_area.width
+                            let max_w = self.tui_state.file_list_area.width
+                                + self.tui_state.diff_area.width
                                 - 20;
                             let new_width = (mouse.column + 1).clamp(min_w, max_w);
                             self.tui_state.file_list_width = new_width;
@@ -373,9 +376,14 @@ impl Tui {
                         }
                         let drag_content_hit = semantic_content_hit.or_else(|| {
                             let (pane, _) = self.tui_state.mouse_down_anchor?;
-                            self.app
-                                .state
-                                .pointer_text_anchor_for_pane(pane, mouse.column, mouse.row, true)
+                            self.tui_state
+                                .pointer_text_anchor_for_pane(
+                                    &self.app.state,
+                                    pane,
+                                    mouse.column,
+                                    mouse.row,
+                                    true,
+                                )
                                 .map(|anchor| (pane, anchor))
                         });
 
@@ -412,7 +420,7 @@ impl Tui {
                             if !sel.word_selected {
                                 // Only re-extract for drag selections — word selections
                                 // were already copied by select_word_at().
-                                let text = extract_selected_text(&self.app.state, &sel);
+                                let text = extract_selected_text(&self.tui_state, &sel);
                                 if !text.is_empty() {
                                     copy_to_clipboard(&text);
                                 }
@@ -661,7 +669,7 @@ impl Tui {
                     self.app.state.diff_line_cursor = saved_cursor;
                     self.app.state.diff_col_cursor = saved_col;
                     self.app.state.diff_scroll = saved_scroll;
-                    self.app.state.clamp_cursor_and_scroll();
+                    self.tui_state.clamp_cursor_and_scroll(&mut self.app.state);
                 } else {
                     self.app.state.on_file_changed();
                 }
@@ -687,10 +695,10 @@ impl Tui {
     /// Select the word under the given semantic position and copy it.
     fn select_word_at(&mut self, pane: PaneFocus, anchor: TextAnchor) -> bool {
         let (text, base_col) = match pane {
-            PaneFocus::FileList => (&self.app.state.file_list_rendered_text, 0),
+            PaneFocus::FileList => (&self.tui_state.file_list_rendered_text, 0),
             PaneFocus::Diff => (
-                &self.app.state.diff_rendered_text,
-                self.app.state.diff_content_start_col(),
+                &self.tui_state.diff_rendered_text,
+                self.tui_state.diff_content_start_col(),
             ),
         };
         let line = match text.get(anchor.line) {
@@ -733,7 +741,7 @@ impl Tui {
 
     /// Double-click in the file list: copy the full file path to the clipboard.
     fn copy_file_path_at(&mut self, row: usize) {
-        if let Some(&Some(file_idx)) = self.app.state.file_list_row_to_file.get(row) {
+        if let Some(&Some(file_idx)) = self.tui_state.file_list_row_to_file.get(row) {
             if let Some(entry) = self.app.state.files.get(file_idx) {
                 let path = &entry.change.path;
                 copy_to_clipboard(path);
@@ -797,7 +805,7 @@ fn navigate_to_location_from_tui(
             state.selected_file = file_index;
             state.on_file_changed();
             state.diff_line_cursor = (line_number as usize).saturating_sub(1);
-            state.clamp_cursor_and_scroll();
+            tui_state.clamp_cursor_and_scroll(state);
         }
         core_search::LocationTarget::External {
             file_path,
@@ -825,11 +833,11 @@ fn push_jump_stack_from_tui(state: &mut AppState) {
 // Text extraction from selection
 // ---------------------------------------------------------------------------
 
-/// Extract the selected text from the rendered content stored in state.
-fn extract_selected_text(state: &AppState, sel: &MouseSelection) -> String {
+/// Extract the selected text from the rendered content stored in TUI state.
+fn extract_selected_text(tui_state: &TuiState, sel: &MouseSelection) -> String {
     let (text, base_col) = match sel.pane {
-        PaneFocus::Diff => (&state.diff_rendered_text, state.diff_content_start_col()),
-        PaneFocus::FileList => (&state.file_list_rendered_text, 0),
+        PaneFocus::Diff => (&tui_state.diff_rendered_text, tui_state.diff_content_start_col()),
+        PaneFocus::FileList => (&tui_state.file_list_rendered_text, 0),
     };
 
     if text.is_empty() {
@@ -961,42 +969,6 @@ fn restore_terminal_raw() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ChangeKind, DiffContent, FileChange, FileEntry, ReviewStatus};
-
-    fn test_context() -> ConnectionContext {
-        ConnectionContext {
-            repo_root: "/repo".to_string(),
-            worktree: "/repo".to_string(),
-            base_ref: "main".to_string(),
-            head_ref: "feature".to_string(),
-            merge_base: "abc123".to_string(),
-        }
-    }
-
-    fn test_file(path: &str) -> FileEntry {
-        FileEntry {
-            change: FileChange {
-                path: path.to_string(),
-                old_path: None,
-                kind: ChangeKind::Modified,
-            },
-            status: ReviewStatus::Unreviewed,
-            diff: DiffContent {
-                hunks: Vec::new(),
-                is_binary: false,
-                diff_hash: format!("hash-{path}"),
-            },
-        }
-    }
-
-    fn test_state() -> AppState {
-        AppState::new(
-            crate::config::DiffAlgorithm::Myers,
-            test_context(),
-            vec![test_file("src/lib.rs")],
-        )
-    }
-
     #[test]
     fn test_base64_encode() {
         assert_eq!(base64_encode(b""), "");
@@ -1008,8 +980,8 @@ mod tests {
 
     #[test]
     fn extract_selected_text_uses_semantic_file_list_anchors() {
-        let mut state = test_state();
-        state.file_list_rendered_text = vec![
+        let mut tui_state = TuiState::default();
+        tui_state.file_list_rendered_text = vec![
             "header".to_string(),
             "src/app.rs".to_string(),
             "src/core/input.rs".to_string(),
@@ -1022,14 +994,14 @@ mod tests {
             word_selected: false,
         };
 
-        assert_eq!(extract_selected_text(&state, &sel), "app.rs\nsrc/core");
+        assert_eq!(extract_selected_text(&tui_state, &sel), "app.rs\nsrc/core");
     }
 
     #[test]
     fn extract_selected_text_uses_diff_content_anchors() {
-        let mut state = test_state();
-        state.diff_gutter_cols = 4;
-        state.diff_rendered_text = vec![
+        let mut tui_state = TuiState::default();
+        tui_state.diff_gutter_cols = 4;
+        tui_state.diff_rendered_text = vec![
             "     + first line".to_string(),
             "       second line".to_string(),
         ];
@@ -1041,7 +1013,7 @@ mod tests {
             word_selected: false,
         };
 
-        assert_eq!(extract_selected_text(&state, &sel), "first line\nsecond");
+        assert_eq!(extract_selected_text(&tui_state, &sel), "first line\nsecond");
     }
 
     #[test]

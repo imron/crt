@@ -4,11 +4,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::render::diff_view::DiffCache;
-use crate::app_update::{AppUpdate, StatusUpdate};
-use crate::core::PromptId;
-use crate::core::TextAnchor;
+use crate::app::AppState;
+use crate::app_update::{AppUpdate, AppView, StatusUpdate};
+use crate::core::{PaneId, PointerSemanticHit, PromptId, TextAnchor};
 use crate::core::command::Command;
 use crate::model::{DefinitionLocation, PaneFocus, SearchMatch};
+use ratatui::layout::Rect;
 
 /// Current terminal input mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +95,28 @@ pub struct TuiState {
     /// Whether inline comments are visible in the diff pane.
     pub show_comments: bool,
     pub diff_cache: Option<DiffCache>,
+    /// Display row indices where each hunk starts in the rendered TUI diff.
+    pub hunk_start_rows: Vec<usize>,
+    /// Display row indices where each hunk ends in the rendered TUI diff.
+    pub hunk_end_rows: Vec<usize>,
+    /// Display row of the first actual change (+/-) in each rendered hunk.
+    pub hunk_first_change_rows: Vec<usize>,
+    /// Number of columns occupied by line-number gutters in the TUI diff pane.
+    pub diff_gutter_cols: usize,
+    /// Total rendered line count in the diff pane.
+    pub diff_content_height: usize,
+    /// Visible rendered line count in the diff pane.
+    pub diff_view_height: usize,
+    /// Plain text of rendered diff lines, used for search and clipboard.
+    pub diff_rendered_text: Vec<String>,
+    /// Plain text of rendered file-list lines, used for clipboard.
+    pub file_list_rendered_text: Vec<String>,
+    /// Mapping from rendered file-list rows to file indices.
+    pub file_list_row_to_file: Vec<Option<usize>>,
+    /// Screen area of the file list pane.
+    pub file_list_area: Rect,
+    /// Screen area of the diff pane.
+    pub diff_area: Rect,
     /// Active mouse text selection, if any.
     pub mouse_selection: Option<MouseSelection>,
     /// Mouse down anchor used to start a drag selection only after the pointer
@@ -150,6 +173,17 @@ impl Default for TuiState {
             show_diff_pane: true,
             show_comments: false,
             diff_cache: None,
+            hunk_start_rows: Vec::new(),
+            hunk_end_rows: Vec::new(),
+            hunk_first_change_rows: Vec::new(),
+            diff_gutter_cols: 0,
+            diff_content_height: 0,
+            diff_view_height: 0,
+            diff_rendered_text: Vec::new(),
+            file_list_rendered_text: Vec::new(),
+            file_list_row_to_file: Vec::new(),
+            file_list_area: Rect::default(),
+            diff_area: Rect::default(),
             mouse_selection: None,
             mouse_down_anchor: None,
             last_click: None,
@@ -179,6 +213,188 @@ impl TuiState {
             file_list_width,
             config_path,
             ..Self::default()
+        }
+    }
+
+    /// Maximum diff scroll offset for the last rendered line.
+    pub fn max_diff_scroll(&self) -> usize {
+        self.diff_content_height.saturating_sub(1)
+    }
+
+    pub fn current_hunk_index(&self, state: &AppState) -> Option<usize> {
+        self.hunk_start_rows
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, start)| **start <= state.diff_line_cursor)
+            .map(|(idx, _)| idx)
+    }
+
+    pub fn clamp_diff_scroll(&self, state: &mut AppState) {
+        state.diff_scroll = state.diff_scroll.min(self.max_diff_scroll());
+    }
+
+    pub fn clamp_cursor_and_scroll(&self, state: &mut AppState) {
+        let max = self.max_diff_scroll();
+        state.diff_line_cursor = state.diff_line_cursor.min(max);
+        if state.diff_line_cursor < state.diff_scroll {
+            state.diff_scroll = state.diff_line_cursor;
+        }
+        if self.diff_view_height > 0
+            && state.diff_line_cursor >= state.diff_scroll + self.diff_view_height
+        {
+            state.diff_scroll = state
+                .diff_line_cursor
+                .saturating_sub(self.diff_view_height - 1);
+        }
+        self.clamp_diff_scroll(state);
+    }
+
+    pub fn diff_content_start_col(&self) -> usize {
+        if self.diff_gutter_cols > 0 {
+            self.diff_gutter_cols + 3
+        } else {
+            0
+        }
+    }
+
+    pub fn recompute_diff_search_matches(&self, state: &mut AppState) -> Option<String> {
+        state.diff_search_matches.clear();
+        state.diff_search_current = 0;
+        let query = match &state.diff_search_query {
+            Some(q) if !q.is_empty() => q.clone(),
+            _ => return None,
+        };
+        let re = match regex::RegexBuilder::new(&query)
+            .case_insensitive(true)
+            .build()
+        {
+            Ok(re) => re,
+            Err(e) => {
+                let msg = e.to_string();
+                let short = msg
+                    .lines()
+                    .next()
+                    .unwrap_or(&msg)
+                    .trim_start_matches("regex parse error:")
+                    .trim();
+                return Some(format!("Invalid regex: {short}"));
+            }
+        };
+        for (row, line) in self.diff_rendered_text.iter().enumerate() {
+            let search_start = self.diff_gutter_cols.min(line.len());
+            let content = &line[search_start..];
+            for m in re.find_iter(content) {
+                if m.start() == m.end() {
+                    continue;
+                }
+                let abs_start = search_start + m.start();
+                let abs_end = search_start + m.end();
+                state.diff_search_matches.push((row, abs_start, abs_end));
+            }
+        }
+        None
+    }
+
+    pub fn pane_at(&self, col: u16, row: u16) -> Option<PaneFocus> {
+        if self.show_file_list && self.file_list_area.contains((col, row).into()) {
+            Some(PaneFocus::FileList)
+        } else if self.show_diff_pane && self.diff_area.contains((col, row).into()) {
+            Some(PaneFocus::Diff)
+        } else {
+            None
+        }
+    }
+
+    pub fn area_for_pane(&self, pane: PaneFocus) -> Rect {
+        match pane {
+            PaneFocus::FileList => self.file_list_area,
+            PaneFocus::Diff => self.diff_area,
+        }
+    }
+
+    pub fn pointer_semantic_hit(
+        &self,
+        state: &AppState,
+        pane: PaneFocus,
+        column: u16,
+        row: u16,
+    ) -> Option<PointerSemanticHit> {
+        let pane_id = match pane {
+            PaneFocus::FileList => PaneId::FileList,
+            PaneFocus::Diff => PaneId::Diff,
+        };
+        let text_anchor = self.pointer_text_anchor_for_pane(state, pane, column, row, false);
+        Some(PointerSemanticHit {
+            pane_id,
+            region_id: self.pointer_region_id(state, pane, text_anchor),
+            text_anchor,
+        })
+    }
+
+    pub fn pointer_text_anchor_for_pane(
+        &self,
+        state: &AppState,
+        pane: PaneFocus,
+        column: u16,
+        row: u16,
+        clamp: bool,
+    ) -> Option<TextAnchor> {
+        let area = self.area_for_pane(pane);
+        let inner_top = area.y.saturating_add(1);
+        let inner_left = area.x.saturating_add(1);
+        let inner_right = area.right().saturating_sub(1);
+        let inner_bottom = area.bottom().saturating_sub(1);
+
+        if inner_top >= inner_bottom {
+            return None;
+        }
+
+        let row = if clamp {
+            row.clamp(inner_top, inner_bottom.saturating_sub(1))
+        } else if row >= inner_top && row < inner_bottom {
+            row
+        } else {
+            return None;
+        };
+
+        let column = if clamp && inner_left < inner_right {
+            column.clamp(inner_left, inner_right.saturating_sub(1))
+        } else {
+            column
+        };
+
+        match pane {
+            PaneFocus::FileList => Some(TextAnchor {
+                line: state
+                    .file_list_scroll
+                    .saturating_add((row - inner_top) as usize),
+                column: column.saturating_sub(inner_left) as usize,
+            }),
+            PaneFocus::Diff => Some(TextAnchor {
+                line: state.diff_scroll.saturating_add((row - inner_top) as usize),
+                column: (column as usize)
+                    .saturating_sub(inner_left as usize + self.diff_content_start_col()),
+            }),
+        }
+    }
+
+    fn pointer_region_id(
+        &self,
+        state: &AppState,
+        pane: PaneFocus,
+        text_anchor: Option<TextAnchor>,
+    ) -> Option<String> {
+        let anchor = text_anchor?;
+        match pane {
+            PaneFocus::FileList => match self.file_list_row_to_file.get(anchor.line) {
+                Some(Some(file_idx)) => state
+                    .files
+                    .get(*file_idx)
+                    .map(|entry| format!("file:{}", entry.change.path)),
+                _ => Some(format!("file-list-row:{}", anchor.line)),
+            },
+            PaneFocus::Diff => Some(format!("diff-line:{}", anchor.line)),
         }
     }
 
@@ -256,6 +472,40 @@ impl TuiState {
         self.command_cursor = 0;
         self.diff_search_input.clear();
         self.diff_search_cursor = 0;
+    }
+}
+
+impl AppView for TuiState {
+    fn hunk_start_rows(&self) -> &[usize] {
+        &self.hunk_start_rows
+    }
+
+    fn hunk_end_rows(&self) -> &[usize] {
+        &self.hunk_end_rows
+    }
+
+    fn hunk_first_change_rows(&self) -> &[usize] {
+        &self.hunk_first_change_rows
+    }
+
+    fn diff_gutter_cols(&self) -> usize {
+        self.diff_gutter_cols
+    }
+
+    fn diff_content_height(&self) -> usize {
+        self.diff_content_height
+    }
+
+    fn diff_view_height(&self) -> usize {
+        self.diff_view_height
+    }
+
+    fn diff_rendered_text(&self) -> &[String] {
+        &self.diff_rendered_text
+    }
+
+    fn file_list_row_to_file(&self) -> &[Option<usize>] {
+        &self.file_list_row_to_file
     }
 }
 
