@@ -15,7 +15,7 @@ use crate::core::command::{self, Command, CommandParse};
 use crate::core::navigation::{self, Direction, FileNavigationScope};
 use crate::core::search as core_search;
 use crate::core::{
-    CoreEffect, InputEvent, InputModifiers, InteractionContext, Key as CoreKey,
+    CoreEffect, DiffSearchEffect, InputEvent, InputModifiers, InteractionContext, Key as CoreKey,
     KeyEvent as CoreKeyEvent, KeyEventKind as CoreKeyEventKind, PromptKind,
 };
 use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
@@ -66,6 +66,32 @@ fn dispatch_core_input(state: &mut AppState, key: CrosstermKeyEvent) -> bool {
     apply_core_effects(state, effects)
 }
 
+fn submit_active_prompt(state: &mut AppState, value: String) -> bool {
+    let Some(id) = state.active_core_prompt else {
+        return false;
+    };
+    let fallback_word = extract_word_at_cursor(state);
+    let effects = state.core_interaction.handle_input(
+        InputEvent::PromptSubmit { id, value },
+        &InteractionContext {
+            fallback_word,
+            ..InteractionContext::default()
+        },
+    );
+    apply_core_effects(state, effects)
+}
+
+fn cancel_active_prompt(state: &mut AppState) -> bool {
+    let Some(id) = state.active_core_prompt else {
+        return false;
+    };
+    let effects = state.core_interaction.handle_input(
+        InputEvent::PromptCancel { id },
+        &InteractionContext::default(),
+    );
+    apply_core_effects(state, effects)
+}
+
 fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
     let mut handled = false;
     for effect in effects {
@@ -73,11 +99,13 @@ fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
         match effect {
             CoreEffect::RequestPrompt(prompt) => match prompt.kind {
                 PromptKind::CommandLine => {
+                    state.active_core_prompt = Some(prompt.id);
                     state.input_mode = InputMode::Command;
                     state.command_input = prompt.initial_value;
                     state.command_cursor = state.command_input.len();
                 }
                 PromptKind::Search => {
+                    state.active_core_prompt = Some(prompt.id);
                     state.input_mode = InputMode::DiffSearch;
                     state.diff_search_input = prompt.initial_value;
                     state.diff_search_cursor = state.diff_search_input.len();
@@ -87,13 +115,150 @@ fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
             CoreEffect::Status(status) => {
                 state.status_message = Some((status.text, Instant::now()));
             }
-            CoreEffect::ClearPrompt { .. }
-            | CoreEffect::Render(_)
+            CoreEffect::ClearPrompt { id } => {
+                if state.active_core_prompt == Some(id) {
+                    state.active_core_prompt = None;
+                }
+                state.input_mode = InputMode::Normal;
+                state.command_input.clear();
+                state.command_cursor = 0;
+                state.diff_search_input.clear();
+                state.diff_search_cursor = 0;
+            }
+            CoreEffect::Command(command) => {
+                apply_command(state, command);
+            }
+            CoreEffect::DiffSearch(DiffSearchEffect::Submit { query }) => {
+                apply_diff_search(state, query);
+            }
+            CoreEffect::Render(_)
             | CoreEffect::ConnectionState(_)
             | CoreEffect::TransientError(_) => {}
         }
     }
     handled
+}
+
+/// Apply a parsed command emitted by the core interaction engine.
+fn apply_command(state: &mut AppState, command: CommandParse) {
+    match command {
+        CommandParse::Empty => {}
+        CommandParse::NeedsArgument { usage } | CommandParse::NeedsWord { usage } => {
+            state.status_message = Some((usage, Instant::now()));
+        }
+        CommandParse::Parsed(Command::Quit) => {
+            state.should_quit = true;
+        }
+        CommandParse::Parsed(
+            cmd @ (Command::SearchAll { .. }
+            | Command::SearchDiff { .. }
+            | Command::FindDefinition { .. }),
+        ) => {
+            state.pending_command = Some(cmd);
+        }
+        CommandParse::Parsed(Command::SetBlame(true)) => {
+            state.show_blame = true;
+            state.load_blame();
+            state.status_message = Some(("Blame: shown".to_string(), Instant::now()));
+        }
+        CommandParse::Parsed(Command::SetBlame(false)) => {
+            state.show_blame = false;
+            state.load_blame();
+            state.status_message = Some(("Blame: hidden".to_string(), Instant::now()));
+        }
+        CommandParse::Parsed(Command::SetComments(show)) => {
+            state.show_comments = show;
+            let status = if show {
+                "Comments: shown"
+            } else {
+                "Comments: hidden"
+            };
+            state.status_message = Some((status.to_string(), Instant::now()));
+        }
+        CommandParse::Parsed(Command::SetWhitespaceIgnored(false)) => {
+            state.ignore_whitespace = false;
+            state.reload_current_diff();
+            state.status_message = Some(("Whitespace: shown".to_string(), Instant::now()));
+        }
+        CommandParse::Parsed(Command::SetWhitespaceIgnored(true)) => {
+            state.ignore_whitespace = true;
+            state.reload_current_diff();
+            state.status_message = Some(("Whitespace: ignored".to_string(), Instant::now()));
+        }
+        CommandParse::Parsed(Command::ViewFile { .. }) => {
+            state.status_message = Some((
+                "Unsupported command from prompt".to_string(),
+                Instant::now(),
+            ));
+        }
+        CommandParse::Parsed(Command::Unknown { name }) => {
+            if name == "set" || name.starts_with("set ") {
+                state.status_message = Some((
+                    "Unknown option. Use: blame, noblame, comments, nocomments, whitespace, nowhitespace"
+                        .to_string(),
+                    Instant::now(),
+                ));
+            } else {
+                state.status_message = Some((format!("Unknown command: {name}"), Instant::now()));
+            }
+        }
+    }
+}
+
+fn apply_diff_search(state: &mut AppState, query: String) {
+    if query.is_empty() {
+        state.diff_search_query = None;
+        state.diff_search_matches.clear();
+        state.diff_search_current = 0;
+    } else {
+        state.diff_search_query = Some(query);
+        if let Some(err) = state.recompute_diff_search_matches() {
+            state.diff_search_query = None;
+            state.status_message = Some((err, Instant::now()));
+        } else if state.diff_search_matches.is_empty() {
+            state.status_message = Some(("No matches".to_string(), Instant::now()));
+        } else {
+            state.diff_search_jump_to_current();
+            let total = state.diff_search_matches.len();
+            let cur = state.diff_search_current + 1;
+            state.status_message = Some((format!("{cur}/{total}"), Instant::now()));
+        }
+    }
+}
+
+/// Extract the first identifier-like word from the current cursor line.
+fn extract_word_at_cursor(state: &AppState) -> Option<String> {
+    let line = state.diff_rendered_text.get(state.diff_line_cursor)?;
+    // Skip gutter columns to get to actual content.
+    let gutter = state.diff_gutter_cols;
+    let content = if gutter < line.len() {
+        &line[gutter..]
+    } else {
+        line.as_str()
+    };
+    // Skip the prefix marker ("+ ", "- ", "  ") if present.
+    let content = if content.len() >= 3 {
+        let prefix = &content[..3];
+        if prefix == "+ "
+            || prefix == "- "
+            || prefix == "  "
+            || prefix.starts_with(" + ")
+            || prefix.starts_with(" - ")
+        {
+            content[3..].trim_start()
+        } else {
+            content.trim()
+        }
+    } else {
+        content.trim()
+    };
+
+    let start = content.find(|c: char| c.is_alphanumeric() || c == '_')?;
+    let word: String = content[start..]
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if word.is_empty() { None } else { Some(word) }
 }
 
 /// Handle a key press event by mutating the application state.
@@ -141,16 +306,20 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
     fn handle_command_input(state: &mut AppState, key: CrosstermKeyEvent) {
         match key.code {
             KeyCode::Esc => {
-                state.input_mode = InputMode::Normal;
-                state.command_input.clear();
-                state.command_cursor = 0;
+                if !cancel_active_prompt(state) {
+                    state.input_mode = InputMode::Normal;
+                    state.command_input.clear();
+                    state.command_cursor = 0;
+                }
             }
             KeyCode::Enter => {
                 let cmd = state.command_input.clone();
-                state.input_mode = InputMode::Normal;
-                state.command_input.clear();
-                state.command_cursor = 0;
-                execute_command(state, &cmd);
+                if !submit_active_prompt(state, cmd.clone()) {
+                    state.input_mode = InputMode::Normal;
+                    state.command_input.clear();
+                    state.command_cursor = 0;
+                    apply_command(state, command::parse_command(&cmd, None));
+                }
             }
             KeyCode::Backspace => {
                 if state.command_cursor > 0 {
@@ -158,7 +327,9 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
                     state.command_input.remove(state.command_cursor);
                 } else {
                     // Backspace on empty input exits command mode.
-                    state.input_mode = InputMode::Normal;
+                    if !cancel_active_prompt(state) {
+                        state.input_mode = InputMode::Normal;
+                    }
                 }
             }
             KeyCode::Delete => {
@@ -194,34 +365,20 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
     fn handle_diff_search_input(state: &mut AppState, key: CrosstermKeyEvent) {
         match key.code {
             KeyCode::Esc => {
-                state.input_mode = InputMode::Normal;
-                state.diff_search_input.clear();
-                state.diff_search_cursor = 0;
-                // Keep existing query/matches (Escape just closes the prompt).
+                if !cancel_active_prompt(state) {
+                    state.input_mode = InputMode::Normal;
+                    state.diff_search_input.clear();
+                    state.diff_search_cursor = 0;
+                    // Keep existing query/matches (Escape just closes the prompt).
+                }
             }
             KeyCode::Enter => {
                 let query = state.diff_search_input.clone();
-                state.input_mode = InputMode::Normal;
-                state.diff_search_input.clear();
-                state.diff_search_cursor = 0;
-                if query.is_empty() {
-                    // Empty search clears the current search.
-                    state.diff_search_query = None;
-                    state.diff_search_matches.clear();
-                    state.diff_search_current = 0;
-                } else {
-                    state.diff_search_query = Some(query);
-                    if let Some(err) = state.recompute_diff_search_matches() {
-                        state.diff_search_query = None;
-                        state.status_message = Some((err, Instant::now()));
-                    } else if state.diff_search_matches.is_empty() {
-                        state.status_message = Some(("No matches".to_string(), Instant::now()));
-                    } else {
-                        state.diff_search_jump_to_current();
-                        let total = state.diff_search_matches.len();
-                        let cur = state.diff_search_current + 1;
-                        state.status_message = Some((format!("{cur}/{total}"), Instant::now()));
-                    }
+                if !submit_active_prompt(state, query.clone()) {
+                    state.input_mode = InputMode::Normal;
+                    state.diff_search_input.clear();
+                    state.diff_search_cursor = 0;
+                    apply_diff_search(state, query);
                 }
             }
             KeyCode::Backspace => {
@@ -230,7 +387,9 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
                     state.diff_search_input.remove(state.diff_search_cursor);
                 } else {
                     // Backspace on empty input exits search mode.
-                    state.input_mode = InputMode::Normal;
+                    if !cancel_active_prompt(state) {
+                        state.input_mode = InputMode::Normal;
+                    }
                 }
             }
             KeyCode::Delete => {
@@ -260,74 +419,6 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
                 state.diff_search_cursor += 1;
             }
             _ => {}
-        }
-    }
-
-    /// Parse and execute a command string (from the `:` prompt).
-    fn execute_command(state: &mut AppState, cmd: &str) {
-        let fallback_word = extract_word_at_cursor(state);
-        match command::parse_command(cmd, fallback_word.as_deref()) {
-            CommandParse::Empty => {}
-            CommandParse::NeedsArgument { usage } | CommandParse::NeedsWord { usage } => {
-                state.status_message = Some((usage, Instant::now()));
-            }
-            CommandParse::Parsed(Command::Quit) => {
-                state.should_quit = true;
-            }
-            CommandParse::Parsed(
-                cmd @ (Command::SearchAll { .. }
-                | Command::SearchDiff { .. }
-                | Command::FindDefinition { .. }),
-            ) => {
-                state.pending_command = Some(cmd);
-            }
-            CommandParse::Parsed(Command::SetBlame(true)) => {
-                state.show_blame = true;
-                state.load_blame();
-                state.status_message = Some(("Blame: shown".to_string(), Instant::now()));
-            }
-            CommandParse::Parsed(Command::SetBlame(false)) => {
-                state.show_blame = false;
-                state.load_blame();
-                state.status_message = Some(("Blame: hidden".to_string(), Instant::now()));
-            }
-            CommandParse::Parsed(Command::SetComments(show)) => {
-                state.show_comments = show;
-                let status = if show {
-                    "Comments: shown"
-                } else {
-                    "Comments: hidden"
-                };
-                state.status_message = Some((status.to_string(), Instant::now()));
-            }
-            CommandParse::Parsed(Command::SetWhitespaceIgnored(false)) => {
-                state.ignore_whitespace = false;
-                state.reload_current_diff();
-                state.status_message = Some(("Whitespace: shown".to_string(), Instant::now()));
-            }
-            CommandParse::Parsed(Command::SetWhitespaceIgnored(true)) => {
-                state.ignore_whitespace = true;
-                state.reload_current_diff();
-                state.status_message = Some(("Whitespace: ignored".to_string(), Instant::now()));
-            }
-            CommandParse::Parsed(Command::ViewFile { .. }) => {
-                state.status_message = Some((
-                    "Unsupported command from prompt".to_string(),
-                    Instant::now(),
-                ));
-            }
-            CommandParse::Parsed(Command::Unknown { name }) => {
-                if name == "set" || name.starts_with("set ") {
-                    state.status_message = Some((
-                        "Unknown option. Use: blame, noblame, comments, nocomments, whitespace, nowhitespace"
-                            .to_string(),
-                        Instant::now(),
-                    ));
-                } else {
-                    state.status_message =
-                        Some((format!("Unknown command: {name}"), Instant::now()));
-                }
-            }
         }
     }
 
@@ -493,42 +584,6 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
         } else {
             state.status_message = Some(("No word under cursor".to_string(), Instant::now()));
         }
-    }
-
-    /// Extract the first identifier-like word from the current cursor line.
-    fn extract_word_at_cursor(state: &AppState) -> Option<String> {
-        let line = state.diff_rendered_text.get(state.diff_line_cursor)?;
-        // Skip gutter columns to get to actual content.
-        let gutter = state.diff_gutter_cols;
-        let content = if gutter < line.len() {
-            &line[gutter..]
-        } else {
-            line.as_str()
-        };
-        // Skip the prefix marker ("+ ", "- ", "  ") if present.
-        let content = if content.len() >= 3 {
-            let prefix = &content[..3];
-            if prefix == "+ "
-                || prefix == "- "
-                || prefix == "  "
-                || prefix.starts_with(" + ")
-                || prefix.starts_with(" - ")
-            {
-                content[3..].trim_start()
-            } else {
-                content.trim()
-            }
-        } else {
-            content.trim()
-        };
-
-        // Extract the first identifier: sequence of alphanumeric + underscore.
-        let start = content.find(|c: char| c.is_alphanumeric() || c == '_')?;
-        let word: String = content[start..]
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect();
-        if word.is_empty() { None } else { Some(word) }
     }
 
     // --- Global keys (work from any pane) ---
