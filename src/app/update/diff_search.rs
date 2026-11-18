@@ -170,6 +170,7 @@ fn set_cursor_to_match(state: &mut AppState, view: &impl ViewportMetrics, idx: u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config;
     use crate::review_types::{
         ChangeKind, ConnectionContext, DiffContent, DiffHunk, DiffLine, FileChange, FileEntry,
         LineKind, ReviewStatus,
@@ -187,7 +188,7 @@ mod tests {
 
     fn state_with_lines(lines: Vec<DiffLine>) -> AppState {
         let mut state = AppState::new(
-            crate::config::DiffAlgorithm::Myers,
+            config::DiffAlgorithm::Myers,
             ConnectionContext {
                 repo_root: "/repo".to_string(),
                 worktree: "/repo".to_string(),

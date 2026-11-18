@@ -26,6 +26,7 @@ use crate::review_types::{
     ActiveReviewSession, AnchorStatus, Comment, CommentAnchorSide, ConnectionContext,
     CreateLineCommentParams, FileStatusEntry, ListReposResult,
 };
+use crate::server;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EmptyParams {}
@@ -174,10 +175,10 @@ impl ClientProvider {
         let client = Arc::new(Client::connect_http_from_env().await.with_context(|| {
             format!(
                 "No crt server is available at {}:{}. Start `crt server` or a crt TUI session first.",
-                std::env::var(crate::server::ENV_HTTP_HOST)
-                    .unwrap_or_else(|_| crate::server::DEFAULT_HTTP_HOST.to_string()),
-                std::env::var(crate::server::ENV_HTTP_PORT)
-                    .unwrap_or_else(|_| crate::server::DEFAULT_HTTP_PORT.to_string())
+                std::env::var(server::ENV_HTTP_HOST)
+                    .unwrap_or_else(|_| server::DEFAULT_HTTP_HOST.to_string()),
+                std::env::var(server::ENV_HTTP_PORT)
+                    .unwrap_or_else(|_| server::DEFAULT_HTTP_PORT.to_string())
             )
         })?);
         *self.client.lock().await = Some(Arc::clone(&client));
@@ -704,6 +705,8 @@ fn summarize_comment(comment: Comment) -> ReviewCommentSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::review_types;
+    use crate::server;
     use tokio::net::UnixListener;
 
     #[test]
@@ -794,14 +797,14 @@ mod tests {
     async fn list_sessions_returns_empty_when_crt_server_is_unavailable() {
         let port = unused_local_port();
         unsafe {
-            std::env::set_var(crate::server::ENV_HTTP_PORT, port.to_string());
+            std::env::set_var(server::ENV_HTTP_PORT, port.to_string());
         }
         let mcp = CrtMcp::new(None, None);
 
         let result = mcp.list_review_sessions(Parameters(EmptyParams {})).await;
 
         unsafe {
-            std::env::remove_var(crate::server::ENV_HTTP_PORT);
+            std::env::remove_var(server::ENV_HTTP_PORT);
         }
         let parsed: ListReposResult = serde_json::from_str(&result).unwrap();
         assert!(parsed.repos.is_empty());
@@ -829,14 +832,14 @@ mod tests {
     }
 
     fn comment() -> Comment {
-        Comment::new(crate::review_types::CommentInit {
+        Comment::new(review_types::CommentInit {
             id: 7,
             merge_base: "merge-base".to_string(),
             head_ref: "HEAD".to_string(),
             created_head_commit: "head-commit".to_string(),
-            anchor: crate::review_types::CommentAnchor {
-                segments: vec![crate::review_types::CommentAnchorSegment {
-                    side: crate::review_types::CommentAnchorSide::Head,
+            anchor: review_types::CommentAnchor {
+                segments: vec![review_types::CommentAnchorSegment {
+                    side: review_types::CommentAnchorSide::Head,
                     file_path: "src/lib.rs".to_string(),
                     line_start: 12,
                     line_end: 14,
@@ -845,10 +848,10 @@ mod tests {
                     anchor_text: "if condition {\n    do_work();\n}".to_string(),
                     context_before: "fn example() {".to_string(),
                     context_after: "}".to_string(),
-                    placement_status: crate::review_types::AnchorPlacementStatus::Anchored,
-                    match_method: crate::review_types::AnchorMatchMethod::Context,
+                    placement_status: review_types::AnchorPlacementStatus::Anchored,
+                    match_method: review_types::AnchorMatchMethod::Context,
                 }],
-                aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
+                aggregate_status: review_types::AnchorAggregateStatus::Anchored,
             },
             body: "Please simplify this branch.".to_string(),
             resolved: false,

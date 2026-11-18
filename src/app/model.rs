@@ -17,6 +17,7 @@ use crate::app::{
 };
 use crate::config::DiffAlgorithm;
 use crate::core::TextAnchor;
+use crate::git;
 use crate::review_types::{
     self, AnchorStatus, ChangeKind, ConnectionContext, ContentMode, PaneFocus, RenderVariant,
 };
@@ -399,7 +400,7 @@ fn file_row_model(
     index: usize,
     selected_file: usize,
     section_selected: bool,
-    entry: &crate::review_types::FileEntry,
+    entry: &review_types::FileEntry,
     unresolved_counts: &std::collections::HashMap<&str, usize>,
 ) -> FileListRow {
     let count = unresolved_counts
@@ -511,7 +512,7 @@ fn external_file_row_model(
         file_id: path.to_string(),
         path: path.to_string(),
         old_path: None,
-        change_kind: crate::review_types::ChangeKind::Modified,
+        change_kind: review_types::ChangeKind::Modified,
         review_status: ReviewStatus::Unreviewed,
         selected: state.file_list_section_focus == FileListSectionFocus::UnresolvedComments
             && state.selected_comment_id.is_none(),
@@ -525,8 +526,8 @@ fn external_file_row_model(
 fn comment_row_model(
     index: usize,
     state: &AppState,
-    entry: &crate::review_types::FileEntry,
-    comment: &crate::review_types::Comment,
+    entry: &review_types::FileEntry,
+    comment: &review_types::Comment,
     unresolved_counts: &std::collections::HashMap<&str, usize>,
 ) -> FileListRow {
     let count = unresolved_counts
@@ -553,7 +554,7 @@ fn comment_row_model(
 fn external_comment_row_model(
     path: &str,
     state: &AppState,
-    comment: &crate::review_types::Comment,
+    comment: &review_types::Comment,
     unresolved_counts: &std::collections::HashMap<&str, usize>,
 ) -> FileListRow {
     let count = unresolved_counts.get(path).copied().unwrap_or(0);
@@ -563,7 +564,7 @@ fn external_comment_row_model(
         file_id: path.to_string(),
         path: path.to_string(),
         old_path: None,
-        change_kind: crate::review_types::ChangeKind::Modified,
+        change_kind: review_types::ChangeKind::Modified,
         review_status: ReviewStatus::Unreviewed,
         selected: state.file_list_section_focus == FileListSectionFocus::UnresolvedComments
             && state.selected_comment_id == Some(comment.id),
@@ -729,8 +730,8 @@ impl From<&review_types::ReviewStatus> for ReviewStatus {
     }
 }
 
-impl From<&crate::git::BlameLine> for BlameLine {
-    fn from(line: &crate::git::BlameLine) -> Self {
+impl From<&git::BlameLine> for BlameLine {
+    fn from(line: &git::BlameLine) -> Self {
         Self {
             hash: Rc::from(line.hash.as_str()),
             author: Rc::from(line.author.as_str()),
@@ -739,8 +740,8 @@ impl From<&crate::git::BlameLine> for BlameLine {
     }
 }
 
-impl From<crate::git::BlameLine> for BlameLine {
-    fn from(line: crate::git::BlameLine) -> Self {
+impl From<git::BlameLine> for BlameLine {
+    fn from(line: git::BlameLine) -> Self {
         Self {
             hash: Rc::from(line.hash),
             author: Rc::from(line.author),
@@ -752,6 +753,7 @@ impl From<crate::git::BlameLine> for BlameLine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app;
     use crate::app::App;
     use crate::app::document::DiffDocument;
     use crate::config::Config;
@@ -1234,7 +1236,7 @@ mod tests {
         app.state.diff_search_query = Some("run".to_string());
         app.state.diff_search_matches = vec![(3, 10, 13), (8, 2, 5)];
         app.state.diff_search_current = 1;
-        app.state.visual_selection = Some(crate::app::VisualSelection {
+        app.state.visual_selection = Some(app::VisualSelection {
             mode: VisualSelectionMode::Text,
             start: DocumentPosition {
                 row: RowIndex(1),
@@ -1269,9 +1271,9 @@ mod tests {
         let active_document = model.active_document.as_ref().expect("active document");
         assert_eq!(
             active_document.document().diff.all_search_matches(),
-            vec![crate::app::document::SearchMatch {
+            vec![app::document::SearchMatch {
                 row: RowIndex(1),
-                columns: crate::app::document::ColumnSpan {
+                columns: app::document::ColumnSpan {
                     start: ColumnIndex(4),
                     end: ColumnIndex(7),
                 },
@@ -1306,7 +1308,7 @@ mod tests {
                 Vec::new(),
             )],
         );
-        app.state.search_results = Some(crate::app::SearchResults {
+        app.state.search_results = Some(app::SearchResults {
             query: "needle".to_string(),
             diff_only: true,
             matches: vec![
@@ -1323,7 +1325,7 @@ mod tests {
             ],
             selected: 1,
         });
-        app.state.definition_results = Some(crate::app::DefinitionResults {
+        app.state.definition_results = Some(app::DefinitionResults {
             symbol: "needle".to_string(),
             definitions: vec![review_types::DefinitionLocation {
                 file_path: "src/main.rs".to_string(),

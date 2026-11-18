@@ -10,6 +10,8 @@ use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 
 // Re-export model types so existing callers (e.g. `git::ChangeKind`) still work.
+use crate::config;
+use crate::review_types;
 pub use crate::review_types::{
     ChangeKind, DiffContent, DiffHunk, DiffLine, FileChange, FileVersion, LineKind, NULL_BLOB_OID,
     encode_content_id, is_content_id,
@@ -19,7 +21,7 @@ pub use crate::review_types::{
 #[derive(Debug, Clone, Default)]
 pub struct GitDiffConfig {
     /// `diff.algorithm` setting, if set.
-    pub algorithm: Option<crate::config::DiffAlgorithm>,
+    pub algorithm: Option<config::DiffAlgorithm>,
 }
 
 /// Per-line blame information.
@@ -92,7 +94,7 @@ impl ReviewBase {
     pub fn input(&self) -> &str {
         match self {
             Self::Named { input, .. } | Self::Anonymous { input, .. } => input,
-            Self::Root { .. } => crate::review_types::ROOT_REVIEW_BASE_REF,
+            Self::Root { .. } => review_types::ROOT_REVIEW_BASE_REF,
         }
     }
 
@@ -533,13 +535,13 @@ impl Repo {
     pub fn diff_all_files_workdir_for_base(
         &self,
         base: DiffBase<'_>,
-        algorithm: crate::config::DiffAlgorithm,
+        algorithm: config::DiffAlgorithm,
         ignore_whitespace: bool,
         include_hunk_lines: bool,
     ) -> Result<Vec<(FileChange, DiffContent)>> {
         // Histogram is only available via the git CLI and is handled one file
         // at a time so hashing stays consistent with single-file diffs.
-        if algorithm == crate::config::DiffAlgorithm::Histogram {
+        if algorithm == config::DiffAlgorithm::Histogram {
             let changes = self.list_changed_files_workdir_for_base(base)?;
             let mut files = Vec::with_capacity(changes.len());
             for change in changes {
@@ -561,14 +563,14 @@ impl Repo {
 
         let mut diff_opts = git2::DiffOptions::new();
         match algorithm {
-            crate::config::DiffAlgorithm::Myers => {}
-            crate::config::DiffAlgorithm::Patience => {
+            config::DiffAlgorithm::Myers => {}
+            config::DiffAlgorithm::Patience => {
                 diff_opts.patience(true);
             }
-            crate::config::DiffAlgorithm::Minimal => {
+            config::DiffAlgorithm::Minimal => {
                 diff_opts.minimal(true);
             }
-            crate::config::DiffAlgorithm::Histogram => unreachable!(),
+            config::DiffAlgorithm::Histogram => unreachable!(),
         }
         if ignore_whitespace {
             diff_opts.ignore_whitespace(true);
@@ -634,10 +636,10 @@ impl Repo {
     pub fn summarize_all_files_workdir_for_base(
         &self,
         base: DiffBase<'_>,
-        algorithm: crate::config::DiffAlgorithm,
+        algorithm: config::DiffAlgorithm,
         ignore_whitespace: bool,
-    ) -> Result<Vec<(FileChange, crate::review_types::DiffSummary)>> {
-        if algorithm == crate::config::DiffAlgorithm::Histogram {
+    ) -> Result<Vec<(FileChange, review_types::DiffSummary)>> {
+        if algorithm == config::DiffAlgorithm::Histogram {
             let changes = self.list_changed_files_workdir_for_base(base)?;
             let mut files = Vec::with_capacity(changes.len());
             for change in changes {
@@ -656,14 +658,14 @@ impl Repo {
 
         let mut diff_opts = git2::DiffOptions::new();
         match algorithm {
-            crate::config::DiffAlgorithm::Myers => {}
-            crate::config::DiffAlgorithm::Patience => {
+            config::DiffAlgorithm::Myers => {}
+            config::DiffAlgorithm::Patience => {
                 diff_opts.patience(true);
             }
-            crate::config::DiffAlgorithm::Minimal => {
+            config::DiffAlgorithm::Minimal => {
                 diff_opts.minimal(true);
             }
-            crate::config::DiffAlgorithm::Histogram => unreachable!(),
+            config::DiffAlgorithm::Histogram => unreachable!(),
         }
         if ignore_whitespace {
             diff_opts.ignore_whitespace(true);
@@ -700,7 +702,7 @@ impl Repo {
             if self.delta_is_binary(&delta) {
                 files.push((
                     change,
-                    crate::review_types::DiffSummary {
+                    review_types::DiffSummary {
                         hunks: 0,
                         additions: 0,
                         deletions: 0,
@@ -718,7 +720,7 @@ impl Repo {
             let parsed = parse_patch(&mut patch, false)?;
             files.push((
                 change,
-                crate::review_types::DiffSummary {
+                review_types::DiffSummary {
                     hunks: parsed.hunk_count,
                     additions: parsed.additions,
                     deletions: parsed.deletions,
@@ -772,19 +774,14 @@ impl Repo {
             base_ref,
             head_ref,
             file_path,
-            crate::config::DiffAlgorithm::Patience,
+            config::DiffAlgorithm::Patience,
             false,
         )
     }
 
     /// Compute the structured diff for a single file between base and working tree.
     pub fn diff_file_workdir(&self, base_ref: &str, file_path: &str) -> Result<DiffContent> {
-        self.diff_file_workdir_opts(
-            base_ref,
-            file_path,
-            crate::config::DiffAlgorithm::Patience,
-            false,
-        )
+        self.diff_file_workdir_opts(base_ref, file_path, config::DiffAlgorithm::Patience, false)
     }
 
     /// Compute the structured diff with configurable algorithm and whitespace.
@@ -793,7 +790,7 @@ impl Repo {
         base_ref: &str,
         head_ref: &str,
         file_path: &str,
-        algorithm: crate::config::DiffAlgorithm,
+        algorithm: config::DiffAlgorithm,
         ignore_whitespace: bool,
     ) -> Result<DiffContent> {
         self.diff_file_opts_for_base(
@@ -810,14 +807,14 @@ impl Repo {
         base: DiffBase<'_>,
         head_ref: &str,
         file_path: &str,
-        algorithm: crate::config::DiffAlgorithm,
+        algorithm: config::DiffAlgorithm,
         ignore_whitespace: bool,
     ) -> Result<DiffContent> {
         let base_tree = self.resolve_diff_base_tree(base)?;
         let head_tree = self.resolve_tree(head_ref)?;
 
         // Histogram requires shelling out to git CLI.
-        if algorithm == crate::config::DiffAlgorithm::Histogram {
+        if algorithm == config::DiffAlgorithm::Histogram {
             return self.diff_file_git_cli_for_base(
                 base,
                 head_ref,
@@ -829,14 +826,14 @@ impl Repo {
 
         let mut diff_opts = git2::DiffOptions::new();
         match algorithm {
-            crate::config::DiffAlgorithm::Myers => {} // default
-            crate::config::DiffAlgorithm::Patience => {
+            config::DiffAlgorithm::Myers => {} // default
+            config::DiffAlgorithm::Patience => {
                 diff_opts.patience(true);
             }
-            crate::config::DiffAlgorithm::Minimal => {
+            config::DiffAlgorithm::Minimal => {
                 diff_opts.minimal(true);
             }
-            crate::config::DiffAlgorithm::Histogram => unreachable!(),
+            config::DiffAlgorithm::Histogram => unreachable!(),
         }
         diff_opts.pathspec(file_path);
         if ignore_whitespace {
@@ -901,7 +898,7 @@ impl Repo {
         &self,
         base_ref: &str,
         file_path: &str,
-        algorithm: crate::config::DiffAlgorithm,
+        algorithm: config::DiffAlgorithm,
         ignore_whitespace: bool,
     ) -> Result<DiffContent> {
         self.diff_file_workdir_opts_for_base(
@@ -916,13 +913,13 @@ impl Repo {
         &self,
         base: DiffBase<'_>,
         file_path: &str,
-        algorithm: crate::config::DiffAlgorithm,
+        algorithm: config::DiffAlgorithm,
         ignore_whitespace: bool,
     ) -> Result<DiffContent> {
         let base_tree = self.resolve_diff_base_tree(base)?;
 
         // Histogram requires shelling out to git CLI.
-        if algorithm == crate::config::DiffAlgorithm::Histogram {
+        if algorithm == config::DiffAlgorithm::Histogram {
             return self.diff_file_workdir_git_cli_for_base(
                 base,
                 file_path,
@@ -933,14 +930,14 @@ impl Repo {
 
         let mut diff_opts = git2::DiffOptions::new();
         match algorithm {
-            crate::config::DiffAlgorithm::Myers => {}
-            crate::config::DiffAlgorithm::Patience => {
+            config::DiffAlgorithm::Myers => {}
+            config::DiffAlgorithm::Patience => {
                 diff_opts.patience(true);
             }
-            crate::config::DiffAlgorithm::Minimal => {
+            config::DiffAlgorithm::Minimal => {
                 diff_opts.minimal(true);
             }
-            crate::config::DiffAlgorithm::Histogram => unreachable!(),
+            config::DiffAlgorithm::Histogram => unreachable!(),
         }
         diff_opts.pathspec(file_path);
         if ignore_whitespace {
@@ -1367,10 +1364,10 @@ impl Repo {
 
         let algorithm = config.get_string("diff.algorithm").ok().and_then(|s| {
             match s.to_lowercase().as_str() {
-                "myers" | "default" => Some(crate::config::DiffAlgorithm::Myers),
-                "patience" => Some(crate::config::DiffAlgorithm::Patience),
-                "minimal" => Some(crate::config::DiffAlgorithm::Minimal),
-                "histogram" => Some(crate::config::DiffAlgorithm::Histogram),
+                "myers" | "default" => Some(config::DiffAlgorithm::Myers),
+                "patience" => Some(config::DiffAlgorithm::Patience),
+                "minimal" => Some(config::DiffAlgorithm::Minimal),
+                "histogram" => Some(config::DiffAlgorithm::Histogram),
                 _ => None,
             }
         });
@@ -1584,7 +1581,7 @@ fn accumulate_diff_line(
     }
 }
 
-fn summarize_diff_content(diff: &DiffContent) -> crate::review_types::DiffSummary {
+fn summarize_diff_content(diff: &DiffContent) -> review_types::DiffSummary {
     let mut additions = 0usize;
     let mut deletions = 0usize;
     for hunk in &diff.hunks {
@@ -1596,7 +1593,7 @@ fn summarize_diff_content(diff: &DiffContent) -> crate::review_types::DiffSummar
             }
         }
     }
-    crate::review_types::DiffSummary {
+    review_types::DiffSummary {
         hunks: diff.hunks.len(),
         additions,
         deletions,
@@ -1635,6 +1632,8 @@ pub fn short_hash(hash: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config;
+    use crate::review_types;
     use std::process::Command;
 
     /// Create a temporary git repo with some commits for testing.
@@ -1808,7 +1807,7 @@ mod tests {
         let diff2 = repo.diff_file("base", "HEAD", "hello.rs").unwrap();
         assert_eq!(diff1.diff_hash, diff2.diff_hash);
         assert_eq!(diff1.content_id, diff2.content_id);
-        assert!(crate::review_types::is_content_id(&diff1.content_id));
+        assert!(review_types::is_content_id(&diff1.content_id));
     }
 
     #[test]
@@ -1827,23 +1826,13 @@ mod tests {
         let repo = Repo::open(path).unwrap();
         let base = DiffBase::Commit("base");
         let patience = repo
-            .diff_file_workdir_opts_for_base(
-                base,
-                "f.rs",
-                crate::config::DiffAlgorithm::Patience,
-                false,
-            )
+            .diff_file_workdir_opts_for_base(base, "f.rs", config::DiffAlgorithm::Patience, false)
             .unwrap();
         let myers = repo
-            .diff_file_workdir_opts_for_base(
-                base,
-                "f.rs",
-                crate::config::DiffAlgorithm::Myers,
-                false,
-            )
+            .diff_file_workdir_opts_for_base(base, "f.rs", config::DiffAlgorithm::Myers, false)
             .unwrap();
         assert_eq!(patience.content_id, myers.content_id);
-        assert!(crate::review_types::is_content_id(&patience.content_id));
+        assert!(review_types::is_content_id(&patience.content_id));
 
         // Content identity changes when workdir bytes change.
         std::fs::write(path.join("f.rs"), "a\nX\nc\nY\ne\nZ\n").unwrap();
@@ -1871,11 +1860,7 @@ mod tests {
         let repo = Repo::open(path).unwrap();
         let base = DiffBase::Commit("base");
         let bulk = repo
-            .summarize_all_files_workdir_for_base(
-                base,
-                crate::config::DiffAlgorithm::Patience,
-                false,
-            )
+            .summarize_all_files_workdir_for_base(base, config::DiffAlgorithm::Patience, false)
             .unwrap();
         let (change, summary) = bulk
             .iter()
@@ -1895,9 +1880,9 @@ mod tests {
             .review_content_id_for_workdir_path(base, "new.rs")
             .unwrap();
         assert_eq!(mark_id, summary.content_id);
-        assert!(crate::review_types::is_content_id(&mark_id));
-        let (base_oid, _) = crate::review_types::parse_content_id(&mark_id).unwrap();
-        assert_ne!(base_oid, crate::review_types::NULL_BLOB_OID);
+        assert!(review_types::is_content_id(&mark_id));
+        let (base_oid, _) = review_types::parse_content_id(&mark_id).unwrap();
+        assert_ne!(base_oid, review_types::NULL_BLOB_OID);
     }
 
     #[test]
@@ -1922,7 +1907,7 @@ mod tests {
         let bulk = repo
             .diff_all_files_workdir_for_base(
                 DiffBase::Commit("base"),
-                crate::config::DiffAlgorithm::Patience,
+                config::DiffAlgorithm::Patience,
                 false,
                 true,
             )
@@ -1934,7 +1919,7 @@ mod tests {
                 .diff_file_workdir_opts_for_base(
                     DiffBase::Commit("base"),
                     &change.path,
-                    crate::config::DiffAlgorithm::Patience,
+                    config::DiffAlgorithm::Patience,
                     false,
                 )
                 .unwrap();
@@ -1948,14 +1933,14 @@ mod tests {
                 "content_id mismatch for {}",
                 change.path
             );
-            assert!(crate::review_types::is_content_id(&diff.content_id));
+            assert!(review_types::is_content_id(&diff.content_id));
             assert_eq!(diff.hunks.len(), single.hunks.len());
         }
 
         let summary_only = repo
             .diff_all_files_workdir_for_base(
                 DiffBase::Commit("base"),
-                crate::config::DiffAlgorithm::Patience,
+                config::DiffAlgorithm::Patience,
                 false,
                 false,
             )
@@ -2071,7 +2056,7 @@ mod tests {
                 DiffBase::EmptyTree,
                 "HEAD",
                 "hello.rs",
-                crate::config::DiffAlgorithm::Patience,
+                config::DiffAlgorithm::Patience,
                 false,
             )
             .unwrap();

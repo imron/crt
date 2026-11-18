@@ -26,6 +26,7 @@ use super::effects::apply_core_effects;
 use super::input::{CoreInputDispatch, KeyInputResult};
 use super::state::{InputMode, LastPointerClick, MouseSelection, STATUS_MSG_TIMEOUT, TuiState};
 use super::{input, render};
+use crate::app;
 use crate::app::App;
 use crate::core::{
     CoreEffect, InputEvent, InteractionContext, PaneId, TextAnchor, VisualSelectionEffect,
@@ -694,7 +695,7 @@ fn comment_editor_path() -> PathBuf {
 }
 
 fn comment_editor_document(
-    anchor: Option<&crate::app::CommentAnchorCapture>,
+    anchor: Option<&app::CommentAnchorCapture>,
     body: &str,
 ) -> (String, String) {
     let Some(anchor) = anchor else {
@@ -898,6 +899,9 @@ fn restore_terminal_raw() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app;
+    use crate::config;
+    use crate::review_types;
     #[test]
     fn test_base64_encode() {
         assert_eq!(base64_encode(b""), "");
@@ -928,38 +932,38 @@ mod tests {
 
     #[test]
     fn diff_visual_selection_text_comes_from_active_document() {
-        let mut state = crate::app::AppState::new(
-            crate::config::DiffAlgorithm::Myers,
-            crate::review_types::ConnectionContext {
+        let mut state = app::AppState::new(
+            config::DiffAlgorithm::Myers,
+            review_types::ConnectionContext {
                 repo_root: "/repo".to_string(),
                 worktree: "/repo".to_string(),
                 base_ref: "main".to_string(),
                 head_ref: "feature".to_string(),
                 merge_base: "abc123".to_string(),
             },
-            vec![crate::review_types::FileEntry {
-                change: crate::review_types::FileChange {
+            vec![review_types::FileEntry {
+                change: review_types::FileChange {
                     path: "src/lib.rs".to_string(),
                     old_path: None,
-                    kind: crate::review_types::ChangeKind::Modified,
+                    kind: review_types::ChangeKind::Modified,
                 },
-                status: crate::review_types::ReviewStatus::Unreviewed,
-                diff: crate::review_types::DiffContent {
-                    hunks: vec![crate::review_types::DiffHunk {
+                status: review_types::ReviewStatus::Unreviewed,
+                diff: review_types::DiffContent {
+                    hunks: vec![review_types::DiffHunk {
                         old_start: 1,
                         old_lines: 2,
                         new_start: 1,
                         new_lines: 2,
                         header: "@@ -1,2 +1,2 @@".to_string(),
                         lines: vec![
-                            crate::review_types::DiffLine {
-                                kind: crate::review_types::LineKind::Context,
+                            review_types::DiffLine {
+                                kind: review_types::LineKind::Context,
                                 content: "first line".to_string(),
                                 old_lineno: Some(1),
                                 new_lineno: Some(1),
                             },
-                            crate::review_types::DiffLine {
-                                kind: crate::review_types::LineKind::Context,
+                            review_types::DiffLine {
+                                kind: review_types::LineKind::Context,
                                 content: "second line".to_string(),
                                 old_lineno: Some(2),
                                 new_lineno: Some(2),
@@ -973,15 +977,15 @@ mod tests {
             }],
             40,
         );
-        state.visual_selection = Some(crate::app::VisualSelection {
-            mode: crate::app::VisualSelectionMode::Text,
-            start: crate::app::document::DocumentPosition {
-                row: crate::app::document::RowIndex(0),
-                column: crate::app::document::ColumnIndex(0),
+        state.visual_selection = Some(app::VisualSelection {
+            mode: app::VisualSelectionMode::Text,
+            start: app::document::DocumentPosition {
+                row: app::document::RowIndex(0),
+                column: app::document::ColumnIndex(0),
             },
-            end: crate::app::document::DocumentPosition {
-                row: crate::app::document::RowIndex(1),
-                column: crate::app::document::ColumnIndex(5),
+            end: app::document::DocumentPosition {
+                row: app::document::RowIndex(1),
+                column: app::document::ColumnIndex(5),
             },
         });
         state.rebuild_active_document();
@@ -994,9 +998,9 @@ mod tests {
 
     #[test]
     fn editor_document_wraps_comment_with_anchor_context() {
-        let anchor = crate::app::CommentAnchorCapture {
-            segments: vec![crate::review_types::CommentAnchorSegment {
-                side: crate::review_types::CommentAnchorSide::Head,
+        let anchor = app::CommentAnchorCapture {
+            segments: vec![review_types::CommentAnchorSegment {
+                side: review_types::CommentAnchorSide::Head,
                 file_path: "src/main.rs".to_string(),
                 line_start: 4,
                 line_end: 5,
@@ -1005,8 +1009,8 @@ mod tests {
                 anchor_text: "selected one\nselected two".to_string(),
                 context_before: "before".to_string(),
                 context_after: "after".to_string(),
-                placement_status: crate::review_types::AnchorPlacementStatus::Anchored,
-                match_method: crate::review_types::AnchorMatchMethod::ExactAtLine,
+                placement_status: review_types::AnchorPlacementStatus::Anchored,
+                match_method: review_types::AnchorMatchMethod::ExactAtLine,
             }],
             file_path: "src/main.rs".to_string(),
             line_start: 4,
@@ -1035,9 +1039,9 @@ mod tests {
 
     #[test]
     fn editor_template_strip_keeps_changed_context() {
-        let anchor = crate::app::CommentAnchorCapture {
-            segments: vec![crate::review_types::CommentAnchorSegment {
-                side: crate::review_types::CommentAnchorSide::Head,
+        let anchor = app::CommentAnchorCapture {
+            segments: vec![review_types::CommentAnchorSegment {
+                side: review_types::CommentAnchorSide::Head,
                 file_path: "src/main.rs".to_string(),
                 line_start: 4,
                 line_end: 4,
@@ -1046,8 +1050,8 @@ mod tests {
                 anchor_text: "selected".to_string(),
                 context_before: String::new(),
                 context_after: String::new(),
-                placement_status: crate::review_types::AnchorPlacementStatus::Anchored,
-                match_method: crate::review_types::AnchorMatchMethod::ExactAtLine,
+                placement_status: review_types::AnchorPlacementStatus::Anchored,
+                match_method: review_types::AnchorMatchMethod::ExactAtLine,
             }],
             file_path: "src/main.rs".to_string(),
             line_start: 4,

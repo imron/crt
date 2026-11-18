@@ -7,12 +7,13 @@ use crate::app::{AppState, FileListSectionFocus, JumpLocation};
 use crate::core::command::Command;
 use crate::core::navigation::{self as core_navigation, Direction, FileNavigationScope};
 use crate::core::search as core_search;
+use crate::review_types;
 use crate::review_types::{CommentAnchorSide, ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
 pub fn navigate_to_search_match(
     state: &mut AppState,
     view: &impl ViewportMetrics,
-    m: &crate::review_types::SearchMatch,
+    m: &review_types::SearchMatch,
 ) -> AppOutput {
     let mut update = AppOutput::handled();
     let target = core_search::resolve_search_target(&state.files, m);
@@ -23,7 +24,7 @@ pub fn navigate_to_search_match(
 pub fn navigate_to_definition(
     state: &mut AppState,
     view: &impl ViewportMetrics,
-    def: &crate::review_types::DefinitionLocation,
+    def: &review_types::DefinitionLocation,
 ) -> AppOutput {
     let mut update = AppOutput::handled();
     let target = core_search::resolve_definition_target(&state.files, def);
@@ -626,6 +627,8 @@ pub fn toggle_review(state: &AppState, update: &mut AppOutput) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config;
+    use crate::review_types;
 
     #[test]
     fn word_at_char_offset_selects_identifier_under_cursor() {
@@ -669,30 +672,30 @@ mod tests {
         }
 
         let mut state = AppState::new(
-            crate::config::DiffAlgorithm::Myers,
-            crate::review_types::ConnectionContext {
+            config::DiffAlgorithm::Myers,
+            review_types::ConnectionContext {
                 repo_root: "/repo".to_string(),
                 worktree: "/repo".to_string(),
                 base_ref: "main".to_string(),
                 head_ref: "feature".to_string(),
                 merge_base: "abc123".to_string(),
             },
-            vec![crate::review_types::FileEntry {
-                change: crate::review_types::FileChange {
+            vec![review_types::FileEntry {
+                change: review_types::FileChange {
                     path: "src/lib.rs".to_string(),
                     old_path: None,
-                    kind: crate::review_types::ChangeKind::Modified,
+                    kind: review_types::ChangeKind::Modified,
                 },
-                status: crate::review_types::ReviewStatus::Unreviewed,
-                diff: crate::review_types::DiffContent {
-                    hunks: vec![crate::review_types::DiffHunk {
+                status: review_types::ReviewStatus::Unreviewed,
+                diff: review_types::DiffContent {
+                    hunks: vec![review_types::DiffHunk {
                         old_start: 1,
                         old_lines: 1,
                         new_start: 1,
                         new_lines: 1,
                         header: "@@ -1 +1 @@".to_string(),
-                        lines: vec![crate::review_types::DiffLine {
-                            kind: crate::review_types::LineKind::Context,
+                        lines: vec![review_types::DiffLine {
+                            kind: review_types::LineKind::Context,
                             content: "on specific lines.".to_string(),
                             old_lineno: Some(1),
                             new_lineno: Some(1),

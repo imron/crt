@@ -9,6 +9,8 @@ use tokio::sync::Mutex;
 use tokio::sync::broadcast;
 
 use super::{ConnectionContext, ServerState};
+use crate::config;
+use crate::db;
 use crate::db::{
     Database, NewAnchorVersion, NewComment, NewCommentAnchor, NewCommentAnchorSegment,
     NewCommentResolutionEvent, StoredComment,
@@ -18,6 +20,7 @@ use crate::protocol::{
     ERR_INTERNAL, ERR_INVALID_PARAMS, JsonRpcResponse, Notification, NotificationKind,
 };
 use crate::review_types;
+use crate::search;
 
 pub async fn handle_init(
     params: &serde_json::Value,
@@ -114,8 +117,8 @@ pub async fn handle_init(
     let diff_algorithm = init_params
         .diff_algorithm
         .as_deref()
-        .and_then(crate::config::DiffAlgorithm::parse)
-        .unwrap_or(crate::config::DiffAlgorithm::Patience);
+        .and_then(config::DiffAlgorithm::parse)
+        .unwrap_or(config::DiffAlgorithm::Patience);
 
     let ctx = ConnectionContext {
         repo_root: git_ctx.repo_root.clone(),
@@ -196,7 +199,7 @@ async fn load_reviews_with_migration(
     ctx: &ConnectionContext,
     db: &Arc<Mutex<Database>>,
     notify_tx: &broadcast::Sender<Notification>,
-) -> Result<std::collections::HashMap<String, crate::db::StoredReview>, String> {
+) -> Result<std::collections::HashMap<String, db::StoredReview>, String> {
     let head_ref = ctx.head_scope_key();
 
     let reviews = {
@@ -233,8 +236,8 @@ async fn load_reviews_with_migration(
 async fn restamp_legacy_content_ids(
     ctx: &ConnectionContext,
     db: &Arc<Mutex<Database>>,
-    mut reviews: std::collections::HashMap<String, crate::db::StoredReview>,
-) -> anyhow::Result<std::collections::HashMap<String, crate::db::StoredReview>> {
+    mut reviews: std::collections::HashMap<String, db::StoredReview>,
+) -> anyhow::Result<std::collections::HashMap<String, db::StoredReview>> {
     if reviews.is_empty() {
         return Ok(reviews);
     }
@@ -323,7 +326,7 @@ async fn restamp_legacy_content_ids(
 }
 
 fn review_status_for_content(
-    reviews: &std::collections::HashMap<String, crate::db::StoredReview>,
+    reviews: &std::collections::HashMap<String, db::StoredReview>,
     path: &str,
     content_id: &str,
 ) -> review_types::ReviewStatus {
@@ -369,7 +372,7 @@ pub async fn handle_list_changed_files(
     let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
     // Diff bodies use patience for a stable bulk git2 path. Review status
     // compares content_id (base+workdir blob OIDs), not the patch hash.
-    let algorithm = crate::config::DiffAlgorithm::Patience;
+    let algorithm = config::DiffAlgorithm::Patience;
 
     // Git operations are blocking — run on the blocking thread pool.
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
@@ -430,7 +433,7 @@ pub async fn handle_list_file_statuses(
     let merge_base = ctx.merge_base.to_string();
     let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
     // Stats still use patience for bulk git2; status uses content_id.
-    let algorithm = crate::config::DiffAlgorithm::Patience;
+    let algorithm = config::DiffAlgorithm::Patience;
 
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let repo = git::Repo::open(&worktree)?;
@@ -501,7 +504,7 @@ async fn try_migrate_reviews(
     ctx: &ConnectionContext,
     db: &Arc<Mutex<Database>>,
     notify_tx: &broadcast::Sender<Notification>,
-) -> anyhow::Result<Option<std::collections::HashMap<String, crate::db::StoredReview>>> {
+) -> anyhow::Result<Option<std::collections::HashMap<String, db::StoredReview>>> {
     use std::collections::HashMap;
 
     if !ctx.review_base.is_migration_eligible() {
@@ -2970,7 +2973,7 @@ pub async fn handle_search_codebase(
     // Run the search on a blocking thread to avoid stalling the runtime.
     let id_owned = id.clone();
     let result = tokio::task::spawn_blocking(move || {
-        crate::search::search_codebase(&repo_root, &pattern, diff_files.as_deref())
+        search::search_codebase(&repo_root, &pattern, diff_files.as_deref())
     })
     .await;
 
@@ -3046,6 +3049,7 @@ pub async fn handle_find_definition(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config;
 
     fn init_test_repo(path: &std::path::Path) -> git2::Repository {
         let repo = git2::Repository::init(path).expect("init repo");
@@ -3520,7 +3524,7 @@ mod tests {
                 resolved_commit: git::CommitId::new("head-commit"),
             },
             db_path: PathBuf::from("/repo/.crt/reviews.db"),
-            diff_algorithm: crate::config::DiffAlgorithm::Patience,
+            diff_algorithm: config::DiffAlgorithm::Patience,
         }
     }
 
@@ -3542,7 +3546,7 @@ mod tests {
                 commit: git::CommitId::new(head),
             },
             db_path: repo_path.join(".crt/reviews.db"),
-            diff_algorithm: crate::config::DiffAlgorithm::Patience,
+            diff_algorithm: config::DiffAlgorithm::Patience,
         }
     }
 
@@ -3563,7 +3567,7 @@ mod tests {
             merge_base: git::CommitId::new(repo.resolve_commit("HEAD~1").expect("base commit")),
             head: repo_context.head,
             db_path: repo_context.repo_root.join(".crt/reviews.db"),
-            diff_algorithm: crate::config::DiffAlgorithm::Patience,
+            diff_algorithm: config::DiffAlgorithm::Patience,
         };
         state.register_session(&ctx).await;
 

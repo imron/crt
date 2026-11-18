@@ -7,6 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use super::super::state::TuiState;
+use crate::app;
 use crate::app::document::{
     BlameInfo, CommentMarker, CommentMarkerKind, DiffDocument, Document, DocumentRow,
     RenderContent, RenderLine, SourceLocation, TextRunKind,
@@ -118,7 +119,7 @@ fn draw_placeholder(
 
 fn draw_reviewed_summary(
     frame: &mut Frame,
-    diff: &crate::app::model::DiffPanel,
+    diff: &app::model::DiffPanel,
     area: Rect,
     border_style: Style,
     styles: &StyleConfig,
@@ -258,7 +259,7 @@ fn single_source_line(source: SourceLocation) -> Option<u32> {
 
 fn visible_lines(
     document: &DiffDocument,
-    diff: &crate::app::model::DiffPanel,
+    diff: &app::model::DiffPanel,
     styles: &StyleConfig,
     layout: &DocumentLayout,
     scroll: usize,
@@ -269,9 +270,8 @@ fn visible_lines(
         .filter_map(|row| {
             let is_cursor = row == diff.cursor.line;
             match document {
-                DiffDocument::Unified(document) => document
-                    .line(crate::app::document::RowIndex(row))
-                    .map(|line| {
+                DiffDocument::Unified(document) => {
+                    document.line(app::document::RowIndex(row)).map(|line| {
                         with_column_cursor(
                             render_single_line(
                                 line,
@@ -287,10 +287,10 @@ fn visible_lines(
                             diff.cursor.column,
                             is_cursor,
                         )
-                    }),
-                DiffDocument::Base(document) => document
-                    .line(crate::app::document::RowIndex(row))
-                    .map(|line| {
+                    })
+                }
+                DiffDocument::Base(document) => {
+                    document.line(app::document::RowIndex(row)).map(|line| {
                         with_column_cursor(
                             render_single_line(
                                 line,
@@ -306,10 +306,10 @@ fn visible_lines(
                             diff.cursor.column,
                             is_cursor,
                         )
-                    }),
-                DiffDocument::Head(document) => document
-                    .line(crate::app::document::RowIndex(row))
-                    .map(|line| {
+                    })
+                }
+                DiffDocument::Head(document) => {
+                    document.line(app::document::RowIndex(row)).map(|line| {
                         with_column_cursor(
                             render_single_line(
                                 line,
@@ -325,15 +325,16 @@ fn visible_lines(
                             diff.cursor.column,
                             is_cursor,
                         )
-                    }),
+                    })
+                }
                 DiffDocument::SideBySide(document) => {
                     if row >= document.len() {
                         return None;
                     }
                     Some(with_column_cursor(
                         render_side_by_side_line(
-                            document.base().line(crate::app::document::RowIndex(row)),
-                            document.head().line(crate::app::document::RowIndex(row)),
+                            document.base().line(app::document::RowIndex(row)),
+                            document.head().line(app::document::RowIndex(row)),
                             styles,
                             layout,
                             inner_w,
@@ -893,6 +894,7 @@ mod tests {
     use ratatui::text::{Line, Span};
 
     use super::*;
+    use crate::app;
     use crate::app::document::{BlameInfo, RenderContent, SourceLocation, TextRun};
 
     fn plain_content(
@@ -1225,8 +1227,8 @@ mod tests {
     #[test]
     fn base_and_head_layouts_reserve_unified_gutter_width() {
         let head_document = Document::new(
-            vec![DocumentRow::Content(crate::app::document::ContentRow {
-                gutter: crate::app::document::Gutter {
+            vec![DocumentRow::Content(app::document::ContentRow {
+                gutter: app::document::Gutter {
                     text: "423".to_string(),
                 },
                 kind: LineKind::Context,
@@ -1238,8 +1240,8 @@ mod tests {
             Vec::new(),
         );
         let base_document = Document::new(
-            vec![DocumentRow::Content(crate::app::document::ContentRow {
-                gutter: crate::app::document::Gutter {
+            vec![DocumentRow::Content(app::document::ContentRow {
+                gutter: app::document::Gutter {
                     text: "419".to_string(),
                 },
                 kind: LineKind::Context,
@@ -1467,10 +1469,7 @@ mod tests {
     }
 }
 
-fn diff_title(
-    diff: &crate::app::model::DiffPanel,
-    hunk_spans: &[crate::app::document::HunkSpan],
-) -> String {
+fn diff_title(diff: &app::model::DiffPanel, hunk_spans: &[app::document::HunkSpan]) -> String {
     let path = diff.path.as_deref().unwrap_or("Diff");
     let mode_label: String = match diff.content_mode {
         ContentMode::FullFile => match diff.render_variant {

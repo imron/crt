@@ -24,9 +24,12 @@ use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::config;
 use crate::core::ConnectionState;
+use crate::protocol;
 use crate::protocol::{JsonRpcCall, RpcMethod};
 use crate::review_types;
+use crate::server;
 
 /// Result of the `init` call. Alias for [`review_types::ConnectionContext`].
 pub type InitResult = review_types::ConnectionContext;
@@ -36,7 +39,7 @@ pub type InitResult = review_types::ConnectionContext;
 // ---------------------------------------------------------------------------
 
 /// A server-to-client notification.
-pub type Notification = crate::protocol::Notification;
+pub type Notification = protocol::Notification;
 type PendingResponses =
     Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, String>>>>>;
 
@@ -215,12 +218,12 @@ impl Client {
     }
 
     pub async fn connect_http_from_env() -> Result<Self> {
-        let host = std::env::var(crate::server::ENV_HTTP_HOST)
-            .unwrap_or_else(|_| crate::server::DEFAULT_HTTP_HOST.to_string());
-        let port = std::env::var(crate::server::ENV_HTTP_PORT)
+        let host = std::env::var(server::ENV_HTTP_HOST)
+            .unwrap_or_else(|_| server::DEFAULT_HTTP_HOST.to_string());
+        let port = std::env::var(server::ENV_HTTP_PORT)
             .ok()
             .and_then(|value| value.parse::<u16>().ok())
-            .unwrap_or(crate::server::DEFAULT_HTTP_PORT);
+            .unwrap_or(server::DEFAULT_HTTP_PORT);
         Self::connect_http(&host, port).await
     }
 
@@ -270,7 +273,7 @@ impl Client {
                 notify_rx,
             )),
             _ => {
-                let token = crate::server::start_embedded(&socket_path).await?;
+                let token = server::start_embedded(&socket_path).await?;
                 tokio::time::sleep(policy.options.embedded_startup_delay).await;
                 let connection = UnixClientConnection::connect(&socket_path, notify_tx.clone())
                     .await
@@ -337,7 +340,7 @@ impl Client {
         worktree: &str,
         base_ref: &str,
         root: bool,
-        diff_algorithm: Option<crate::config::DiffAlgorithm>,
+        diff_algorithm: Option<config::DiffAlgorithm>,
     ) -> Result<InitResult> {
         let diff_algorithm = diff_algorithm.map(|algo| algo.label().to_string());
         let result = self
@@ -540,7 +543,7 @@ impl Client {
         .await
     }
 
-    pub async fn list_repos(&self) -> Result<crate::review_types::ListReposResult> {
+    pub async fn list_repos(&self) -> Result<review_types::ListReposResult> {
         self.call(RpcMethod::ListRepos, EmptyParams {}).await
     }
 
@@ -552,7 +555,7 @@ impl Client {
         &self,
         pattern: &str,
         scope: &str,
-    ) -> Result<crate::review_types::SearchCodebaseResult> {
+    ) -> Result<review_types::SearchCodebaseResult> {
         let value = self
             .call(
                 RpcMethod::SearchCodebase,
@@ -570,7 +573,7 @@ impl Client {
         &self,
         symbol: &str,
         context_file: Option<&str>,
-    ) -> Result<crate::review_types::FindDefinitionResult> {
+    ) -> Result<review_types::FindDefinitionResult> {
         let value = self
             .call(
                 RpcMethod::FindDefinition,
@@ -658,7 +661,7 @@ impl Client {
                 if let Some(token) = embedded.take() {
                     token.cancel();
                 }
-                match crate::server::start_embedded(&policy.socket_path).await {
+                match server::start_embedded(&policy.socket_path).await {
                     Ok(token) => {
                         *embedded = Some(token);
                     }
@@ -989,6 +992,7 @@ fn append_unique_comments(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::review_types;
     use crate::review_types::{
         AnchorAggregateStatus, AnchorMatchMethod, AnchorPlacementStatus, AnchorStatus, Comment,
         CommentAnchor, CommentAnchorSegment, CommentAnchorSide,
@@ -1008,7 +1012,7 @@ mod tests {
     }
 
     fn comment(id: i64) -> Comment {
-        Comment::new(crate::review_types::CommentInit {
+        Comment::new(review_types::CommentInit {
             id,
             merge_base: "merge-base".to_string(),
             head_ref: "HEAD".to_string(),

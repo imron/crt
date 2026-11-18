@@ -15,9 +15,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::state::{InputMode, TuiState};
+use crate::app;
 use crate::app::model::{AppModel, ReviewStatus};
 use crate::config::{PanelStyle, StyleConfig};
 use crate::git;
+use crate::review_types;
 
 const COMMENT_TAB_WIDTH: usize = 4;
 
@@ -146,9 +148,9 @@ fn draw_selection_highlight(
     };
 
     let area = match sel.pane {
-        crate::review_types::PaneFocus::FileList => tui_state.file_list_area,
-        crate::review_types::PaneFocus::Diff => tui_state.diff_area,
-        crate::review_types::PaneFocus::Comments => return,
+        review_types::PaneFocus::FileList => tui_state.file_list_area,
+        review_types::PaneFocus::Diff => tui_state.diff_area,
+        review_types::PaneFocus::Comments => return,
     };
     // Inner area excludes borders.
     let inner = Rect {
@@ -159,11 +161,9 @@ fn draw_selection_highlight(
     };
 
     let (scroll, base_col) = match sel.pane {
-        crate::review_types::PaneFocus::FileList => (model.file_list.scroll, 0usize),
-        crate::review_types::PaneFocus::Diff => {
-            (model.diff.scroll, tui_state.diff_content_start_col())
-        }
-        crate::review_types::PaneFocus::Comments => return,
+        review_types::PaneFocus::FileList => (model.file_list.scroll, 0usize),
+        review_types::PaneFocus::Diff => (model.diff.scroll, tui_state.diff_content_start_col()),
+        review_types::PaneFocus::Comments => return,
     };
 
     let visible_start_line = scroll;
@@ -233,12 +233,10 @@ fn draw_status_bar(
         .file_list
         .sections
         .iter()
-        .filter(|section| {
-            section.kind != crate::app::model::FileListSectionKind::UnresolvedComments
-        })
+        .filter(|section| section.kind != app::model::FileListSectionKind::UnresolvedComments)
         .flat_map(|section| &section.rows)
         .filter(|row| {
-            row.kind == crate::app::model::FileListRowKind::File
+            row.kind == app::model::FileListRowKind::File
                 && matches!(row.review_status, ReviewStatus::Reviewed { .. })
         })
         .count();
@@ -246,11 +244,9 @@ fn draw_status_bar(
         .file_list
         .sections
         .iter()
-        .filter(|section| {
-            section.kind != crate::app::model::FileListSectionKind::UnresolvedComments
-        })
+        .filter(|section| section.kind != app::model::FileListSectionKind::UnresolvedComments)
         .flat_map(|section| &section.rows)
-        .filter(|row| row.kind == crate::app::model::FileListRowKind::File)
+        .filter(|row| row.kind == app::model::FileListRowKind::File)
         .count();
 
     let left = format!(

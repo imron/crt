@@ -8,6 +8,7 @@ use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+use crate::db;
 pub const ROOT_REVIEW_BASE_REF: &str = "--root";
 
 // ---------------------------------------------------------------------------
@@ -857,7 +858,7 @@ impl Comment {
     /// Create a `Comment` from a `db::StoredComment`.
     ///
     /// This is the bridge between the database layer and the model layer.
-    pub fn from_stored(stored: &crate::db::StoredComment) -> Self {
+    pub fn from_stored(stored: &db::StoredComment) -> Self {
         Self {
             id: stored.id,
             merge_base: stored.merge_base.clone(),
@@ -892,6 +893,7 @@ fn projected_comment_segment(anchor: &CommentAnchor) -> Option<&CommentAnchorSeg
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db;
 
     #[test]
     fn test_review_status_serialization() {
@@ -1189,7 +1191,7 @@ mod tests {
 
     #[test]
     fn test_comment_from_stored() {
-        let stored = crate::db::StoredComment {
+        let stored = db::StoredComment {
             id: 42,
             merge_base: "abc".to_string(),
             head_ref: "feat".to_string(),

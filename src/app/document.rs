@@ -2770,6 +2770,7 @@ fn hunk_ranges_for_side(hunks: &[DiffHunk], side: CommentAnchorSide) -> Vec<(u32
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::review_types;
     use crate::review_types::{
         AnchorMatchMethod, AnchorPlacementStatus, CommentAnchor, CommentAnchorSegment, CommentInit,
     };
@@ -2896,7 +2897,7 @@ mod tests {
             resolved,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
-            anchor_status: crate::review_types::AnchorStatus::Anchored,
+            anchor_status: review_types::AnchorStatus::Anchored,
         })
         .expect("valid comment")
     }

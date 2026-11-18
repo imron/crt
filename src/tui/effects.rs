@@ -75,6 +75,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::core::navigation::Direction;
+    use crate::review_types;
     use crate::review_types::{
         AnchorAggregateStatus, AnchorMatchMethod, AnchorPlacementStatus, AnchorStatus, ChangeKind,
         Comment, CommentAnchor, CommentAnchorSegment, CommentAnchorSide, ConnectionContext,
@@ -219,7 +220,7 @@ mod tests {
     }
 
     fn stored_comment(id: i64, file_path: &str) -> Comment {
-        Comment::new(crate::review_types::CommentInit {
+        Comment::new(review_types::CommentInit {
             id,
             merge_base: "abc123".to_string(),
             head_ref: "feature".to_string(),

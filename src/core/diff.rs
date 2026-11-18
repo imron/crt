@@ -3,7 +3,9 @@
 use std::path::Path;
 
 use crate::config::DiffAlgorithm;
+use crate::git;
 use crate::git::{BlameLine, Repo};
+use crate::review_types;
 use crate::review_types::DiffContent;
 
 pub fn resolve_diff_algorithm(worktree: &str, configured: Option<DiffAlgorithm>) -> DiffAlgorithm {
@@ -27,7 +29,7 @@ pub fn review_base_file_content(
     merge_base: &str,
     path: &str,
 ) -> Option<String> {
-    if base_ref == crate::review_types::ROOT_REVIEW_BASE_REF {
+    if base_ref == review_types::ROOT_REVIEW_BASE_REF {
         return None;
     }
     file_content(worktree, merge_base, path)
@@ -55,7 +57,7 @@ pub fn blame_pair(
     };
 
     let head = repo.blame_file("HEAD", path).unwrap_or_default();
-    let base = if base_ref == crate::review_types::ROOT_REVIEW_BASE_REF {
+    let base = if base_ref == review_types::ROOT_REVIEW_BASE_REF {
         Vec::new()
     } else {
         repo.blame_file(merge_base, path).unwrap_or_default()
@@ -74,18 +76,18 @@ pub fn diff_with_fallback(
 ) -> Option<DiffContent> {
     let repo = Repo::open(Path::new(worktree)).ok()?;
     let requested_base =
-        if base_ref == crate::review_types::ROOT_REVIEW_BASE_REF && diff_base == merge_base {
-            crate::git::DiffBase::EmptyTree
+        if base_ref == review_types::ROOT_REVIEW_BASE_REF && diff_base == merge_base {
+            git::DiffBase::EmptyTree
         } else {
-            crate::git::DiffBase::Commit(diff_base)
+            git::DiffBase::Commit(diff_base)
         };
     repo.diff_file_workdir_opts_for_base(requested_base, path, algorithm, ignore_whitespace)
         .or_else(|_| {
             if diff_base != merge_base {
-                let fallback_base = if base_ref == crate::review_types::ROOT_REVIEW_BASE_REF {
-                    crate::git::DiffBase::EmptyTree
+                let fallback_base = if base_ref == review_types::ROOT_REVIEW_BASE_REF {
+                    git::DiffBase::EmptyTree
                 } else {
-                    crate::git::DiffBase::Commit(merge_base)
+                    git::DiffBase::Commit(merge_base)
                 };
                 repo.diff_file_workdir_opts_for_base(
                     fallback_base,
@@ -103,6 +105,7 @@ pub fn diff_with_fallback(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::review_types;
     use std::path::Path;
     use std::process::Command;
 
@@ -216,7 +219,7 @@ mod tests {
 
         let content = review_base_file_content(
             worktree,
-            crate::review_types::ROOT_REVIEW_BASE_REF,
+            review_types::ROOT_REVIEW_BASE_REF,
             "base",
             "hello.rs",
         );

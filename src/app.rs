@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use self::model::AppModel;
 use crate::client::{Client, ClientEvent, CommentScope, Notification};
+use crate::config;
 use crate::config::Config;
 use crate::core::command::Command;
 use crate::core::diff;
@@ -16,7 +17,10 @@ use crate::core::interaction::{CoreEffect, CoreInteractionEngine, InteractionCon
 use crate::core::review;
 use crate::core::search as core_search;
 use crate::core::{ConnectionState, InputEvent};
+use crate::git;
+use crate::protocol;
 use crate::protocol::NotificationKind;
+use crate::review_types;
 use crate::review_types::{
     CommentAnchor, CommentAnchorSegment, ConnectionContext, ContentMode, CreateCommentParams,
     DefinitionLocation, DiffContent, FileEntry, FileStatusEntry, PaneFocus, RenderVariant,
@@ -230,7 +234,7 @@ impl App {
     ) -> Result<ReviewStartup> {
         let socket_path = default_socket_path()?;
         let cwd = std::env::current_dir().context("Failed to determine current directory")?;
-        let config = crate::config::load();
+        let config = config::load();
         let diff_algorithm =
             diff::resolve_diff_algorithm(&cwd.to_string_lossy(), config.layout.diff_algorithm);
         let client = Client::connect_or_start(&socket_path, standalone).await?;
@@ -248,7 +252,7 @@ impl App {
         if reset {
             let result = client.reset_reviews().await?;
             let summary = ResetReviewSummary {
-                merge_base_short: crate::git::short_hash(&init.merge_base),
+                merge_base_short: git::short_hash(&init.merge_base),
                 head_ref: init.head_ref,
                 cleared: result.cleared,
             };
@@ -262,7 +266,7 @@ impl App {
     }
 
     pub async fn load(client: Client, context: ConnectionContext) -> Result<Self> {
-        let config = crate::config::load();
+        let config = config::load();
         Self::load_with_config(client, context, config).await
     }
 
@@ -294,7 +298,7 @@ impl App {
                 Vec::new()
             }
         };
-        let config_path = crate::config::config_path();
+        let config_path = config::config_path();
         let mut app = Self::new(config, context, files);
         app.state.comments = comments;
         app.client = Some(client);
@@ -324,11 +328,11 @@ impl App {
 
     fn save_layout_config(&self) {
         if let Some(path) = self.config_path() {
-            let layout = crate::config::LayoutConfig {
+            let layout = config::LayoutConfig {
                 file_list_width: self.config.layout.file_list_width,
                 diff_algorithm: Some(self.state.diff_algorithm),
             };
-            crate::config::save_layout(path, &layout);
+            config::save_layout(path, &layout);
         }
     }
 
@@ -338,25 +342,22 @@ impl App {
             .ok_or_else(|| anyhow::anyhow!("app client is not available for this workflow"))
     }
 
-    pub async fn list_changed_files(&self) -> Result<crate::review_types::ListChangedFilesResult> {
+    pub async fn list_changed_files(&self) -> Result<review_types::ListChangedFilesResult> {
         self.client()?.list_changed_files().await
     }
 
-    pub async fn list_file_statuses(&self) -> Result<crate::review_types::ListFileStatusesResult> {
+    pub async fn list_file_statuses(&self) -> Result<review_types::ListFileStatusesResult> {
         self.client()?.list_file_statuses().await
     }
 
-    pub async fn mark_reviewed(
-        &self,
-        file_path: &str,
-    ) -> Result<crate::review_types::ReviewActionResult> {
+    pub async fn mark_reviewed(&self, file_path: &str) -> Result<review_types::ReviewActionResult> {
         self.client()?.mark_reviewed(file_path).await
     }
 
     pub async fn unmark_reviewed(
         &self,
         file_path: &str,
-    ) -> Result<crate::review_types::ReviewActionResult> {
+    ) -> Result<review_types::ReviewActionResult> {
         self.client()?.unmark_reviewed(file_path).await
     }
 
@@ -364,7 +365,7 @@ impl App {
         &self,
         pattern: &str,
         scope: &str,
-    ) -> Result<crate::review_types::SearchCodebaseResult> {
+    ) -> Result<review_types::SearchCodebaseResult> {
         self.client()?.search_codebase(pattern, scope).await
     }
 
@@ -372,11 +373,11 @@ impl App {
         &self,
         symbol: &str,
         context_file: Option<&str>,
-    ) -> Result<crate::review_types::FindDefinitionResult> {
+    ) -> Result<review_types::FindDefinitionResult> {
         self.client()?.find_definition(symbol, context_file).await
     }
 
-    pub async fn list_comments(&self) -> Result<crate::review_types::ListCommentsResult> {
+    pub async fn list_comments(&self) -> Result<review_types::ListCommentsResult> {
         self.client()?
             .list_current_and_previous_unresolved_comments(None, CommentScope::CurrentWithResolved)
             .await
@@ -786,10 +787,7 @@ impl App {
         }
     }
 
-    fn apply_review_change_notifications(
-        &mut self,
-        notifications: &[crate::protocol::Notification],
-    ) {
+    fn apply_review_change_notifications(&mut self, notifications: &[protocol::Notification]) {
         let selected_path = review::selected_path(&self.state.files, self.state.selected_file);
         let mut patched = false;
         for notification in notifications {
@@ -1176,10 +1174,7 @@ fn preserve_loaded_diffs(previous: &[FileEntry], mut next: Vec<FileEntry>) -> Ve
     next
 }
 
-fn upsert_comment(
-    comments: &mut Vec<crate::review_types::Comment>,
-    comment: crate::review_types::Comment,
-) {
+fn upsert_comment(comments: &mut Vec<review_types::Comment>, comment: review_types::Comment) {
     if let Some(existing) = comments
         .iter_mut()
         .find(|existing| existing.id == comment.id)
@@ -1208,7 +1203,7 @@ pub struct AppState {
     /// All files changed in base..HEAD, with their review status and diffs.
     pub files: Vec<FileEntry>,
     /// Review comments in the current review scope.
-    pub comments: Vec<crate::review_types::Comment>,
+    pub comments: Vec<review_types::Comment>,
     /// Whether the comments panel is visible under the diff pane.
     pub show_comments_panel: bool,
     /// Comment selected in the comments panel.
@@ -1254,11 +1249,11 @@ pub struct AppState {
     /// Last visited diff location for each file path.
     pub saved_file_positions: HashMap<String, SavedFilePosition>,
     /// Current diff algorithm.
-    pub diff_algorithm: crate::config::DiffAlgorithm,
+    pub diff_algorithm: config::DiffAlgorithm,
     /// The default diff algorithm (from git config or fallback). Used to
     /// decide whether to show the algorithm in the title bar — it's only
     /// shown when the user has cycled away from the default.
-    pub default_diff_algorithm: crate::config::DiffAlgorithm,
+    pub default_diff_algorithm: config::DiffAlgorithm,
     /// Whether to ignore whitespace differences in the diff.
     pub ignore_whitespace: bool,
     /// Whether blame annotations are visible.
@@ -1296,7 +1291,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(
-        diff_algorithm: crate::config::DiffAlgorithm,
+        diff_algorithm: config::DiffAlgorithm,
         context: ConnectionContext,
         mut files: Vec<FileEntry>,
         file_list_width: u16,
@@ -1882,6 +1877,7 @@ fn is_word_selection_char(c: char) -> bool {
 mod tests {
     use super::*;
     use crate::app::document::{DiffDocument, DocumentRow, RowIndex};
+    use crate::config;
     use crate::core::TextAnchor;
     use crate::core::navigation::Direction;
     use crate::core::{
@@ -1889,6 +1885,7 @@ mod tests {
         PaneEffect, PaneId, SearchResultsEffect, VisualSelectionEffect,
     };
     use crate::protocol::NotificationKind;
+    use crate::review_types;
     use crate::review_types::{
         AnchorMatchMethod, AnchorPlacementStatus, ChangeKind, CommentAnchorSide, DiffContent,
         DiffHunk, DiffLine, FileChange, FileEntry, LineKind, ReviewStatus,
@@ -1937,12 +1934,7 @@ mod tests {
     }
 
     fn empty_state() -> AppState {
-        AppState::new(
-            crate::config::DiffAlgorithm::Myers,
-            test_context(),
-            Vec::new(),
-            40,
-        )
+        AppState::new(config::DiffAlgorithm::Myers, test_context(), Vec::new(), 40)
     }
 
     #[test]
@@ -2537,8 +2529,8 @@ mod tests {
         }
     }
 
-    fn stored_comment(id: i64, file_path: &str) -> crate::review_types::Comment {
-        crate::review_types::Comment::new(crate::review_types::CommentInit {
+    fn stored_comment(id: i64, file_path: &str) -> review_types::Comment {
+        review_types::Comment::new(review_types::CommentInit {
             id,
             merge_base: "abc123".to_string(),
             head_ref: "feature".to_string(),
@@ -2548,7 +2540,7 @@ mod tests {
             resolved: false,
             created_at: "2026-06-28T00:00:00+10:00".to_string(),
             updated_at: "2026-06-28T00:00:00+10:00".to_string(),
-            anchor_status: crate::review_types::AnchorStatus::Anchored,
+            anchor_status: review_types::AnchorStatus::Anchored,
         })
         .expect("test comment anchor should be valid")
     }
@@ -2558,10 +2550,10 @@ mod tests {
         line_start: i64,
         line_end: i64,
         anchor_text: &str,
-    ) -> crate::review_types::CommentAnchor {
-        crate::review_types::CommentAnchor {
-            segments: vec![crate::review_types::CommentAnchorSegment {
-                side: crate::review_types::CommentAnchorSide::Head,
+    ) -> review_types::CommentAnchor {
+        review_types::CommentAnchor {
+            segments: vec![review_types::CommentAnchorSegment {
+                side: review_types::CommentAnchorSide::Head,
                 file_path: file_path.to_string(),
                 line_start,
                 line_end,
@@ -2570,15 +2562,15 @@ mod tests {
                 anchor_text: anchor_text.to_string(),
                 context_before: String::new(),
                 context_after: String::new(),
-                placement_status: crate::review_types::AnchorPlacementStatus::Anchored,
-                match_method: crate::review_types::AnchorMatchMethod::ExactAtLine,
+                placement_status: review_types::AnchorPlacementStatus::Anchored,
+                match_method: review_types::AnchorMatchMethod::ExactAtLine,
             }],
-            aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
+            aggregate_status: review_types::AnchorAggregateStatus::Anchored,
         }
     }
 
     fn move_comment_head_range(
-        comment: &mut crate::review_types::Comment,
+        comment: &mut review_types::Comment,
         line_start: i64,
         line_end: i64,
     ) {
@@ -2590,17 +2582,17 @@ mod tests {
     }
 
     fn move_comment_to_base_head_ranges(
-        comment: &mut crate::review_types::Comment,
+        comment: &mut review_types::Comment,
         base_line_start: i64,
         base_line_end: i64,
         head_line_start: i64,
         head_line_end: i64,
     ) {
         let file_path = comment.file_path().to_string();
-        let anchor = crate::review_types::CommentAnchor {
+        let anchor = review_types::CommentAnchor {
             segments: vec![
-                crate::review_types::CommentAnchorSegment {
-                    side: crate::review_types::CommentAnchorSide::Base,
+                review_types::CommentAnchorSegment {
+                    side: review_types::CommentAnchorSide::Base,
                     file_path: file_path.clone(),
                     line_start: base_line_start,
                     line_end: base_line_end,
@@ -2609,11 +2601,11 @@ mod tests {
                     anchor_text: "old line".to_string(),
                     context_before: String::new(),
                     context_after: String::new(),
-                    placement_status: crate::review_types::AnchorPlacementStatus::Anchored,
-                    match_method: crate::review_types::AnchorMatchMethod::ExactAtLine,
+                    placement_status: review_types::AnchorPlacementStatus::Anchored,
+                    match_method: review_types::AnchorMatchMethod::ExactAtLine,
                 },
-                crate::review_types::CommentAnchorSegment {
-                    side: crate::review_types::CommentAnchorSide::Head,
+                review_types::CommentAnchorSegment {
+                    side: review_types::CommentAnchorSide::Head,
                     file_path,
                     line_start: head_line_start,
                     line_end: head_line_end,
@@ -2622,11 +2614,11 @@ mod tests {
                     anchor_text: "new line".to_string(),
                     context_before: String::new(),
                     context_after: String::new(),
-                    placement_status: crate::review_types::AnchorPlacementStatus::Anchored,
-                    match_method: crate::review_types::AnchorMatchMethod::ExactAtLine,
+                    placement_status: review_types::AnchorPlacementStatus::Anchored,
+                    match_method: review_types::AnchorMatchMethod::ExactAtLine,
                 },
             ],
-            aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
+            aggregate_status: review_types::AnchorAggregateStatus::Anchored,
         };
         comment
             .replace_anchor(anchor)
@@ -4947,7 +4939,7 @@ mod tests {
         );
         let mut comment = stored_comment(8, "src/main.rs");
         comment
-            .replace_anchor(crate::review_types::CommentAnchor {
+            .replace_anchor(review_types::CommentAnchor {
                 segments: vec![
                     CommentAnchorSegment {
                         side: CommentAnchorSide::Base,
@@ -4976,7 +4968,7 @@ mod tests {
                         match_method: AnchorMatchMethod::ExactAtLine,
                     },
                 ],
-                aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
+                aggregate_status: review_types::AnchorAggregateStatus::Anchored,
             })
             .expect("test comment anchor should be valid");
         app.state.comments = vec![comment];
@@ -5010,7 +5002,7 @@ mod tests {
         );
         let mut comment = stored_comment(8, "src/main.rs");
         comment
-            .replace_anchor(crate::review_types::CommentAnchor {
+            .replace_anchor(review_types::CommentAnchor {
                 segments: vec![
                     CommentAnchorSegment {
                         side: CommentAnchorSide::Base,
@@ -5039,7 +5031,7 @@ mod tests {
                         match_method: AnchorMatchMethod::ExactAtLine,
                     },
                 ],
-                aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
+                aggregate_status: review_types::AnchorAggregateStatus::Anchored,
             })
             .expect("test comment anchor should be valid");
         app.state.comments = vec![comment];
@@ -5214,7 +5206,7 @@ mod tests {
         assert_eq!(params.body, "body");
         assert_eq!(
             params.anchor.aggregate_status,
-            crate::review_types::AnchorAggregateStatus::Anchored
+            review_types::AnchorAggregateStatus::Anchored
         );
         assert_eq!(params.anchor.segments.len(), 2);
         assert_eq!(params.anchor.segments[0].side, CommentAnchorSide::Base);
@@ -5555,7 +5547,7 @@ mod tests {
         );
         let mut comment = stored_comment(7, "src/main.rs");
         comment
-            .replace_anchor(crate::review_types::CommentAnchor {
+            .replace_anchor(review_types::CommentAnchor {
                 segments: vec![
                     CommentAnchorSegment {
                         side: CommentAnchorSide::Base,
@@ -5584,7 +5576,7 @@ mod tests {
                         match_method: AnchorMatchMethod::ExactAtLine,
                     },
                 ],
-                aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
+                aggregate_status: review_types::AnchorAggregateStatus::Anchored,
             })
             .expect("test comment anchor should be valid");
         app.state.comments = vec![comment];

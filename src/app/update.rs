@@ -20,6 +20,7 @@ use crate::core::navigation::Direction;
 use crate::core::{
     CommentEffect, CoreEffect, CurrentCommentContext, DiffSearchEffect, InteractionContext, PaneId,
 };
+use crate::review_types;
 use crate::review_types::PaneFocus;
 
 pub use output::{AppOutput, StatusUpdate};
@@ -215,7 +216,7 @@ pub fn apply_core_effects(
 pub fn navigate_to_search_match(
     state: &mut AppState,
     view: &impl ViewportMetrics,
-    m: &crate::review_types::SearchMatch,
+    m: &review_types::SearchMatch,
 ) -> AppOutput {
     navigation::navigate_to_search_match(state, view, m)
 }
@@ -223,7 +224,7 @@ pub fn navigate_to_search_match(
 pub fn navigate_to_definition(
     state: &mut AppState,
     view: &impl ViewportMetrics,
-    def: &crate::review_types::DefinitionLocation,
+    def: &review_types::DefinitionLocation,
 ) -> AppOutput {
     navigation::navigate_to_definition(state, view, def)
 }

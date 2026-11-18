@@ -404,6 +404,8 @@ fn source_lines_for_active_document(state: &AppState) -> Option<Vec<DocumentSour
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config;
+    use crate::review_types;
     use crate::review_types::LineKind;
 
     fn diff_line(
@@ -411,8 +413,8 @@ mod tests {
         content: &str,
         old_lineno: Option<u32>,
         new_lineno: Option<u32>,
-    ) -> crate::review_types::DiffLine {
-        crate::review_types::DiffLine {
+    ) -> review_types::DiffLine {
+        review_types::DiffLine {
             kind,
             content: content.to_string(),
             old_lineno,
@@ -429,7 +431,7 @@ mod tests {
 
     #[test]
     fn side_by_side_source_lines_come_from_active_document_rows() {
-        let hunk = crate::review_types::DiffHunk {
+        let hunk = review_types::DiffHunk {
             old_start: 26,
             old_lines: 1,
             new_start: 27,
@@ -446,22 +448,22 @@ mod tests {
         let base_content = format!("{}\n", base_owned.join("\n"));
         let head_content = format!("{}\n", head_owned.join("\n"));
         let mut state = AppState::new(
-            crate::config::DiffAlgorithm::Myers,
-            crate::review_types::ConnectionContext {
+            config::DiffAlgorithm::Myers,
+            review_types::ConnectionContext {
                 repo_root: "/repo".to_string(),
                 worktree: "/repo".to_string(),
                 base_ref: "main".to_string(),
                 head_ref: "feature".to_string(),
                 merge_base: "abc123".to_string(),
             },
-            vec![crate::review_types::FileEntry {
-                change: crate::review_types::FileChange {
+            vec![review_types::FileEntry {
+                change: review_types::FileChange {
                     path: "src/lib.rs".to_string(),
                     old_path: None,
-                    kind: crate::review_types::ChangeKind::Modified,
+                    kind: review_types::ChangeKind::Modified,
                 },
-                status: crate::review_types::ReviewStatus::Unreviewed,
-                diff: crate::review_types::DiffContent {
+                status: review_types::ReviewStatus::Unreviewed,
+                diff: review_types::DiffContent {
                     hunks: vec![hunk],
                     is_binary: false,
                     diff_hash: "diff".to_string(),
@@ -501,8 +503,8 @@ mod tests {
     #[test]
     fn selected_non_contiguous_side_rows_coalesce_to_one_segment() {
         let mut state = AppState::new(
-            crate::config::DiffAlgorithm::Myers,
-            crate::review_types::ConnectionContext {
+            config::DiffAlgorithm::Myers,
+            review_types::ConnectionContext {
                 repo_root: "/repo".to_string(),
                 worktree: "/repo".to_string(),
                 base_ref: "main".to_string(),

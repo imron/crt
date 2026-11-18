@@ -25,6 +25,7 @@ use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
 
+use crate::config;
 use crate::db::Database;
 use crate::git::{CommitId, DiffBase, HeadIdentity, ReviewBase};
 use crate::protocol::{
@@ -54,7 +55,7 @@ pub struct ConnectionContext {
     pub head: HeadIdentity,
     pub db_path: PathBuf,
     /// Diff algorithm used for review hashing and file diffs on this connection.
-    pub diff_algorithm: crate::config::DiffAlgorithm,
+    pub diff_algorithm: config::DiffAlgorithm,
 }
 
 impl ConnectionContext {

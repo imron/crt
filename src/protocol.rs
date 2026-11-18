@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::review_types;
 #[derive(Debug, Serialize)]
 pub struct JsonRpcCall<P: Serialize> {
     pub jsonrpc: &'static str,
@@ -167,7 +168,7 @@ pub enum NotificationKind {
         file_path: String,
         /// New review status when known. Older servers may omit this field.
         #[serde(default)]
-        status: Option<crate::review_types::ReviewStatus>,
+        status: Option<review_types::ReviewStatus>,
     },
     /// A comment was created, updated, resolved, or deleted.
     CommentChanged { comment_id: i64 },

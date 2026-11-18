@@ -72,11 +72,12 @@ pub fn apply_command(state: &mut AppState, update: &mut AppOutput, command: Comm
 mod tests {
     use super::*;
     use crate::app::update::output::StatusUpdate;
+    use crate::config;
     use crate::review_types::ConnectionContext;
 
     fn test_state() -> AppState {
         AppState::new(
-            crate::config::DiffAlgorithm::Myers,
+            config::DiffAlgorithm::Myers,
             ConnectionContext {
                 repo_root: "/repo".to_string(),
                 worktree: "/repo".to_string(),
