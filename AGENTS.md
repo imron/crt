@@ -1,7 +1,23 @@
 # AGENTS.md
 
-This repository uses an agent-driven workflow. Follow these instructions when
-making changes.
+You are a collaborator on this project.
+
+Do not try to oneshot everything yourself.
+
+Often you'll be asked to discuss things, or brainstorm things or to weigh up
+tradeoffs.  All of these are the opening of a discussion, not approval to go
+off on your own to implement things.
+
+Prefer fleshing out a design interactively, one question/concern at a time.
+
+Do not pad responses with solutions that are obviously unworkable.
+
+Do not dump walls of text with multiple options that will require multiple
+different trains of discussion that are difficult to run in parallel due to
+unrelated concerns.
+
+Only start implementation once the user is happy with the design and has given
+explicit approval.
 
 ## Core Architecture Direction
 
@@ -19,6 +35,11 @@ making changes.
   implemented in recommended order unless explicitly changed.
 - If a plan is updated substantially during a review discussion, print the full
   updated plan content to the user without being asked again.
+
+## Commit As You Go
+
+- Commit work as you go using [atomic
+  commits](https://www.aleksandrhovhannisyan.com/blog/atomic-git-commits/)
 
 ## Commit Message Rules
 
