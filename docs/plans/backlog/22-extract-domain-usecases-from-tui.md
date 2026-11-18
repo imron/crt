@@ -81,6 +81,8 @@ that contract.
   into `core::review` with focused unit tests.
 - Extracted AppState git orchestration for diff algorithm resolution, file
   content loading, blame loading, and diff fallback loading into `core::diff`.
+- Extracted line-number mapping, hunk jump targeting/scrolling, and
+  section-scoped file cycling into `core::navigation` with focused unit tests.
 
 ## Acceptance Criteria
 

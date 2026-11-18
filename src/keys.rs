@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{AppState, InputMode};
+use crate::core::navigation::{self, Direction, FileNavigationScope};
 use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
 /// How long the "Press Ctrl-C again" prompt stays active.
@@ -895,7 +896,8 @@ fn cycle_view_mode(state: &mut AppState) {
             // In base view, the line numbers differ from HEAD due to
             // additions/deletions. Use the old-file line that corresponds
             // to the current new-file line via the diff mapping.
-            let base_line = map_new_to_old_line(state, approx_line);
+            let base_line =
+                navigation::map_new_to_old_line(state.selected_file_entry(), approx_line);
             let row = base_line.saturating_sub(1);
             state.diff_line_cursor = row;
             state.diff_scroll = row;
@@ -905,7 +907,7 @@ fn cycle_view_mode(state: &mut AppState) {
             state.render_variant = RenderVariant::Inline;
             // Map old-file line back to approximate display row in diff view.
             let old_line = state.diff_line_cursor + 1;
-            let new_line = map_old_to_new_line(state, old_line);
+            let new_line = navigation::map_old_to_new_line(state.selected_file_entry(), old_line);
             let row = new_line.saturating_sub(1);
             state.diff_line_cursor = row;
             state.diff_scroll = row;
@@ -957,130 +959,38 @@ fn estimate_current_line(state: &AppState) -> usize {
     }
 }
 
-/// Map a new-file line number to the corresponding old-file line number
-/// using the diff hunk data.
-fn map_new_to_old_line(state: &AppState, new_line: usize) -> usize {
-    let entry = match state.selected_file_entry() {
-        Some(e) => e,
-        None => return new_line,
-    };
-    // Walk through hunks to compute the offset between old and new line numbers.
-    let mut offset: i64 = 0; // old_line = new_line + offset
-    for hunk in &entry.diff.hunks {
-        if (hunk.new_start as usize) > new_line {
-            break;
-        }
-        // Each hunk changes the offset by (old_lines - new_lines).
-        offset = (hunk.old_start as i64 + hunk.old_lines as i64)
-            - (hunk.new_start as i64 + hunk.new_lines as i64);
-    }
-    (new_line as i64 + offset).max(1) as usize
-}
-
-/// Map an old-file line number to the corresponding new-file line number.
-fn map_old_to_new_line(state: &AppState, old_line: usize) -> usize {
-    let entry = match state.selected_file_entry() {
-        Some(e) => e,
-        None => return old_line,
-    };
-    let mut offset: i64 = 0; // new_line = old_line + offset
-    for hunk in &entry.diff.hunks {
-        if (hunk.old_start as usize) > old_line {
-            break;
-        }
-        offset = (hunk.new_start as i64 + hunk.new_lines as i64)
-            - (hunk.old_start as i64 + hunk.old_lines as i64);
-    }
-    (old_line as i64 + offset).max(1) as usize
-}
-
 /// Jump to the next hunk — moves the cursor to the first changed line,
 /// then scrolls to show as much of the hunk as possible.
 fn jump_to_next_hunk(state: &mut AppState) {
-    let current = state.diff_line_cursor;
-    let idx = state
-        .hunk_first_change_rows
-        .iter()
-        .position(|&r| r > current);
-    if let Some(i) = idx {
-        let first_row = state.hunk_first_change_rows[i];
-        let hunk_end = state.hunk_end_rows.get(i).copied().unwrap_or(first_row + 1);
-        state.diff_line_cursor = first_row;
+    if let Some(jump) = navigation::jump_to_next_hunk(
+        state.diff_line_cursor,
+        state.diff_scroll,
+        state.diff_view_height,
+        &state.hunk_first_change_rows,
+        &state.hunk_end_rows,
+    ) {
+        state.diff_line_cursor = jump.cursor;
+        state.diff_scroll = jump.scroll;
         state.diff_col_cursor = 0;
-        scroll_to_show_hunk(state, first_row, hunk_end);
+        state.clamp_cursor_and_scroll();
     }
 }
 
 /// Jump to the previous hunk — moves the cursor to the first changed line,
 /// then scrolls to show as much of the hunk as possible.
 fn jump_to_prev_hunk(state: &mut AppState) {
-    let current = state.diff_line_cursor;
-    let idx = state
-        .hunk_first_change_rows
-        .iter()
-        .rposition(|&r| r < current);
-    if let Some(i) = idx {
-        let first_row = state.hunk_first_change_rows[i];
-        let hunk_end = state.hunk_end_rows.get(i).copied().unwrap_or(first_row + 1);
-        state.diff_line_cursor = first_row;
+    if let Some(jump) = navigation::jump_to_prev_hunk(
+        state.diff_line_cursor,
+        state.diff_scroll,
+        state.diff_view_height,
+        &state.hunk_first_change_rows,
+        &state.hunk_end_rows,
+    ) {
+        state.diff_line_cursor = jump.cursor;
+        state.diff_scroll = jump.scroll;
         state.diff_col_cursor = 0;
-        scroll_to_show_hunk(state, first_row, hunk_end);
-    }
-}
-
-/// Scroll to show as much of a hunk as possible after jumping to it.
-///
-/// Strategy:
-/// - If the entire hunk already fits in the viewport, don't scroll.
-/// - Otherwise, try to center the first change line in the viewport.
-/// - If the hunk is longer than that, keep scrolling down so more of
-///   the hunk is visible, but never scroll past the first change line
-///   (it must remain visible at the top of the viewport at minimum).
-fn scroll_to_show_hunk(state: &mut AppState, first_row: usize, hunk_end: usize) {
-    let vh = state.diff_view_height;
-    if vh == 0 {
         state.clamp_cursor_and_scroll();
-        return;
     }
-
-    let hunk_size = hunk_end.saturating_sub(first_row);
-    let viewport_start = state.diff_scroll;
-    let viewport_end = viewport_start + vh;
-
-    // Case: entire hunk is already visible — just clamp cursor, don't move scroll.
-    if first_row >= viewport_start && hunk_end <= viewport_end {
-        state.clamp_cursor_and_scroll();
-        return;
-    }
-
-    // Try to center the first change line in the viewport.
-    let centered_scroll = first_row.saturating_sub(vh / 2);
-
-    // How many hunk lines would be visible with centered scroll?
-    let visible_end = centered_scroll + vh;
-    if hunk_end <= visible_end || hunk_size >= vh {
-        // Either the whole hunk fits when centered, or the hunk is bigger
-        // than the viewport. In the latter case, centering is still the
-        // best starting point — but we cap so first_row stays visible.
-        // For very large hunks, scroll down as far as possible while
-        // keeping first_row on screen (i.e. first_row at the top).
-        let max_scroll = first_row; // first_row must be >= scroll
-        let desired = if hunk_size >= vh {
-            // Large hunk: push first_row toward the top of the viewport.
-            // Try to show as much as possible: scroll = first_row.
-            first_row
-        } else {
-            centered_scroll
-        };
-        state.diff_scroll = desired.min(max_scroll);
-    } else {
-        // Hunk partially off-screen when centered. Scroll further so the
-        // full hunk is visible, but never past first_row.
-        let needed_scroll = hunk_end.saturating_sub(vh);
-        state.diff_scroll = needed_scroll.min(first_row);
-    }
-
-    state.clamp_cursor_and_scroll();
 }
 
 // ---------------------------------------------------------------------------
@@ -1305,62 +1215,25 @@ fn bigword_backward(state: &mut AppState) {
     state.diff_col_cursor = pos;
 }
 
-enum Direction {
-    Next,
-    Prev,
-}
-
 /// Navigate to the next/previous file, scoped by section.
 ///
 /// - In the diff pane: cycles only through unreviewed files.
 /// - In the file list: cycles within the current section (unreviewed
 ///   or reviewed) based on where the cursor currently is.
 fn navigate_file(state: &mut AppState, dir: Direction) {
-    if state.files.is_empty() {
-        return;
-    }
-
-    let unreviewed_count = state.unreviewed_count();
-    let total = state.files.len();
-
-    // Determine the range of indices to cycle within.
-    let (range_start, range_end) = if state.pane_focus == PaneFocus::Diff {
-        // Diff pane: always cycle unreviewed only.
-        if unreviewed_count == 0 {
-            (0, total)
-        } else {
-            (0, unreviewed_count)
-        }
+    let scope = if state.pane_focus == PaneFocus::Diff {
+        FileNavigationScope::DiffPane
     } else {
-        // File list: scope to whichever section the cursor is in.
-        if state.selected_file < unreviewed_count {
-            (0, unreviewed_count.max(1))
-        } else {
-            (unreviewed_count, total)
-        }
+        FileNavigationScope::FileListPane
     };
 
-    let range_len = range_end - range_start;
-    if range_len == 0 {
-        return;
-    }
-
-    // Current position within the range.
-    let pos = state.selected_file.saturating_sub(range_start);
-
-    let new_pos = match dir {
-        Direction::Next => (pos + 1) % range_len,
-        Direction::Prev => {
-            if pos == 0 {
-                range_len - 1
-            } else {
-                pos - 1
-            }
-        }
-    };
-
-    let new_idx = range_start + new_pos;
-    if new_idx != state.selected_file {
+    if let Some(new_idx) = navigation::navigate_file(
+        state.selected_file,
+        state.files.len(),
+        state.unreviewed_count(),
+        scope,
+        dir,
+    ) {
         state.selected_file = new_idx;
         on_file_changed(state);
     }

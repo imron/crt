@@ -7,6 +7,7 @@
 pub mod diff;
 pub mod input;
 pub mod interaction;
+pub mod navigation;
 pub mod prompt;
 pub mod render;
 pub mod review;
