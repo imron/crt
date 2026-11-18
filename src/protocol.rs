@@ -6,6 +6,21 @@
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Serialize)]
+pub struct JsonRpcCall<'a, P: Serialize> {
+    pub jsonrpc: &'static str,
+    pub method: &'a str,
+    pub params: P,
+    pub id: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct JsonRpcNotification<'a, P: Serialize> {
+    pub jsonrpc: &'static str,
+    pub method: &'a str,
+    pub params: P,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct JsonRpcRequest {
     #[serde(default)]

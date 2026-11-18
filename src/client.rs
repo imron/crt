@@ -25,6 +25,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::ConnectionState;
+use crate::protocol::JsonRpcCall;
 use crate::review_types;
 
 /// Result of the `init` call. Alias for [`review_types::ConnectionContext`].
@@ -38,6 +39,9 @@ pub type InitResult = review_types::ConnectionContext;
 pub type Notification = crate::protocol::Notification;
 type PendingResponses =
     Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, String>>>>>;
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct EmptyParams {}
 
 const EMBEDDED_SERVER_STARTUP_DELAY: Duration = Duration::from_millis(50);
 const DEFAULT_RECONNECT_JITTER: RangeInclusive<Duration> =
@@ -306,10 +310,10 @@ impl Client {
         let result = self
             .call(
                 "init",
-                serde_json::json!({
-                    "worktree": worktree,
-                    "base_ref": base_ref,
-                }),
+                review_types::InitParams {
+                    worktree: worktree.to_string(),
+                    base_ref: base_ref.to_string(),
+                },
             )
             .await?;
         *self.init_args.lock().await = Some(InitArgs {
@@ -322,10 +326,10 @@ impl Client {
     async fn reinit(&self, init_args: &InitArgs) -> Result<InitResult> {
         self.call_once(
             "init",
-            serde_json::json!({
-                "worktree": init_args.worktree,
-                "base_ref": init_args.base_ref,
-            }),
+            review_types::InitParams {
+                worktree: init_args.worktree.clone(),
+                base_ref: init_args.base_ref.clone(),
+            },
         )
         .await
     }
@@ -335,17 +339,19 @@ impl Client {
     // -----------------------------------------------------------------------
 
     pub async fn list_changed_files(&self) -> Result<review_types::ListChangedFilesResult> {
-        self.call("list_changed_files", serde_json::json!({})).await
+        self.call("list_changed_files", EmptyParams {}).await
     }
 
     pub async fn list_file_statuses(&self) -> Result<review_types::ListFileStatusesResult> {
-        self.call("list_file_statuses", serde_json::json!({})).await
+        self.call("list_file_statuses", EmptyParams {}).await
     }
 
     pub async fn get_file_diff(&self, file_path: &str) -> Result<review_types::GetFileDiffResult> {
         self.call(
             "get_file_diff",
-            serde_json::json!({ "file_path": file_path }),
+            review_types::GetFileDiffParams {
+                file_path: file_path.to_string(),
+            },
         )
         .await
     }
@@ -353,11 +359,14 @@ impl Client {
     pub async fn get_file_content(
         &self,
         file_path: &str,
-        version: &str,
-    ) -> Result<serde_json::Value> {
+        version: review_types::FileVersion,
+    ) -> Result<review_types::GetFileContentResult> {
         self.call(
             "get_file_content",
-            serde_json::json!({ "file_path": file_path, "version": version }),
+            review_types::GetFileContentParams {
+                file_path: file_path.to_string(),
+                version,
+            },
         )
         .await
     }
@@ -365,7 +374,9 @@ impl Client {
     pub async fn mark_reviewed(&self, file_path: &str) -> Result<review_types::ReviewActionResult> {
         self.call(
             "mark_reviewed",
-            serde_json::json!({ "file_path": file_path }),
+            review_types::MarkReviewedParams {
+                file_path: file_path.to_string(),
+            },
         )
         .await
     }
@@ -376,13 +387,15 @@ impl Client {
     ) -> Result<review_types::ReviewActionResult> {
         self.call(
             "unmark_reviewed",
-            serde_json::json!({ "file_path": file_path }),
+            review_types::UnmarkReviewedParams {
+                file_path: file_path.to_string(),
+            },
         )
         .await
     }
 
     pub async fn reset_reviews(&self) -> Result<review_types::ResetReviewsResult> {
-        self.call("reset_reviews", serde_json::json!({})).await
+        self.call("reset_reviews", EmptyParams {}).await
     }
 
     // -----------------------------------------------------------------------
@@ -403,45 +416,51 @@ impl Client {
     ) -> Result<review_types::ListCommentsResult> {
         self.call(
             "list_comments",
-            serde_json::json!({
-                "file_path": file_path,
-                "include_resolved": scope.include_resolved(),
-                "include_previous_bases": scope.include_previous_bases(),
-            }),
+            review_types::ListCommentsParams {
+                file_path: file_path.map(str::to_string),
+                include_resolved: scope.include_resolved(),
+                include_previous_bases: scope.include_previous_bases(),
+            },
         )
         .await
     }
 
     pub async fn get_comment(&self, id: i64) -> Result<review_types::CommentResult> {
-        self.call("get_comment", serde_json::json!({ "id": id }))
+        self.call("get_comment", review_types::GetCommentParams { id })
             .await
     }
 
     pub async fn update_comment(&self, id: i64, body: &str) -> Result<review_types::CommentResult> {
         self.call(
             "update_comment",
-            serde_json::json!({ "id": id, "body": body }),
+            review_types::UpdateCommentParams {
+                id,
+                body: body.to_string(),
+            },
         )
         .await
     }
 
     pub async fn resolve_comment(&self, id: i64) -> Result<review_types::CommentResult> {
-        self.call("resolve_comment", serde_json::json!({ "id": id }))
+        self.call("resolve_comment", review_types::ResolveCommentParams { id })
             .await
     }
 
     pub async fn unresolve_comment(&self, id: i64) -> Result<review_types::CommentResult> {
-        self.call("unresolve_comment", serde_json::json!({ "id": id }))
-            .await
+        self.call(
+            "unresolve_comment",
+            review_types::UnresolveCommentParams { id },
+        )
+        .await
     }
 
     pub async fn delete_comment(&self, id: i64) -> Result<review_types::DeleteCommentResult> {
-        self.call("delete_comment", serde_json::json!({ "id": id }))
+        self.call("delete_comment", review_types::DeleteCommentParams { id })
             .await
     }
 
     pub async fn list_repos(&self) -> Result<crate::review_types::ListReposResult> {
-        self.call("list_repos", serde_json::json!({})).await
+        self.call("list_repos", EmptyParams {}).await
     }
 
     // -----------------------------------------------------------------------
@@ -456,7 +475,10 @@ impl Client {
         let value = self
             .call(
                 "search_codebase",
-                serde_json::json!({ "pattern": pattern, "scope": scope }),
+                review_types::SearchCodebaseParams {
+                    pattern: pattern.to_string(),
+                    scope: Some(scope.to_string()),
+                },
             )
             .await?;
         serde_json::from_value(value)
@@ -471,7 +493,10 @@ impl Client {
         let value = self
             .call(
                 "find_definition",
-                serde_json::json!({ "symbol": symbol, "context_file": context_file }),
+                review_types::FindDefinitionParams {
+                    symbol: symbol.to_string(),
+                    context_file: context_file.map(str::to_string),
+                },
             )
             .await?;
         serde_json::from_value(value)
@@ -604,12 +629,12 @@ impl Client {
     ) -> Result<R> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
 
-        let request = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-            "id": id,
-        });
+        let request = JsonRpcCall {
+            jsonrpc: "2.0",
+            method,
+            params,
+            id,
+        };
 
         let mut line = serde_json::to_string(&request).context("Failed to serialize request")?;
         line.push('\n');
@@ -779,9 +804,9 @@ async fn remove_pending_response(pending: &PendingResponses, id: u64) {
     pending.lock().await.remove(&id);
 }
 
-async fn http_call(
+async fn http_call<P: Serialize>(
     connection: &mut HttpClientConnection,
-    request: &serde_json::Value,
+    request: &P,
 ) -> Result<serde_json::Value> {
     let body = serde_json::to_vec(request).context("Failed to serialize HTTP request")?;
     let http_request = Request::builder()

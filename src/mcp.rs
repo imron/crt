@@ -23,7 +23,7 @@ use tokio::sync::Mutex;
 
 use crate::client::{Client, CommentScope};
 use crate::review_types::{
-    ActiveReviewSession, AnchorStatus, Comment, ConnectionContext, ListReposResult,
+    ActiveReviewSession, AnchorStatus, Comment, ConnectionContext, FileStatusEntry, ListReposResult,
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -103,6 +103,29 @@ struct ListReviewCommentsSummary {
 #[derive(Debug, Serialize)]
 struct ReviewCommentSummaryResult {
     comment: ReviewCommentSummary,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct ReviewFileCommentCounts {
+    total: usize,
+    resolved: usize,
+    unresolved: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewSummary {
+    base_ref: String,
+    head_ref: String,
+    merge_base: String,
+    total_files: usize,
+    reviewed_files: usize,
+    unreviewed_files: usize,
+    changed_files: usize,
+    total_comments: usize,
+    resolved_comments: usize,
+    unresolved_comments: usize,
+    comments_by_file: BTreeMap<String, ReviewFileCommentCounts>,
+    files: Vec<FileStatusEntry>,
 }
 
 #[derive(Clone)]
@@ -434,39 +457,37 @@ impl CrtMcp {
             Ok(comments) => comments,
             Err(e) => return format!("Error summarizing review comments: {e:#}"),
         };
-        let mut per_file_comments = BTreeMap::<String, serde_json::Value>::new();
+        let mut per_file_comments = BTreeMap::<String, ReviewFileCommentCounts>::new();
         for comment in &comments.comments {
             let entry = per_file_comments
                 .entry(comment.file_path.clone())
-                .or_insert_with(|| {
-                    serde_json::json!({
-                        "total": 0,
-                        "resolved": 0,
-                        "unresolved": 0,
-                    })
-                });
-            entry["total"] = serde_json::json!(entry["total"].as_u64().unwrap_or(0) + 1);
+                .or_default();
+            entry.total += 1;
             if comment.resolved {
-                entry["resolved"] = serde_json::json!(entry["resolved"].as_u64().unwrap_or(0) + 1);
+                entry.resolved += 1;
             } else {
-                entry["unresolved"] =
-                    serde_json::json!(entry["unresolved"].as_u64().unwrap_or(0) + 1);
+                entry.unresolved += 1;
             }
         }
-        let value = serde_json::json!({
-            "base_ref": context.base_ref,
-            "head_ref": context.head_ref,
-            "merge_base": context.merge_base,
-            "total_files": files.total_files,
-            "reviewed_files": files.reviewed_files,
-            "unreviewed_files": files.unreviewed_files + files.changed_files,
-            "changed_files": files.changed_files,
-            "total_comments": comments.comments.len(),
-            "resolved_comments": comments.comments.iter().filter(|comment| comment.resolved).count(),
-            "unresolved_comments": comments.comments.iter().filter(|comment| !comment.resolved).count(),
-            "comments_by_file": per_file_comments,
-            "files": files.files,
-        });
+        let resolved_comments = comments
+            .comments
+            .iter()
+            .filter(|comment| comment.resolved)
+            .count();
+        let value = ReviewSummary {
+            base_ref: context.base_ref,
+            head_ref: context.head_ref,
+            merge_base: context.merge_base,
+            total_files: files.total_files,
+            reviewed_files: files.reviewed_files,
+            unreviewed_files: files.unreviewed_files + files.changed_files,
+            changed_files: files.changed_files,
+            total_comments: comments.comments.len(),
+            resolved_comments,
+            unresolved_comments: comments.comments.len() - resolved_comments,
+            comments_by_file: per_file_comments,
+            files: files.files,
+        };
         to_json(&value)
     }
 }
