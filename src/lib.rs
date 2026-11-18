@@ -142,30 +142,14 @@ fn cmd_review(base: Option<String>, reset: bool, standalone: bool) -> Result<()>
             return Ok(());
         }
 
-        println!("crt — Code Review Tool\n");
-        println!("  repo root:   {}", init.repo_root);
-        println!("  worktree:    {}", init.worktree);
-        println!("  base ref:    {}", init.base_ref);
-        println!("  merge base:  {}", git::short_hash(&init.merge_base));
-        println!("  head ref:    {}", init.head_ref);
+        // Launch the TUI.
+        let mut tui = app::App::new(client, init)
+            .await
+            .context("Failed to initialize TUI")?;
+        tui.run().context("TUI error")?;
 
-        // list_changed_files is a stub for now — will return "not implemented"
-        match client.list_changed_files().await {
-            Ok(files) => println!("\n  Changed files: {files}"),
-            Err(e) => {
-                let msg = e.to_string();
-                if msg.contains("not yet implemented") {
-                    println!("\n  (file listing not yet implemented via server)");
-                } else {
-                    println!("\n  Error listing files: {e}");
-                }
-            }
-        }
-
-        println!("\nTUI not yet implemented (stage 6).");
-
-        // Clean shutdown of embedded server if we started one
-        drop(client);
+        // Clean shutdown of embedded server if we started one.
+        drop(tui);
         shutdown_embedded(cancel_guard).await;
         Ok(())
     })

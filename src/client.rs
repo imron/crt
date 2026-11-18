@@ -12,19 +12,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 
-// ---------------------------------------------------------------------------
-// Response types
-// ---------------------------------------------------------------------------
+use crate::model;
 
-/// Result of the `init` call.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct InitResult {
-    pub repo_root: String,
-    pub worktree: String,
-    pub head_ref: String,
-    pub merge_base: String,
-    pub base_ref: String,
-}
+/// Result of the `init` call. Alias for [`model::ConnectionContext`].
+pub type InitResult = model::ConnectionContext;
 
 // ---------------------------------------------------------------------------
 // Client
@@ -72,11 +63,11 @@ impl Client {
     // Review state (stubs — will return "not implemented" from server)
     // -----------------------------------------------------------------------
 
-    pub async fn list_changed_files(&self) -> Result<serde_json::Value> {
+    pub async fn list_changed_files(&self) -> Result<model::ListChangedFilesResult> {
         self.call("list_changed_files", serde_json::json!({})).await
     }
 
-    pub async fn get_file_diff(&self, file_path: &str) -> Result<serde_json::Value> {
+    pub async fn get_file_diff(&self, file_path: &str) -> Result<model::GetFileDiffResult> {
         self.call(
             "get_file_diff",
             serde_json::json!({ "file_path": file_path }),
