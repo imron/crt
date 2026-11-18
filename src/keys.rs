@@ -71,6 +71,7 @@ fn dispatch_core_input(state: &mut AppState, key: CrosstermKeyEvent) -> bool {
                 PaneFocus::FileList => PaneId::FileList,
                 PaneFocus::Diff => PaneId::Diff,
             }),
+            quit_confirmation_active: quit_confirmation_active(state),
             ..InteractionContext::default()
         },
     );
@@ -228,6 +229,13 @@ fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
         }
     }
     handled
+}
+
+fn quit_confirmation_active(state: &AppState) -> bool {
+    state
+        .status_message
+        .as_ref()
+        .is_some_and(|(msg, when)| msg.contains("Ctrl-C") && when.elapsed() < CTRL_C_TIMEOUT)
 }
 
 /// Apply a parsed command emitted by the core interaction engine.
@@ -1021,15 +1029,8 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
     // --- Global keys (work from any pane) ---
     match (key.code, key.modifiers) {
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-            // Double-press Ctrl-C to quit.
-            let is_repeat = state.status_message.as_ref().is_some_and(|(msg, when)| {
-                msg.contains("Ctrl-C") && when.elapsed() < CTRL_C_TIMEOUT
-            });
-            if is_repeat {
-                state.should_quit = true;
-            } else {
-                state.status_message =
-                    Some(("Press Ctrl-C again to quit".to_string(), Instant::now()));
+            if dispatch_core_input(state, key) {
+                return;
             }
             return;
         }

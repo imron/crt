@@ -121,6 +121,8 @@ pub struct InteractionContext {
     pub definition_results_visible: bool,
     /// Currently focused pane, supplied by the adapter.
     pub focused_pane: Option<PaneId>,
+    /// Whether the adapter still has an active quit confirmation prompt.
+    pub quit_confirmation_active: bool,
     /// Word under the cursor, supplied by the adapter for commands like `gd`.
     pub fallback_word: Option<String>,
 }
@@ -176,6 +178,19 @@ impl CoreInteractionEngine {
                     && help_dismiss_key(&key) =>
             {
                 vec![CoreEffect::DismissHelp]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_control_modifier_only(key.modifiers)
+                    && key.key == Key::Char('c') =>
+            {
+                if context.quit_confirmation_active {
+                    vec![CoreEffect::Quit]
+                } else {
+                    vec![CoreEffect::Status(StatusMessage {
+                        text: "Press Ctrl-C again to quit".to_string(),
+                    })]
+                }
             }
             InputEvent::Key(key)
                 if key.kind == KeyEventKind::Press
@@ -660,6 +675,35 @@ mod tests {
         );
 
         assert_eq!(effects, vec![CoreEffect::Quit]);
+    }
+
+    #[test]
+    fn control_c_requests_quit_confirmation_or_quit() {
+        let mut engine = CoreInteractionEngine::new();
+        let control_c = key_event(
+            Key::Char('c'),
+            InputModifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        );
+
+        let first = engine.handle_input(control_c.clone(), &InteractionContext::default());
+        let second = engine.handle_input(
+            control_c,
+            &InteractionContext {
+                quit_confirmation_active: true,
+                ..InteractionContext::default()
+            },
+        );
+
+        assert_eq!(
+            first,
+            vec![CoreEffect::Status(StatusMessage {
+                text: "Press Ctrl-C again to quit".to_string()
+            })]
+        );
+        assert_eq!(second, vec![CoreEffect::Quit]);
     }
 
     #[test]

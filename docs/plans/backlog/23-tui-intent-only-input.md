@@ -96,6 +96,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   through core input as typed cursor effects.
 - Routed focused-pane `Enter` activation through core input as typed pane
   effects.
+- Routed Ctrl-C quit confirmation through core input using adapter-supplied
+  confirmation context.
 
 ## Acceptance Criteria
 
