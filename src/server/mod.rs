@@ -583,6 +583,7 @@ async fn send_response(
 enum Method {
     Init,
     ListChangedFiles,
+    ListFileStatuses,
     GetFileDiff,
     GetFileContent,
     MarkReviewed,
@@ -608,6 +609,7 @@ impl Method {
         match s {
             "init" => Some(Self::Init),
             "list_changed_files" => Some(Self::ListChangedFiles),
+            "list_file_statuses" => Some(Self::ListFileStatuses),
             "get_file_diff" => Some(Self::GetFileDiff),
             "get_file_content" => Some(Self::GetFileContent),
             "mark_reviewed" => Some(Self::MarkReviewed),
@@ -676,6 +678,9 @@ async fn dispatch_initialized(
     match method {
         Method::ListChangedFiles => {
             api::handle_list_changed_files(id, ctx, db, &state.notify_tx).await
+        }
+        Method::ListFileStatuses => {
+            api::handle_list_file_statuses(id, ctx, db, &state.notify_tx).await
         }
         Method::GetFileDiff => api::handle_get_file_diff(&request.params, id, ctx).await,
         Method::MarkReviewed => {

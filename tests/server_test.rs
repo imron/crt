@@ -337,6 +337,41 @@ async fn test_multiple_clients() {
 }
 
 #[tokio::test]
+async fn test_list_file_statuses_returns_compact_review_state() {
+    let server = TestServer::start().await;
+    std::fs::write(server.repo_dir.join("file.txt"), "hello\nworld\n").unwrap();
+    let mut conn = server.connect_and_init().await;
+
+    let resp = conn
+        .request("list_file_statuses", serde_json::json!({}))
+        .await;
+
+    assert!(resp["error"].is_null(), "list failed: {resp}");
+    assert_eq!(resp["result"]["total_files"], 1);
+    assert_eq!(resp["result"]["reviewed_files"], 0);
+    assert_eq!(resp["result"]["unreviewed_files"], 1);
+    assert_eq!(resp["result"]["changed_files"], 0);
+    let files = resp["result"]["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1);
+    let file = &files[0];
+    assert_eq!(file["change"]["path"], "file.txt");
+    assert_eq!(file["status"]["status"], "unreviewed");
+    assert_eq!(file["diff"]["hunks"], 1);
+    assert_eq!(file["diff"]["additions"], 1);
+    assert_eq!(file["diff"]["deletions"], 0);
+    assert_eq!(file["diff"]["is_binary"], false);
+    assert!(
+        file["diff"]["diff_hash"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    );
+    assert!(
+        file["diff"].get("lines").is_none(),
+        "compact status response should not include hunk lines: {file}"
+    );
+}
+
+#[tokio::test]
 async fn test_client_receives_review_notification_while_idle() {
     let server = TestServer::start().await;
     std::fs::write(server.repo_dir.join("file.txt"), "changed\n").unwrap();

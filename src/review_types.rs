@@ -117,6 +117,25 @@ pub struct FileEntry {
     pub diff: DiffContent,
 }
 
+/// Compact stats for a file diff without hunk line content.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffSummary {
+    pub hunks: usize,
+    pub additions: usize,
+    pub deletions: usize,
+    pub is_binary: bool,
+    /// Stable SHA-256 hash of the diff content.
+    pub diff_hash: String,
+}
+
+/// Review state for a changed file without the full diff payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileStatusEntry {
+    pub change: FileChange,
+    pub status: ReviewStatus,
+    pub diff: DiffSummary,
+}
+
 // ---------------------------------------------------------------------------
 // Comment types
 // ---------------------------------------------------------------------------
@@ -333,6 +352,16 @@ pub struct TrackRepoParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListChangedFilesResult {
     pub files: Vec<FileEntry>,
+}
+
+/// Result of `list_file_statuses`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListFileStatusesResult {
+    pub total_files: usize,
+    pub reviewed_files: usize,
+    pub unreviewed_files: usize,
+    pub changed_files: usize,
+    pub files: Vec<FileStatusEntry>,
 }
 
 /// Result of `get_file_diff`.
