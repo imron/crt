@@ -51,26 +51,6 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
         return;
     }
 
-    // --- Ctrl-W prefix combos (vim-style window navigation) ---
-    if state.pending_ctrl_w {
-        state.pending_ctrl_w = false;
-        state.status_message = None;
-        match key.code {
-            KeyCode::Char('h') => {
-                if state.show_file_list {
-                    state.pane_focus = PaneFocus::FileList;
-                }
-            }
-            KeyCode::Char('l') => {
-                if state.show_diff_pane {
-                    state.pane_focus = PaneFocus::Diff;
-                }
-            }
-            _ => {}
-        }
-        return;
-    }
-
     // ---------------------------------------------------------------------------
     // Command mode
     // ---------------------------------------------------------------------------
@@ -251,6 +231,41 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
                     }
                 } else {
                     state.pending_command = Some(format!("find_definition {args}"));
+                }
+            }
+            "set" => {
+                match args {
+                    "blame" => {
+                        state.show_blame = true;
+                        state.load_blame();
+                        state.status_message =
+                            Some(("Blame: shown".to_string(), Instant::now()));
+                    }
+                    "noblame" => {
+                        state.show_blame = false;
+                        state.load_blame();
+                        state.status_message =
+                            Some(("Blame: hidden".to_string(), Instant::now()));
+                    }
+                    "whitespace" => {
+                        state.ignore_whitespace = false;
+                        state.reload_current_diff();
+                        state.status_message =
+                            Some(("Whitespace: shown".to_string(), Instant::now()));
+                    }
+                    "nowhitespace" => {
+                        state.ignore_whitespace = true;
+                        state.reload_current_diff();
+                        state.status_message =
+                            Some(("Whitespace: ignored".to_string(), Instant::now()));
+                    }
+                    _ => {
+                        state.status_message = Some((
+                            "Unknown option. Use: blame, noblame, whitespace, nowhitespace"
+                                .to_string(),
+                            Instant::now(),
+                        ));
+                    }
                 }
             }
             _ => {
@@ -485,11 +500,6 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             state.should_suspend = true;
             return;
         }
-        (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
-            state.pending_ctrl_w = true;
-            state.status_message = Some(("Ctrl-W ...".to_string(), Instant::now()));
-            return;
-        }
         (KeyCode::Char('?'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
             state.show_help = true;
             return;
@@ -627,17 +637,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             state.status_message = None;
             return;
         }
-        (KeyCode::Char('b'), KeyModifiers::NONE) => {
-            state.show_blame = !state.show_blame;
-            state.load_blame();
-            let label = if state.show_blame {
-                "Blame: shown"
-            } else {
-                "Blame: hidden"
-            };
-            state.status_message = Some((label.to_string(), Instant::now()));
-            return;
-        }
+
         (KeyCode::Char('d'), KeyModifiers::NONE) => {
             state.diff_algorithm = state.diff_algorithm.next();
             state.reload_current_diff();
@@ -655,17 +655,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             }
             return;
         }
-        (KeyCode::Char('w'), KeyModifiers::NONE) => {
-            state.ignore_whitespace = !state.ignore_whitespace;
-            state.reload_current_diff();
-            let label = if state.ignore_whitespace {
-                "Whitespace: ignored"
-            } else {
-                "Whitespace: shown"
-            };
-            state.status_message = Some((label.to_string(), Instant::now()));
-            return;
-        }
+
         (KeyCode::Char(']'), KeyModifiers::CONTROL) => {
             // Go-to-definition: extract word under cursor and request definition.
             request_go_to_definition(state);
@@ -686,11 +676,13 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
     match (key.code, key.modifiers) {
         (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
             state.diff_line_cursor = state.diff_line_cursor.saturating_add(1);
+            state.diff_col_cursor = 0;
             state.clamp_cursor_and_scroll();
             return;
         }
         (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
             state.diff_line_cursor = state.diff_line_cursor.saturating_sub(1);
+            state.diff_col_cursor = 0;
             state.clamp_cursor_and_scroll();
             return;
         }
@@ -698,6 +690,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             let delta = state.diff_view_height;
             state.diff_line_cursor = state.diff_line_cursor.saturating_add(delta);
             state.diff_scroll = state.diff_scroll.saturating_add(delta);
+            state.diff_col_cursor = 0;
             state.clamp_cursor_and_scroll();
             return;
         }
@@ -705,6 +698,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             let delta = state.diff_view_height;
             state.diff_line_cursor = state.diff_line_cursor.saturating_sub(delta);
             state.diff_scroll = state.diff_scroll.saturating_sub(delta);
+            state.diff_col_cursor = 0;
             state.clamp_cursor_and_scroll();
             return;
         }
@@ -712,6 +706,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             let delta = state.diff_view_height / 2;
             state.diff_line_cursor = state.diff_line_cursor.saturating_add(delta);
             state.diff_scroll = state.diff_scroll.saturating_add(delta);
+            state.diff_col_cursor = 0;
             state.clamp_cursor_and_scroll();
             return;
         }
@@ -719,6 +714,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             let delta = state.diff_view_height / 2;
             state.diff_line_cursor = state.diff_line_cursor.saturating_sub(delta);
             state.diff_scroll = state.diff_scroll.saturating_sub(delta);
+            state.diff_col_cursor = 0;
             state.clamp_cursor_and_scroll();
             return;
         }
@@ -728,6 +724,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             state.clamp_diff_scroll();
             if state.diff_line_cursor < state.diff_scroll {
                 state.diff_line_cursor = state.diff_scroll;
+                state.diff_col_cursor = 0;
             }
             return;
         }
@@ -738,28 +735,33 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
                 && state.diff_line_cursor >= state.diff_scroll + state.diff_view_height
             {
                 state.diff_line_cursor = state.diff_scroll + state.diff_view_height - 1;
+                state.diff_col_cursor = 0;
             }
             return;
         }
         (KeyCode::Char('g'), KeyModifiers::NONE) => {
             state.diff_line_cursor = 0;
             state.diff_scroll = 0;
+            state.diff_col_cursor = 0;
             return;
         }
         (KeyCode::Char('G'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
             state.diff_line_cursor = state.max_diff_scroll();
             state.diff_scroll = state.max_diff_scroll();
+            state.diff_col_cursor = 0;
             return;
         }
         (KeyCode::Char('H'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
             // Move cursor to top of visible viewport.
             state.diff_line_cursor = state.diff_scroll;
+            state.diff_col_cursor = 0;
             return;
         }
         (KeyCode::Char('M'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
             // Move cursor to middle of visible viewport.
             let mid = state.diff_view_height / 2;
             state.diff_line_cursor = state.diff_scroll + mid;
+            state.diff_col_cursor = 0;
             state.clamp_cursor_and_scroll();
             return;
         }
@@ -767,7 +769,44 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             // Move cursor to bottom of visible viewport.
             let bottom = state.diff_view_height.saturating_sub(1);
             state.diff_line_cursor = state.diff_scroll + bottom;
+            state.diff_col_cursor = 0;
             state.clamp_cursor_and_scroll();
+            return;
+        }
+        // --- Horizontal cursor movement ---
+        (KeyCode::Char('h') | KeyCode::Left, KeyModifiers::NONE) => {
+            state.diff_col_cursor = state.diff_col_cursor.saturating_sub(1);
+            return;
+        }
+        (KeyCode::Char('l') | KeyCode::Right, KeyModifiers::NONE) => {
+            let max = state.current_line_text_len().saturating_sub(1);
+            if state.diff_col_cursor < max {
+                state.diff_col_cursor += 1;
+            }
+            return;
+        }
+        (KeyCode::Char('0'), KeyModifiers::NONE) => {
+            state.diff_col_cursor = 0;
+            return;
+        }
+        (KeyCode::Char('$'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            state.diff_col_cursor = state.current_line_text_len().saturating_sub(1);
+            return;
+        }
+        (KeyCode::Char('w'), KeyModifiers::NONE) => {
+            word_forward(state);
+            return;
+        }
+        (KeyCode::Char('b'), KeyModifiers::NONE) => {
+            word_backward(state);
+            return;
+        }
+        (KeyCode::Char('W'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
+            bigword_forward(state);
+            return;
+        }
+        (KeyCode::Char('B'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
+            bigword_backward(state);
             return;
         }
         _ => {}
@@ -951,6 +990,7 @@ fn jump_to_next_hunk(state: &mut AppState) {
         let first_row = state.hunk_first_change_rows[i];
         let hunk_end = state.hunk_end_rows.get(i).copied().unwrap_or(first_row + 1);
         state.diff_line_cursor = first_row;
+        state.diff_col_cursor = 0;
         scroll_to_show_hunk(state, first_row, hunk_end);
     }
 }
@@ -967,6 +1007,7 @@ fn jump_to_prev_hunk(state: &mut AppState) {
         let first_row = state.hunk_first_change_rows[i];
         let hunk_end = state.hunk_end_rows.get(i).copied().unwrap_or(first_row + 1);
         state.diff_line_cursor = first_row;
+        state.diff_col_cursor = 0;
         scroll_to_show_hunk(state, first_row, hunk_end);
     }
 }
@@ -1024,6 +1065,228 @@ fn scroll_to_show_hunk(state: &mut AppState, first_row: usize, hunk_end: usize) 
     }
 
     state.clamp_cursor_and_scroll();
+}
+
+// ---------------------------------------------------------------------------
+// Word motion helpers (vim-style w/b)
+// ---------------------------------------------------------------------------
+
+/// Classify a character for word boundary detection.
+fn char_class(c: char) -> u8 {
+    if c.is_alphanumeric() || c == '_' {
+        0 // word
+    } else if c.is_whitespace() {
+        1 // whitespace
+    } else {
+        2 // punctuation / symbol
+    }
+}
+
+/// Move the column cursor to the start of the next word (vim `w`).
+/// Wraps to the next line if at end of current line's text.
+fn word_forward(state: &mut AppState) {
+    let content = state.line_content_trimmed(state.diff_line_cursor);
+    let chars: Vec<char> = content.chars().collect();
+    let text_len = chars.len();
+
+    // At or past end of text content — wrap to next line.
+    if text_len == 0 || state.diff_col_cursor >= text_len.saturating_sub(1) {
+        let max_line = state.diff_content_height.saturating_sub(1);
+        if state.diff_line_cursor < max_line {
+            state.diff_line_cursor += 1;
+            state.diff_col_cursor = 0;
+            state.clamp_cursor_and_scroll();
+            // Skip to first non-whitespace on the new line.
+            let new_content = state.line_content_trimmed(state.diff_line_cursor);
+            let new_chars: Vec<char> = new_content.chars().collect();
+            let mut pos = 0;
+            while pos < new_chars.len() && new_chars[pos].is_whitespace() {
+                pos += 1;
+            }
+            state.diff_col_cursor = pos.min(new_chars.len().saturating_sub(1));
+        }
+        return;
+    }
+
+    let mut pos = state.diff_col_cursor;
+    let start_class = char_class(chars[pos]);
+    // Skip current word class.
+    while pos < text_len && char_class(chars[pos]) == start_class {
+        pos += 1;
+    }
+    // Skip whitespace.
+    while pos < text_len && chars[pos].is_whitespace() {
+        pos += 1;
+    }
+    // If we ran past the end of text, wrap to next line.
+    if pos >= text_len {
+        let max_line = state.diff_content_height.saturating_sub(1);
+        if state.diff_line_cursor < max_line {
+            state.diff_line_cursor += 1;
+            state.diff_col_cursor = 0;
+            state.clamp_cursor_and_scroll();
+            let new_content = state.line_content_trimmed(state.diff_line_cursor);
+            let new_chars: Vec<char> = new_content.chars().collect();
+            let mut p = 0;
+            while p < new_chars.len() && new_chars[p].is_whitespace() {
+                p += 1;
+            }
+            state.diff_col_cursor = p.min(new_chars.len().saturating_sub(1));
+        } else {
+            state.diff_col_cursor = text_len.saturating_sub(1);
+        }
+        return;
+    }
+    state.diff_col_cursor = pos;
+}
+
+/// Move the column cursor to the start of the previous word (vim `b`).
+/// Wraps to the previous line if at start of current line.
+fn word_backward(state: &mut AppState) {
+    // At start of line — wrap to previous line's last word.
+    if state.diff_col_cursor == 0 {
+        if state.diff_line_cursor > 0 {
+            state.diff_line_cursor -= 1;
+            state.clamp_cursor_and_scroll();
+            let content = state.line_content_trimmed(state.diff_line_cursor);
+            let chars: Vec<char> = content.chars().collect();
+            if chars.is_empty() {
+                state.diff_col_cursor = 0;
+            } else {
+                let end = chars.len() - 1;
+                let mut pos = end;
+                while pos > 0 && chars[pos].is_whitespace() {
+                    pos -= 1;
+                }
+                let target_class = char_class(chars[pos]);
+                while pos > 0 && char_class(chars[pos - 1]) == target_class {
+                    pos -= 1;
+                }
+                state.diff_col_cursor = pos;
+            }
+        }
+        return;
+    }
+
+    let content = state.line_content_trimmed(state.diff_line_cursor);
+    let chars: Vec<char> = content.chars().collect();
+    if chars.is_empty() {
+        return;
+    }
+    let mut pos = state.diff_col_cursor;
+    // Step back one char.
+    pos -= 1;
+    // Skip whitespace.
+    while pos > 0 && chars[pos].is_whitespace() {
+        pos -= 1;
+    }
+    // Find the start of the current word class.
+    let target_class = char_class(chars[pos]);
+    while pos > 0 && char_class(chars[pos - 1]) == target_class {
+        pos -= 1;
+    }
+    state.diff_col_cursor = pos;
+}
+
+/// Move the column cursor to the start of the next WORD (vim `W`).
+/// WORDs are separated by whitespace only — punctuation is not a boundary.
+/// Wraps to the next line if at end of current line's text.
+fn bigword_forward(state: &mut AppState) {
+    let content = state.line_content_trimmed(state.diff_line_cursor);
+    let chars: Vec<char> = content.chars().collect();
+    let text_len = chars.len();
+
+    if text_len == 0 || state.diff_col_cursor >= text_len.saturating_sub(1) {
+        // Wrap to next line.
+        let max_line = state.diff_content_height.saturating_sub(1);
+        if state.diff_line_cursor < max_line {
+            state.diff_line_cursor += 1;
+            state.diff_col_cursor = 0;
+            state.clamp_cursor_and_scroll();
+            let new_content = state.line_content_trimmed(state.diff_line_cursor);
+            let new_chars: Vec<char> = new_content.chars().collect();
+            let mut pos = 0;
+            while pos < new_chars.len() && new_chars[pos].is_whitespace() {
+                pos += 1;
+            }
+            state.diff_col_cursor = pos.min(new_chars.len().saturating_sub(1));
+        }
+        return;
+    }
+
+    let mut pos = state.diff_col_cursor;
+    // Skip non-whitespace.
+    while pos < text_len && !chars[pos].is_whitespace() {
+        pos += 1;
+    }
+    // Skip whitespace.
+    while pos < text_len && chars[pos].is_whitespace() {
+        pos += 1;
+    }
+    if pos >= text_len {
+        // Wrap to next line.
+        let max_line = state.diff_content_height.saturating_sub(1);
+        if state.diff_line_cursor < max_line {
+            state.diff_line_cursor += 1;
+            state.diff_col_cursor = 0;
+            state.clamp_cursor_and_scroll();
+            let new_content = state.line_content_trimmed(state.diff_line_cursor);
+            let new_chars: Vec<char> = new_content.chars().collect();
+            let mut p = 0;
+            while p < new_chars.len() && new_chars[p].is_whitespace() {
+                p += 1;
+            }
+            state.diff_col_cursor = p.min(new_chars.len().saturating_sub(1));
+        } else {
+            state.diff_col_cursor = text_len.saturating_sub(1);
+        }
+        return;
+    }
+    state.diff_col_cursor = pos;
+}
+
+/// Move the column cursor to the start of the previous WORD (vim `B`).
+/// WORDs are separated by whitespace only. Wraps to the previous line.
+fn bigword_backward(state: &mut AppState) {
+    if state.diff_col_cursor == 0 {
+        if state.diff_line_cursor > 0 {
+            state.diff_line_cursor -= 1;
+            state.clamp_cursor_and_scroll();
+            let content = state.line_content_trimmed(state.diff_line_cursor);
+            let chars: Vec<char> = content.chars().collect();
+            if chars.is_empty() {
+                state.diff_col_cursor = 0;
+            } else {
+                let mut pos = chars.len() - 1;
+                // Skip trailing whitespace.
+                while pos > 0 && chars[pos].is_whitespace() {
+                    pos -= 1;
+                }
+                // Find start of WORD (skip non-whitespace backward).
+                while pos > 0 && !chars[pos - 1].is_whitespace() {
+                    pos -= 1;
+                }
+                state.diff_col_cursor = pos;
+            }
+        }
+        return;
+    }
+
+    let content = state.line_content_trimmed(state.diff_line_cursor);
+    let chars: Vec<char> = content.chars().collect();
+    if chars.is_empty() {
+        return;
+    }
+    let mut pos = state.diff_col_cursor - 1;
+    // Skip whitespace.
+    while pos > 0 && chars[pos].is_whitespace() {
+        pos -= 1;
+    }
+    // Find start of WORD (skip non-whitespace backward).
+    while pos > 0 && !chars[pos - 1].is_whitespace() {
+        pos -= 1;
+    }
+    state.diff_col_cursor = pos;
 }
 
 enum Direction {

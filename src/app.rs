@@ -153,6 +153,10 @@ pub struct AppState {
     /// Line cursor position in the diff view (0-indexed display row).
     /// Moves with j/k and stays visible within the viewport.
     pub diff_line_cursor: usize,
+    /// Column cursor position within the content portion of the current diff
+    /// line (0-indexed character offset after gutter and prefix). Resets to 0
+    /// when the line cursor moves.
+    pub diff_col_cursor: usize,
     /// Whether a reviewed file's diff has been expanded via Enter.
     /// Resets when selected_file changes.
     pub reviewed_diff_expanded: bool,
@@ -199,8 +203,6 @@ pub struct AppState {
     /// Transient status bar message (e.g. "Press Ctrl-C again to quit").
     /// Cleared after a timeout or on next keypress.
     pub status_message: Option<(String, Instant)>,
-    /// Whether Ctrl-W was pressed and we're waiting for the next key.
-    pub pending_ctrl_w: bool,
     /// Last mouse click time and position, for double-click detection.
     pub last_click: Option<(Instant, u16, u16)>,
     /// Whether the help overlay is visible.
@@ -291,6 +293,7 @@ impl AppState {
             render_variant: RenderVariant::Inline,
             diff_scroll: 0,
             diff_line_cursor: 0,
+            diff_col_cursor: 0,
             reviewed_diff_expanded: false,
             head_content: None,
             base_content: None,
@@ -311,7 +314,6 @@ impl AppState {
             file_list_area: Rect::default(),
             diff_area: Rect::default(),
             status_message: None,
-            pending_ctrl_w: false,
             last_click: None,
             show_help: false,
             diff_algorithm,
@@ -501,6 +503,54 @@ impl AppState {
             .unwrap_or(0);
     }
 
+    /// Number of content columns on the diff gutter + prefix.
+    /// The prefix is " + ", " - ", or "   " (3 chars) appended after
+    /// `diff_gutter_cols`.
+    pub fn diff_content_start_col(&self) -> usize {
+        if self.diff_gutter_cols > 0 {
+            self.diff_gutter_cols + 3
+        } else {
+            0
+        }
+    }
+
+    /// Get the content portion of the current cursor line (after gutter+prefix),
+    /// or empty string if out of bounds. Includes trailing padding.
+    pub fn current_line_content(&self) -> &str {
+        let line = match self.diff_rendered_text.get(self.diff_line_cursor) {
+            Some(l) => l.as_str(),
+            None => return "",
+        };
+        let start = self.diff_content_start_col().min(line.len());
+        &line[start..]
+    }
+
+    /// Get the content portion of a specific line (after gutter+prefix),
+    /// with trailing whitespace stripped. Returns empty string if out of bounds.
+    pub fn line_content_trimmed(&self, row: usize) -> &str {
+        let line = match self.diff_rendered_text.get(row) {
+            Some(l) => l.as_str(),
+            None => return "",
+        };
+        let start = self.diff_content_start_col().min(line.len());
+        line[start..].trim_end()
+    }
+
+    /// Length of the actual text content of the current line in characters
+    /// (trailing padding stripped).
+    pub fn current_line_text_len(&self) -> usize {
+        self.line_content_trimmed(self.diff_line_cursor)
+            .chars()
+            .count()
+    }
+
+    /// Clamp the column cursor to the valid range for the current line's
+    /// actual text (not padding).
+    pub fn clamp_col_cursor(&mut self) {
+        let max = self.current_line_text_len().saturating_sub(1);
+        self.diff_col_cursor = self.diff_col_cursor.min(max);
+    }
+
     /// Recompute diff search matches from the current query and rendered text.
     /// The query is treated as a regex (case-insensitive). Returns an error
     /// message if the regex is invalid.
@@ -589,6 +639,7 @@ impl AppState {
             .map(|h| (h.new_start as usize).saturating_sub(1))
             .unwrap_or(0);
         self.diff_line_cursor = first_hunk_row;
+        self.diff_col_cursor = 0;
         self.diff_scroll = first_hunk_row;
     }
 }

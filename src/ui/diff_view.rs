@@ -207,7 +207,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
                     .map(|(idx, (_, start, end))| (*start, *end, idx == state.diff_search_current))
                     .collect();
 
-                if row_matches.is_empty() && is_cursor_line {
+                let mut result_line = if row_matches.is_empty() && is_cursor_line {
                     // Simple case: cursor line, no search matches.
                     let spans: Vec<Span> = line
                         .spans
@@ -236,7 +236,19 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
                         },
                     );
                     Line::from(highlighted)
+                };
+
+                // Apply column cursor overlay on the cursor line.
+                if is_cursor_line {
+                    let content_start = state.diff_content_start_col();
+                    result_line = apply_col_cursor(
+                        &result_line,
+                        content_start,
+                        state.diff_col_cursor,
+                    );
                 }
+
+                result_line
             })
             .collect()
     };
@@ -1530,6 +1542,77 @@ fn digit_width(n: u32) -> usize {
         _ => 6,
     }
     .max(3)
+}
+
+// ---------------------------------------------------------------------------
+// Column cursor overlay
+// ---------------------------------------------------------------------------
+
+/// Apply a block cursor (inverted colors) at a specific character position
+/// within the content portion of a line.
+///
+/// `content_start_col` is the number of fixed columns (gutter + prefix) before
+/// actual content begins. `col_cursor` is the character offset within content.
+fn apply_col_cursor(
+    line: &Line,
+    content_start_col: usize,
+    col_cursor: usize,
+) -> Line<'static> {
+    // Compute the target character index in the flattened line text.
+    // We need to count characters (not bytes) through the spans to find
+    // the right position.
+    let target_char = content_start_col + col_cursor;
+
+    let mut result: Vec<Span<'static>> = Vec::new();
+    let mut char_pos: usize = 0;
+    let mut applied = false;
+
+    for span in &line.spans {
+        let text = span.content.as_ref();
+        let span_char_len = text.chars().count();
+        let span_char_start = char_pos;
+        let span_char_end = char_pos + span_char_len;
+
+        if !applied && target_char >= span_char_start && target_char < span_char_end {
+            // The cursor character is in this span. Split it.
+            let local_char_idx = target_char - span_char_start;
+
+            // Before the cursor.
+            if local_char_idx > 0 {
+                let before: String = text.chars().take(local_char_idx).collect();
+                result.push(Span::styled(before, span.style));
+            }
+
+            // The cursor character — invert fg/bg.
+            let cursor_char: String = text.chars().skip(local_char_idx).take(1).collect();
+            let cursor_style = Style::default()
+                .fg(span.style.bg.unwrap_or(Color::Black))
+                .bg(span.style.fg.unwrap_or(Color::White));
+            result.push(Span::styled(cursor_char, cursor_style));
+
+            // After the cursor.
+            if local_char_idx + 1 < span_char_len {
+                let after: String = text.chars().skip(local_char_idx + 1).collect();
+                result.push(Span::styled(after, span.style));
+            }
+
+            applied = true;
+        } else {
+            result.push(Span::styled(text.to_string(), span.style));
+        }
+
+        char_pos = span_char_end;
+    }
+
+    // If the cursor is past the end of the line (empty line), add a block cursor.
+    if !applied {
+        let cursor_style = Style::default()
+            .fg(Color::Black)
+            .bg(Color::White);
+        result.push(Span::styled(" ", cursor_style));
+    }
+
+    Line::from(result)
 }
 
 // ---------------------------------------------------------------------------
