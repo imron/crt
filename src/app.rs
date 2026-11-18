@@ -18,6 +18,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 
+use crate::app_update;
 use crate::client::Client;
 use crate::config::StyleConfig;
 use crate::core::command::Command;
@@ -1066,8 +1067,10 @@ impl App {
             .unwrap_or_default();
 
         if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-            if keys::apply_core_effects(&mut self.state, std::mem::take(&mut pending_core_effects))
-            {
+            if app_update::apply_core_effects(
+                &mut self.state,
+                std::mem::take(&mut pending_core_effects),
+            ) {
                 return;
             }
         }
@@ -1111,7 +1114,7 @@ impl App {
                     return; // skip drag selection setup
                 }
 
-                keys::apply_core_effects(
+                app_update::apply_core_effects(
                     &mut self.state,
                     std::mem::take(&mut pending_core_effects),
                 );
