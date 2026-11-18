@@ -9,7 +9,6 @@ use crate::config::StyleConfig;
 use crate::core::command::Command;
 use crate::core::diff;
 use crate::core::interaction::CoreInteractionEngine;
-use crate::core::prompt::PromptId;
 use crate::core::review;
 use crate::core::{
     InputEvent, InputModifiers, MouseButton as CoreMouseButton, MouseEvent as CoreMouseEvent,
@@ -19,21 +18,6 @@ use crate::model::{
     ConnectionContext, ContentMode, DefinitionLocation, FileEntry, PaneFocus, RenderVariant,
     SearchMatch,
 };
-
-// ---------------------------------------------------------------------------
-// Input mode
-// ---------------------------------------------------------------------------
-
-/// Current input mode for the TUI.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InputMode {
-    /// Normal mode — keys are dispatched as commands.
-    Normal,
-    /// Command mode — `:` prompt is active, collecting user input.
-    Command,
-    /// Diff search mode — `/` prompt is active, collecting search query.
-    DiffSearch,
-}
 
 // ---------------------------------------------------------------------------
 // Search results overlay
@@ -236,12 +220,6 @@ pub struct AppState {
     /// Set to true when the terminal regains focus — triggers a full
     /// file list reload on the next event loop iteration.
     pub pending_refresh: bool,
-    /// Current input mode (Normal vs Command).
-    pub input_mode: InputMode,
-    /// Command-mode input buffer (the text after `:`).
-    pub command_input: String,
-    /// Cursor position within `command_input`.
-    pub command_cursor: usize,
     /// Active search results overlay, if any.
     pub search_results: Option<SearchResults>,
     /// Active definition results overlay, if any.
@@ -253,10 +231,6 @@ pub struct AppState {
     pub pending_command: Option<Command>,
     /// Active diff search query (the confirmed search term).
     pub diff_search_query: Option<String>,
-    /// In-progress diff search input (while typing in `/` prompt).
-    pub diff_search_input: String,
-    /// Cursor position within `diff_search_input`.
-    pub diff_search_cursor: usize,
     /// Cached match positions: (display_row, byte_start, byte_end) relative
     /// to `diff_rendered_text`. Recomputed when query or content changes.
     pub diff_search_matches: Vec<(usize, usize, usize)>,
@@ -267,8 +241,6 @@ pub struct AppState {
     pub show_merge_base: bool,
     /// Core interaction entrypoint used by the TUI adapter for migrated input.
     pub core_interaction: CoreInteractionEngine,
-    /// Active core prompt requested by the interaction engine, if any.
-    pub active_core_prompt: Option<PromptId>,
 }
 
 impl AppState {
@@ -330,21 +302,15 @@ impl AppState {
             should_suspend: false,
             should_quit: false,
             pending_refresh: false,
-            input_mode: InputMode::Normal,
-            command_input: String::new(),
-            command_cursor: 0,
             search_results: None,
             definition_results: None,
             jump_stack: Vec::new(),
             pending_command: None,
             diff_search_query: None,
-            diff_search_input: String::new(),
-            diff_search_cursor: 0,
             diff_search_matches: Vec::new(),
             diff_search_current: 0,
             show_merge_base: false,
             core_interaction: CoreInteractionEngine::new(),
-            active_core_prompt: None,
         }
     }
 

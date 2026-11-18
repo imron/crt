@@ -19,7 +19,6 @@ use ratatui::backend::CrosstermBackend;
 use crate::app::{
     AppState, DefinitionResults, JumpLocation, LastPointerClick, MouseSelection, SearchResults,
 };
-use crate::app_update;
 use crate::client::Client;
 use crate::core::command::Command;
 use crate::core::diff;
@@ -27,8 +26,7 @@ use crate::core::review;
 use crate::core::search as core_search;
 use crate::core::{InputEvent, PaneId, TextAnchor};
 use crate::model::{ConnectionContext, PaneFocus, ReviewStatus};
-use crate::tui::TuiState;
-use crate::tui::{input, render};
+use crate::tui::{TuiState, apply_core_effects, input, render};
 
 /// The terminal UI runtime. Owns the terminal, client connection, and state.
 pub struct Tui {
@@ -201,7 +199,7 @@ impl Tui {
                 // Any keypress clears mouse selection.
                 self.state.mouse_selection = None;
                 self.state.mouse_down_anchor = None;
-                input::handle_key_event(&mut self.state, key);
+                input::handle_key_event(&mut self.state, &mut self.tui_state, key);
             }
             Event::Mouse(mouse) => {
                 self.handle_mouse_event(mouse);
@@ -308,7 +306,7 @@ impl Tui {
                     return; // skip drag selection setup
                 }
 
-                app_update::apply_core_effects(&mut self.state, pending_core_effects);
+                apply_core_effects(&mut self.state, &mut self.tui_state, pending_core_effects);
 
                 if let Some((pane, anchor)) = semantic_content_hit {
                     // Record mouse-down anchor; drag starts selection.
@@ -317,7 +315,7 @@ impl Tui {
                 }
             }
             _ => {
-                if app_update::apply_core_effects(&mut self.state, pending_core_effects) {
+                if apply_core_effects(&mut self.state, &mut self.tui_state, pending_core_effects) {
                     return;
                 }
 
