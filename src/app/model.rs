@@ -246,6 +246,22 @@ impl CommentMarkerSet {
         current_line: Option<u32>,
         selected_comment_id: Option<i64>,
     ) -> Self {
+        Self::new_with_current_side_lines(
+            comments,
+            current_line,
+            current_line,
+            current_line,
+            selected_comment_id,
+        )
+    }
+
+    fn new_with_current_side_lines(
+        comments: &[CommentAttachment],
+        current_line: Option<u32>,
+        base_current_line: Option<u32>,
+        head_current_line: Option<u32>,
+        selected_comment_id: Option<i64>,
+    ) -> Self {
         let mut marker_candidates: BTreeMap<u32, MarkerCandidate> = BTreeMap::new();
 
         for comment in comments {
@@ -272,13 +288,13 @@ impl CommentMarkerSet {
         let base_current_comment = side_current_comment(
             comments,
             review_types::CommentAnchorSide::Base,
-            current_line,
+            base_current_line,
             selected_comment_id,
         );
         let head_current_comment = side_current_comment(
             comments,
             review_types::CommentAnchorSide::Head,
-            current_line,
+            head_current_line,
             selected_comment_id,
         );
 
@@ -486,7 +502,7 @@ fn side_marker_candidates(
             .iter()
             .filter(|range| range.side == side)
             .collect();
-        if ranges.is_empty() {
+        if comment.side_ranges.is_empty() {
             insert_marker_candidates(
                 &mut marker_candidates,
                 comment,
@@ -544,7 +560,7 @@ fn side_current_comment(
             .iter()
             .filter(|range| range.side == side)
             .collect();
-        if ranges.is_empty() {
+        if comment.side_ranges.is_empty() {
             let start = comment.line_start.max(1) as u32;
             let end = comment.line_end.max(comment.line_start).max(1) as u32;
             if current_line >= start && current_line <= end {
@@ -1055,7 +1071,7 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
     let comments = selected
         .map(|entry| comment_attachments_for_current_view(state, &entry.change.path))
         .unwrap_or_default();
-    let comment_markers = comment_marker_set_for_current_view(state, &comments);
+    let comment_markers = comment_marker_set_for_current_view(state, &comments, &side_by_side_rows);
 
     DiffPanel {
         selected_file_index: selected.map(|_| state.selected_file),
@@ -1117,6 +1133,7 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
 fn comment_marker_set_for_current_view(
     state: &AppState,
     comments: &[CommentAttachment],
+    side_by_side_rows: &SideBySideDiffRows,
 ) -> CommentMarkerSet {
     let current_line = current_visible_line(state);
     match state.content_mode {
@@ -1134,6 +1151,20 @@ fn comment_marker_set_for_current_view(
                 state.selected_comment_id,
             ),
         },
+        ContentMode::Diff if state.render_variant == RenderVariant::SideBySide => {
+            let current_row = side_by_side_rows.rows.get(state.diff_line_cursor);
+            let base_current_line =
+                current_row.and_then(|row| row.base.as_ref().map(|cell| cell.line_number));
+            let head_current_line =
+                current_row.and_then(|row| row.head.as_ref().map(|cell| cell.line_number));
+            CommentMarkerSet::new_with_current_side_lines(
+                comments,
+                current_line,
+                base_current_line,
+                head_current_line,
+                state.selected_comment_id,
+            )
+        }
         ContentMode::Diff => CommentMarkerSet::new_with_current_comment(
             comments,
             current_line,
@@ -1697,6 +1728,20 @@ mod tests {
         assert_eq!(marker.is_current(), current, "line {line}");
     }
 
+    fn assert_side_marker(
+        markers: &CommentMarkerSet,
+        side: review_types::CommentAnchorSide,
+        line: u32,
+        kind: Option<CommentMarkerKind>,
+        resolved: bool,
+        current: bool,
+    ) {
+        let marker = markers.marker_for_side_line(side, Some(line));
+        assert_eq!(marker.kind(), kind, "{side:?} line {line}");
+        assert_eq!(marker.is_resolved(), resolved, "{side:?} line {line}");
+        assert_eq!(marker.is_current(), current, "{side:?} line {line}");
+    }
+
     #[test]
     fn comment_markers_describe_single_line_resolution_state() {
         let markers =
@@ -1807,6 +1852,145 @@ mod tests {
         assert_marker(&markers, 20, Some(CommentMarkerKind::End), false, false);
         assert_marker(&markers, 23, Some(CommentMarkerKind::End), false, false);
         assert_marker(&markers, 29, Some(CommentMarkerKind::End), false, true);
+    }
+
+    #[test]
+    fn side_specific_markers_do_not_fallback_to_other_side_segments() {
+        let attachment = CommentAttachment {
+            id: 1,
+            line_start: 26,
+            line_end: 27,
+            resolved: false,
+            anchor_status: AnchorStatus::Anchored,
+            side_ranges: vec![CommentAttachmentRange {
+                side: review_types::CommentAnchorSide::Head,
+                line_start: 26,
+                line_end: 27,
+            }],
+        };
+        let markers = CommentMarkerSet::new_with_current_comment(&[attachment], Some(27), Some(1));
+
+        assert_side_marker(
+            &markers,
+            review_types::CommentAnchorSide::Base,
+            26,
+            None,
+            false,
+            false,
+        );
+        assert_side_marker(
+            &markers,
+            review_types::CommentAnchorSide::Base,
+            27,
+            None,
+            false,
+            false,
+        );
+        assert_side_marker(
+            &markers,
+            review_types::CommentAnchorSide::Head,
+            26,
+            Some(CommentMarkerKind::Start),
+            false,
+            true,
+        );
+        assert_side_marker(
+            &markers,
+            review_types::CommentAnchorSide::Head,
+            27,
+            Some(CommentMarkerKind::End),
+            false,
+            true,
+        );
+    }
+
+    #[test]
+    fn side_by_side_current_comment_uses_side_specific_row_lines() {
+        let hunk = review_types::DiffHunk {
+            old_start: 23,
+            old_lines: 2,
+            new_start: 26,
+            new_lines: 2,
+            header: "@@ -23,2 +26,2 @@".to_string(),
+            lines: vec![
+                review_types::DiffLine {
+                    kind: LineKind::Context,
+                    content: "shared one".to_string(),
+                    old_lineno: Some(23),
+                    new_lineno: Some(26),
+                },
+                review_types::DiffLine {
+                    kind: LineKind::Context,
+                    content: "shared two".to_string(),
+                    old_lineno: Some(24),
+                    new_lineno: Some(27),
+                },
+            ],
+        };
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![file(
+                "src/lib.rs",
+                review_types::ReviewStatus::Unreviewed,
+                vec![hunk],
+            )],
+        );
+        app.state.content_mode = ContentMode::Diff;
+        app.state.render_variant = RenderVariant::SideBySide;
+        app.state.base_content = Some(
+            (1..=24)
+                .map(|n| format!("base {n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.state.head_content = Some(
+            (1..=27)
+                .map(|n| format!("head {n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.state.diff_line_cursor = 26;
+        app.state.selected_comment_id = Some(1);
+        app.state.comments = vec![compound_comment(
+            1,
+            "src/lib.rs",
+            vec![
+                anchor_segment(
+                    review_types::CommentAnchorSide::Base,
+                    "src/lib.rs",
+                    23,
+                    24,
+                    "base",
+                ),
+                anchor_segment(
+                    review_types::CommentAnchorSide::Head,
+                    "src/lib.rs",
+                    26,
+                    27,
+                    "head",
+                ),
+            ],
+        )];
+
+        let model = app.model();
+
+        assert_side_marker(
+            &model.diff.comment_markers,
+            review_types::CommentAnchorSide::Base,
+            24,
+            Some(CommentMarkerKind::End),
+            false,
+            true,
+        );
+        assert_side_marker(
+            &model.diff.comment_markers,
+            review_types::CommentAnchorSide::Head,
+            27,
+            Some(CommentMarkerKind::End),
+            false,
+            true,
+        );
     }
 
     #[test]

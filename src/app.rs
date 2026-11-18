@@ -2962,6 +2962,54 @@ mod tests {
     }
 
     #[test]
+    fn side_by_side_visual_selection_captures_shared_tail_base_and_head_segments() {
+        let path = "src/app/update/comments.rs";
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_shared_tail_offset_hunk(path)],
+        );
+        app.state.render_variant = RenderVariant::SideBySide;
+        let mut base_lines: Vec<String> = (1..=90).map(|n| format!("base {n}")).collect();
+        let mut head_lines: Vec<String> = (1..=93).map(|n| format!("head {n}")).collect();
+        for base_lineno in 27..=90 {
+            let head_lineno = base_lineno + 3;
+            let content = format!("shared tail {base_lineno}/{head_lineno}");
+            base_lines[(base_lineno - 1) as usize] = content.clone();
+            head_lines[(head_lineno - 1) as usize] = content;
+        }
+        app.state.base_content = Some(format!("{}\n", base_lines.join("\n")));
+        app.state.head_content = Some(format!("{}\n", head_lines.join("\n")));
+        app.state.pane_focus = PaneFocus::Diff;
+        app.state.diff_line_cursor = 29;
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartLine),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+            ],
+        );
+
+        let capture = app
+            .state
+            .pending_comment_anchor
+            .as_ref()
+            .expect("side-by-side shared tail should capture anchor data");
+        assert_eq!(capture.segments.len(), 2);
+        let base = segment_for_side(capture, CommentAnchorSide::Base)
+            .expect("shared tail selection should capture a base segment");
+        let head = segment_for_side(capture, CommentAnchorSide::Head)
+            .expect("shared tail selection should capture a head segment");
+        assert_eq!(base.line_start, 27);
+        assert_eq!(base.line_end, 27);
+        assert_eq!(base.anchor_text, "shared tail 27/30");
+        assert_eq!(head.line_start, 30);
+        assert_eq!(head.line_end, 30);
+        assert_eq!(head.anchor_text, "shared tail 27/30");
+    }
+
+    #[test]
     fn inline_visual_selection_captures_offset_replacement_sides() {
         let path = "migrations/0005_comment_resolution_events.up.sql";
         let mut app = App::new(
