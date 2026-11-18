@@ -5,7 +5,7 @@ pub fn active_diff_content_height(state: &AppState, view: &impl AppViewport) -> 
     state
         .active_document
         .as_ref()
-        .map(|document| document.diff.len())
+        .map(|document| document.document().diff.len())
         .unwrap_or_else(|| view.diff_content_height())
 }
 
