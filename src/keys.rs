@@ -135,6 +135,10 @@ fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
                 toggle_review(state);
                 state.status_message = None;
             }
+            CoreEffect::NavigateFile(direction) => {
+                navigate_file(state, direction);
+                state.status_message = None;
+            }
             CoreEffect::Render(_)
             | CoreEffect::ConnectionState(_)
             | CoreEffect::TransientError(_) => {}
@@ -696,11 +700,17 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
             return;
         }
         (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+            if dispatch_core_input(state, key) {
+                return;
+            }
             navigate_file(state, Direction::Next);
             state.status_message = None;
             return;
         }
         (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+            if dispatch_core_input(state, key) {
+                return;
+            }
             navigate_file(state, Direction::Prev);
             state.status_message = None;
             return;

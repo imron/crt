@@ -2,6 +2,7 @@
 
 use super::command::{self, CommandParse};
 use super::input::{InputEvent, Key, KeyEventKind};
+use super::navigation::Direction;
 use super::prompt::{PromptId, PromptKind, PromptRequest};
 use super::render::{RenderUpdate, StatusMessage};
 
@@ -16,6 +17,7 @@ pub enum CoreEffect {
     Command(CommandParse),
     DiffSearch(DiffSearchEffect),
     ReviewToggle,
+    NavigateFile(Direction),
     Render(RenderUpdate),
     Status(StatusMessage),
     ConnectionState(ConnectionState),
@@ -108,6 +110,20 @@ impl CoreInteractionEngine {
             {
                 vec![CoreEffect::ReviewToggle]
             }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_control_modifier_only(key.modifiers)
+                    && key.key == Key::Char('n') =>
+            {
+                vec![CoreEffect::NavigateFile(Direction::Next)]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_control_modifier_only(key.modifiers)
+                    && key.key == Key::Char('p') =>
+            {
+                vec![CoreEffect::NavigateFile(Direction::Prev)]
+            }
             InputEvent::PromptSubmit { id, value } => {
                 let Some(active) = self.take_active_prompt(id) else {
                     return Vec::new();
@@ -158,6 +174,10 @@ impl CoreInteractionEngine {
 
 fn key_has_no_command_modifier(modifiers: super::input::InputModifiers) -> bool {
     !modifiers.ctrl && !modifiers.alt
+}
+
+fn key_has_control_modifier_only(modifiers: super::input::InputModifiers) -> bool {
+    modifiers.ctrl && !modifiers.alt && !modifiers.shift
 }
 
 #[cfg(test)]
@@ -279,6 +299,61 @@ mod tests {
                 Key::Char('r'),
                 InputModifiers {
                     ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn control_n_requests_next_file_navigation() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(
+                Key::Char('n'),
+                InputModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(effects, vec![CoreEffect::NavigateFile(Direction::Next)]);
+    }
+
+    #[test]
+    fn control_p_requests_previous_file_navigation() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(
+                Key::Char('p'),
+                InputModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(effects, vec![CoreEffect::NavigateFile(Direction::Prev)]);
+    }
+
+    #[test]
+    fn shifted_control_n_does_not_request_file_navigation() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(
+                Key::Char('n'),
+                InputModifiers {
+                    ctrl: true,
+                    shift: true,
                     ..Default::default()
                 },
             ),
