@@ -147,6 +147,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   renderer-specific style conversion at the TUI/GUI edge.
 - Removed legacy unscoped command/search prompt fallbacks from the TUI input
   adapter so prompt submit semantics stay behind the core interaction engine.
+- Introduced an `App` boundary that owns `AppState` and `Config`, and moved
+  shared style access out of `TuiState` to app-owned configuration.
 
 ## Acceptance Criteria
 

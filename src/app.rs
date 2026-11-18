@@ -3,6 +3,7 @@
 use crossterm::event::{self, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
+use crate::config::Config;
 use crate::core::diff;
 use crate::core::interaction::CoreInteractionEngine;
 use crate::core::review;
@@ -34,6 +35,25 @@ pub struct JumpLocation {
 // ---------------------------------------------------------------------------
 // Application state
 // ---------------------------------------------------------------------------
+
+/// Application core owned by UI frontends.
+///
+/// Runtime configuration lives with the app core, while `AppState` remains the
+/// mutable review/session state.
+pub struct App {
+    pub state: AppState,
+    pub config: Config,
+}
+
+impl App {
+    pub fn new(config: Config, context: ConnectionContext, files: Vec<FileEntry>) -> Self {
+        let diff_algorithm =
+            diff::resolve_diff_algorithm(&context.worktree, config.layout.diff_algorithm);
+        let state = AppState::new(diff_algorithm, context, files);
+
+        Self { state, config }
+    }
+}
 
 /// Central application state for review data and domain interaction.
 /// Input events mutate it, sometimes by sending requests to the server.
@@ -686,6 +706,17 @@ mod tests {
             test_context(),
             vec![test_file("src/lib.rs")],
         )
+    }
+
+    #[test]
+    fn app_owns_config_and_state() {
+        let config = Config::default();
+        let expected_width = config.layout.file_list_width;
+
+        let app = App::new(config, test_context(), vec![test_file("src/lib.rs")]);
+
+        assert_eq!(app.config.layout.file_list_width, expected_width);
+        assert_eq!(app.state.files.len(), 1);
     }
 
     #[test]

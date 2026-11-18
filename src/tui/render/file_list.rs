@@ -7,16 +7,15 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use super::super::state::TuiState;
 use crate::app::AppState;
-use crate::config::FilesStyle;
+use crate::config::{FilesStyle, StyleConfig};
 use crate::model::{ChangeKind, PaneFocus, ReviewStatus};
 
 /// Draw the file list pane with split unreviewed/reviewed sections.
-pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &TuiState, area: Rect) {
+pub fn draw(frame: &mut Frame, state: &mut AppState, styles: &StyleConfig, area: Rect) {
     let focused = state.pane_focus == PaneFocus::FileList;
-    let border_style = super::pane_border_style(&tui_state.styles.panel, focused);
-    let fs = &tui_state.styles.files;
+    let border_style = super::pane_border_style(&styles.panel, focused);
+    let fs = &styles.files;
 
     let unreviewed_count = state.unreviewed_count();
     let reviewed_count = state.files.len() - unreviewed_count;
