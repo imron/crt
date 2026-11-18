@@ -2458,6 +2458,27 @@ mod tests {
     }
 
     #[test]
+    fn u_requests_undo_with_current_comment_context() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(Key::Char('u'), InputModifiers::default()),
+            &InteractionContext {
+                comments_panel_visible: true,
+                focused_pane: Some(PaneId::Comments),
+                current_comment_active: true,
+                current_comment: Some(CurrentCommentContext {
+                    id: 12,
+                    body: "resolved feedback".to_string(),
+                }),
+                ..InteractionContext::default()
+            },
+        );
+
+        assert_eq!(effects, vec![CoreEffect::Undo]);
+    }
+
+    #[test]
     fn current_comment_edit_prompt_submits_update_effect() {
         let mut engine = CoreInteractionEngine::new();
         let effects = engine.handle_input(
