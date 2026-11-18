@@ -9,7 +9,10 @@ use tokio::sync::Mutex;
 use tokio::sync::broadcast;
 
 use super::{ConnectionContext, ServerState};
-use crate::db::{Database, NewAnchorVersion, NewComment, NewCommentAnchor, StoredComment};
+use crate::db::{
+    Database, NewAnchorVersion, NewComment, NewCommentAnchor, NewCommentResolutionEvent,
+    StoredComment,
+};
 use crate::git;
 use crate::protocol::{
     ERR_INTERNAL, ERR_INVALID_PARAMS, JsonRpcResponse, Notification, NotificationKind,
@@ -1415,13 +1418,29 @@ async fn update_comment_resolved(
     comment_id: i64,
     resolved: bool,
 ) -> JsonRpcResponse {
-    if load_comment_in_scope(ctx, db, comment_id).await.is_none() {
+    let Some(stored) = load_comment_in_scope(ctx, db, comment_id).await else {
         return JsonRpcResponse::error(
             id.clone(),
             ERR_INVALID_PARAMS,
             format!("Comment {comment_id} was not found in the current review scope"),
         );
-    }
+    };
+
+    let resolution_event = if resolved && !stored.resolved {
+        let stored = match reanchor_comment(ctx, db, stored).await {
+            Ok(comment) => comment,
+            Err(e) => {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INTERNAL,
+                    format!("Failed to re-anchor comment before resolving: {e:#}"),
+                );
+            }
+        };
+        Some(comment_resolution_event(ctx, &stored))
+    } else {
+        None
+    };
 
     {
         let db_guard = db.lock().await;
@@ -1447,6 +1466,15 @@ async fn update_comment_resolved(
                 );
             }
         }
+        if let Some(event) = &resolution_event {
+            if let Err(e) = db_guard.record_comment_resolution(event) {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INTERNAL,
+                    format!("Failed to record comment resolution: {e:#}"),
+                );
+            }
+        }
     }
 
     notify_comment_changed(ctx, notify_tx, comment_id);
@@ -1459,6 +1487,27 @@ async fn update_comment_resolved(
     };
 
     comment_response(id, stored)
+}
+
+fn comment_resolution_event(
+    ctx: &ConnectionContext,
+    stored: &StoredComment,
+) -> NewCommentResolutionEvent {
+    NewCommentResolutionEvent {
+        comment_id: stored.id,
+        resolved_commit: ctx.head.resolved_commit().to_string(),
+        resolved_head_ref: ctx.head_scope_key(),
+        resolved_merge_base: ctx.merge_base.to_string(),
+        file_path: stored.file_path.clone(),
+        line_start: stored.line_start,
+        line_end: stored.line_end,
+        char_start: stored.char_start,
+        char_end: stored.char_end,
+        anchor_text: stored.anchor_text.clone(),
+        context_before: stored.context_before.clone(),
+        context_after: stored.context_after.clone(),
+        anchor_status: stored.anchor_status,
+    }
 }
 
 fn notify_comment_changed(

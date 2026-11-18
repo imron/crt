@@ -1,0 +1,2 @@
+DROP INDEX idx_comment_resolution_events_comment;
+DROP TABLE comment_resolution_events;
