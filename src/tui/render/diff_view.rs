@@ -21,6 +21,7 @@ use self::highlight::{
 };
 use self::line::BLAME_COL_WIDTH;
 use super::super::state::TuiState;
+use crate::app::VisualSelectionMode;
 use crate::app::model::{AppModel, TextRange, VisualSelection};
 use crate::config::StyleConfig;
 use crate::review_types::PaneFocus;
@@ -269,7 +270,24 @@ fn visual_selection_ranges(
         return Vec::new();
     }
 
-    let range = (content_start_col, line_len);
+    let range = match selection.mode {
+        VisualSelectionMode::Line => (content_start_col, line_len),
+        VisualSelectionMode::Text => {
+            let start_col = if display_row == start.line {
+                content_start_col.saturating_add(start.column)
+            } else {
+                content_start_col
+            };
+            let end_col = if display_row == end.line {
+                content_start_col
+                    .saturating_add(end.column)
+                    .saturating_add(1)
+            } else {
+                line_len
+            };
+            (start_col.min(line_len), end_col.min(line_len))
+        }
+    };
 
     if range.0 >= range.1 {
         Vec::new()

@@ -89,6 +89,8 @@ pub enum DiffCursorEffect {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisualSelectionEffect {
     StartLine,
+    StartText { anchor: super::input::TextAnchor },
+    ExtendTo { anchor: super::input::TextAnchor },
     Move(DiffCursorEffect),
     Cancel,
     Commit,

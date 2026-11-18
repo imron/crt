@@ -85,6 +85,7 @@ pub struct DefinitionResults {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisualSelectionMode {
     Line,
+    Text,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1464,6 +1465,72 @@ mod tests {
         assert_eq!(capture.char_start, None);
         assert_eq!(capture.char_end, None);
         assert_eq!(capture.anchor_text, "let alpha = beta;");
+    }
+
+    #[test]
+    fn text_visual_selection_uses_same_anchor_capture_path() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_hunk("src/main.rs")],
+        );
+        app.state.head_content = Some(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n\
+             let alpha = beta;\nlet gamma = delta;\nafter one\n"
+                .to_string(),
+        );
+        let view = RenderedViewport::new(vec![
+            "line1",
+            "line2",
+            "line3",
+            "line4",
+            "line5",
+            "line6",
+            "line7",
+            "line8",
+            "line9",
+            "line10",
+            "let alpha = beta;",
+            "let gamma = delta;",
+            "after one",
+        ]);
+
+        app.apply_core_effects(
+            &view,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartText {
+                    anchor: TextAnchor {
+                        line: 10,
+                        column: 4,
+                    },
+                }),
+                CoreEffect::VisualSelection(VisualSelectionEffect::ExtendTo {
+                    anchor: TextAnchor {
+                        line: 11,
+                        column: 8,
+                    },
+                }),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+            ],
+        );
+
+        let selection = app
+            .state
+            .visual_selection
+            .as_ref()
+            .expect("text selection should remain visible");
+        assert_eq!(selection.mode, VisualSelectionMode::Text);
+
+        let capture = app
+            .state
+            .pending_comment_anchor
+            .as_ref()
+            .expect("selection should capture anchor data");
+        assert_eq!(capture.line_start, 11);
+        assert_eq!(capture.line_end, 12);
+        assert_eq!(capture.char_start, None);
+        assert_eq!(capture.char_end, None);
+        assert_eq!(capture.anchor_text, "let alpha = beta;\nlet gamma = delta;");
     }
 
     #[test]
