@@ -40,7 +40,7 @@ pub fn draw(
             .borders(Borders::ALL)
             .border_style(border_style)
             .title(title)
-            .title_bottom(" Enter expand/jump  e edit  r resolve  d delete "),
+            .title_bottom(" e edit  r resolve  d delete "),
     );
     frame.render_widget(paragraph, area);
 }
