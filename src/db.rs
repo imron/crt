@@ -1796,6 +1796,95 @@ mod tests {
     }
 
     #[test]
+    fn test_compound_anchor_enum_text_mappings() {
+        assert_eq!(comment_anchor_side_to_db(CommentAnchorSide::Base), "base");
+        assert_eq!(comment_anchor_side_to_db(CommentAnchorSide::Head), "head");
+        assert_eq!(
+            comment_anchor_side_from_db("base", 0).unwrap(),
+            CommentAnchorSide::Base
+        );
+        assert_eq!(
+            comment_anchor_side_from_db("head", 0).unwrap(),
+            CommentAnchorSide::Head
+        );
+
+        assert_eq!(
+            anchor_placement_status_to_db(AnchorPlacementStatus::Anchored),
+            "anchored"
+        );
+        assert_eq!(
+            anchor_placement_status_to_db(AnchorPlacementStatus::Orphaned),
+            "orphaned"
+        );
+        assert_eq!(
+            anchor_placement_status_from_db("anchored", 0).unwrap(),
+            AnchorPlacementStatus::Anchored
+        );
+        assert_eq!(
+            anchor_placement_status_from_db("orphaned", 0).unwrap(),
+            AnchorPlacementStatus::Orphaned
+        );
+
+        assert_eq!(
+            anchor_match_method_to_db(AnchorMatchMethod::ExactAtLine),
+            "exact_at_line"
+        );
+        assert_eq!(
+            anchor_match_method_to_db(AnchorMatchMethod::ExactElsewhere),
+            "exact_elsewhere"
+        );
+        assert_eq!(
+            anchor_match_method_to_db(AnchorMatchMethod::Context),
+            "context"
+        );
+        assert_eq!(
+            anchor_match_method_to_db(AnchorMatchMethod::NotFound),
+            "not_found"
+        );
+        assert_eq!(
+            anchor_match_method_from_db("exact_at_line", 0).unwrap(),
+            AnchorMatchMethod::ExactAtLine
+        );
+        assert_eq!(
+            anchor_match_method_from_db("exact_elsewhere", 0).unwrap(),
+            AnchorMatchMethod::ExactElsewhere
+        );
+        assert_eq!(
+            anchor_match_method_from_db("context", 0).unwrap(),
+            AnchorMatchMethod::Context
+        );
+        assert_eq!(
+            anchor_match_method_from_db("not_found", 0).unwrap(),
+            AnchorMatchMethod::NotFound
+        );
+
+        assert_eq!(
+            anchor_aggregate_status_to_db(AnchorAggregateStatus::Anchored),
+            "anchored"
+        );
+        assert_eq!(
+            anchor_aggregate_status_to_db(AnchorAggregateStatus::Partial),
+            "partial"
+        );
+        assert_eq!(
+            anchor_aggregate_status_to_db(AnchorAggregateStatus::Orphaned),
+            "orphaned"
+        );
+        assert_eq!(
+            anchor_aggregate_status_from_db("anchored", 0).unwrap(),
+            AnchorAggregateStatus::Anchored
+        );
+        assert_eq!(
+            anchor_aggregate_status_from_db("partial", 0).unwrap(),
+            AnchorAggregateStatus::Partial
+        );
+        assert_eq!(
+            anchor_aggregate_status_from_db("orphaned", 0).unwrap(),
+            AnchorAggregateStatus::Orphaned
+        );
+    }
+
+    #[test]
     fn test_comment_list_filters() {
         let (_dir, db) = test_db();
 
