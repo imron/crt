@@ -99,6 +99,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
 - Routed Ctrl-C quit confirmation through core input using adapter-supplied
   confirmation context.
 - Moved active diff-search navigation/clear gating into core input context.
+- Removed normal-mode and overlay key fallback semantics from the TUI adapter
+  after routing those paths through core input.
 
 ## Acceptance Criteria
 

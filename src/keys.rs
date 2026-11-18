@@ -1,8 +1,7 @@
 //! Input handling and key dispatch.
 //!
-//! Key events are dispatched based on the current pane focus. Global keys
-//! (like `q` to quit, `Tab` to switch focus) work from any pane.
-//! Pane-specific keys are handled by dedicated functions.
+//! Key events are normalized into core input where possible, with local
+//! prompt editing retained by the TUI adapter.
 
 use std::time::{Duration, Instant};
 
@@ -815,14 +814,7 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
 
     // --- Help overlay catches most keys to dismiss ---
     if state.show_help {
-        match key.code {
-            KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Esc => {
-                if !dispatch_core_input(state, key) {
-                    state.show_help = false;
-                }
-            }
-            _ => {}
-        }
+        dispatch_core_input(state, key);
         return;
     }
 
@@ -956,249 +948,20 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
 
     /// Handle keystrokes when the search results overlay is visible.
     fn handle_search_results_key(state: &mut AppState, key: CrosstermKeyEvent) {
-        if dispatch_core_input(state, key) {
-            return;
-        }
-
-        let results = state.search_results.as_mut().unwrap();
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => {
-                state.search_results = None;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !results.matches.is_empty() {
-                    results.selected = (results.selected + 1).min(results.matches.len() - 1);
-                    // Auto-scroll to keep selection visible.
-                    if results.selected >= results.scroll + 20 {
-                        results.scroll = results.selected.saturating_sub(19);
-                    }
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                results.selected = results.selected.saturating_sub(1);
-                if results.selected < results.scroll {
-                    results.scroll = results.selected;
-                }
-            }
-            KeyCode::Char('g') => {
-                results.selected = 0;
-                results.scroll = 0;
-            }
-            KeyCode::Char('G') => {
-                if !results.matches.is_empty() {
-                    results.selected = results.matches.len() - 1;
-                    results.scroll = results.selected.saturating_sub(19);
-                }
-            }
-            KeyCode::Enter => {
-                if let Some(m) = results.matches.get(results.selected).cloned() {
-                    state.search_results = None;
-                    navigate_to_search_match(state, &m);
-                }
-            }
-            _ => {}
-        }
+        dispatch_core_input(state, key);
     }
 
     /// Handle keystrokes when the definition results overlay is visible.
     fn handle_definition_results_key(state: &mut AppState, key: CrosstermKeyEvent) {
-        if dispatch_core_input(state, key) {
-            return;
-        }
-
-        let results = state.definition_results.as_mut().unwrap();
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => {
-                state.definition_results = None;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if !results.definitions.is_empty() {
-                    results.selected = (results.selected + 1).min(results.definitions.len() - 1);
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                results.selected = results.selected.saturating_sub(1);
-            }
-            KeyCode::Enter => {
-                if let Some(def) = results.definitions.get(results.selected).cloned() {
-                    state.definition_results = None;
-                    navigate_to_definition(state, &def);
-                }
-            }
-            _ => {}
-        }
+        dispatch_core_input(state, key);
     }
 
-    // --- Global keys (work from any pane) ---
-    match (key.code, key.modifiers) {
-        (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            return;
-        }
-        (KeyCode::Char('z'), KeyModifiers::CONTROL) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            state.should_suspend = true;
-            return;
-        }
-        (KeyCode::Char('?'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            state.show_help = true;
-            return;
-        }
-        (KeyCode::Char('q'), KeyModifiers::NONE) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            state.should_quit = true;
-            return;
-        }
-        (KeyCode::Char(':'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            state.input_mode = InputMode::Command;
-            state.command_input.clear();
-            state.command_cursor = 0;
-            return;
-        }
-        (KeyCode::Char('/'), KeyModifiers::NONE) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            state.input_mode = InputMode::DiffSearch;
-            state.diff_search_input.clear();
-            state.diff_search_cursor = 0;
-            return;
-        }
-        (KeyCode::Tab, KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            toggle_pane_focus(state);
-            return;
-        }
-        (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            navigate_file(state, Direction::Next);
-            state.status_message = None;
-            return;
-        }
-        (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            navigate_file(state, Direction::Prev);
-            state.status_message = None;
-            return;
-        }
-        (KeyCode::Char('1'), KeyModifiers::NONE) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            toggle_pane_visibility(state, PaneFocus::FileList);
-            state.status_message = None;
-            return;
-        }
-        (KeyCode::Char('2'), KeyModifiers::NONE) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            toggle_pane_visibility(state, PaneFocus::Diff);
-            state.status_message = None;
-            return;
-        }
-        (KeyCode::Char(']'), KeyModifiers::NONE) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            // Next hunk.
-            jump_to_next_hunk(state);
-            state.status_message = None;
-            return;
-        }
-        (KeyCode::Char('['), KeyModifiers::NONE) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            // Previous hunk.
-            jump_to_prev_hunk(state);
-            state.status_message = None;
-            return;
-        }
-        (KeyCode::Char('i'), KeyModifiers::NONE) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            toggle_inline_diff(state);
-            return;
-        }
-        (KeyCode::Char('s'), KeyModifiers::NONE) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            state.status_message = None;
-            cycle_view_mode(state);
-            return;
-        }
-        (KeyCode::Char('r'), KeyModifiers::NONE) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            toggle_review(state);
-            state.status_message = None;
-            return;
-        }
-
-        (KeyCode::Char('d'), KeyModifiers::NONE) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            cycle_diff_algorithm(state);
-            return;
-        }
-
-        (KeyCode::Char('m'), KeyModifiers::NONE) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            toggle_diff_base(state);
-            return;
-        }
-
-        (KeyCode::Char(']'), KeyModifiers::CONTROL) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            // Go-to-definition: extract word under cursor and request definition.
-            request_go_to_definition(state);
-            return;
-        }
-        (KeyCode::Char('t'), KeyModifiers::CONTROL) => {
-            if dispatch_core_input(state, key) {
-                return;
-            }
-            // Pop the jump stack — return to previous location.
-            pop_jump_stack(state);
-            return;
-        }
-        _ => {}
+    if dispatch_core_input(state, key) {
+        return;
     }
 
     // Any other key clears transient status messages.
     state.status_message = None;
-
-    // --- Diff cursor and scrolling: always controls the diff pane regardless of focus ---
-    if dispatch_core_input(state, key) {
-        return;
-    }
 }
 
 /// Toggle visibility of a pane. At least one pane must remain visible.
