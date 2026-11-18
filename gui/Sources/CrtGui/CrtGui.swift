@@ -9,9 +9,17 @@ private var retainedStore: GuiStore?
 func crt_gui_submit_action(_ data: UnsafePointer<UInt8>, _ size: Int)
 
 @_cdecl("crt_gui_run")
-public func crtGuiRun(_ data: UnsafePointer<UInt8>, _ size: Int) {
+public func crtGuiRun(
+    _ data: UnsafePointer<UInt8>,
+    _ size: Int,
+    _ icon: UnsafePointer<UInt8>,
+    _ iconSize: Int
+) {
     let app = NSApplication.shared
     app.setActivationPolicy(.regular)
+    if let image = nsImage(from: icon, size: iconSize) {
+        app.applicationIconImage = image
+    }
     let snapshot = decodeSnapshot(data, size)
     let store = GuiStore(snapshot: snapshot)
     retainedStore = store
@@ -66,6 +74,14 @@ private let snapshotEncoder: JSONEncoder = {
     encoder.keyEncodingStrategy = .convertToSnakeCase
     return encoder
 }()
+
+private func nsImage(from data: UnsafePointer<UInt8>, size: Int) -> NSImage? {
+    guard size > 0 else {
+        return nil
+    }
+    let bytes = Data(bytes: data, count: size)
+    return NSImage(data: bytes)
+}
 
 private func decodeSnapshot(_ data: UnsafePointer<UInt8>, _ size: Int) -> GuiSnapshot {
     guard size > 0 else {

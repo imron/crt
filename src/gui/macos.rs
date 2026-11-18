@@ -14,9 +14,11 @@ use crate::git;
 use crate::review_types;
 
 unsafe extern "C" {
-    fn crt_gui_run(data: *const u8, size: usize);
+    fn crt_gui_run(data: *const u8, size: usize, icon: *const u8, icon_size: usize);
     fn crt_gui_apply_snapshot(data: *const u8, size: usize);
 }
+
+const APP_ICON_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/crt.png"));
 
 // App is !Send (Rc document rows). Keep it on the GUI/main thread.
 thread_local! {
@@ -93,7 +95,12 @@ pub fn run_gui(base: Option<&str>, root: bool, reset: bool, standalone: bool) ->
             // threads keep driving the embedded server for that whole time.
             // Swift copies `json` at the start of crt_gui_run.
             unsafe {
-                crt_gui_run(json.as_ptr(), json.len());
+                crt_gui_run(
+                    json.as_ptr(),
+                    json.len(),
+                    APP_ICON_PNG.as_ptr(),
+                    APP_ICON_PNG.len(),
+                );
             }
 
             if let Some(app) = take_session() {
