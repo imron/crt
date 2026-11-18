@@ -1,6 +1,6 @@
 # Stage 23a: AppModel Boundary
 
-## Status: In Progress
+## Status: Complete
 
 ## Order
 
@@ -73,14 +73,18 @@ toolkit widgets.
   changing TUI rendering or input behavior.
 - Removed terminal render state from `AppState`: pane geometry, rendered text,
   hunk row maps, gutter measurements, and file row hit maps now live in
-  `TuiState`, with `app_update` using a temporary view trait until later
-  AppModel slices remove the render-derived dependency.
+  `TuiState`; the temporary app reducer dependency was removed in the final
+  AppModel boundary slice.
 - Converted TUI rendering to consume `AppModel` for app content. The renderer
   now updates only TUI-owned render caches; viewport-dependent app scroll
   clamping happens in the TUI runtime after rendering.
 - Routed TUI pointer hits through `AppModel` and semantic app targets. File
-  selection now reaches app update code as a file index rather than a rendered
-  TUI row, while terminal coordinates remain inside the TUI adapter.
+  selection now reaches app code as a file index rather than a rendered TUI
+  row, while terminal coordinates remain inside the TUI adapter.
+- Moved app-domain input handling and reducer logic behind `App`. The TUI now
+  handles native events, prompt editing, TUI presentation effects, and render
+  state while calling `App` methods for core interaction context, effect
+  application, and search/definition navigation.
 
 ## Resolved Decisions
 

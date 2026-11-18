@@ -1,10 +1,10 @@
-//! AppState update step for core interaction effects.
+//! App-owned update step for core interaction effects.
 //!
 //! Input adapters feed `InputEvent`s to core interaction. The resulting
 //! `CoreEffect`s are applied here to mutate the current app state, enqueue
 //! async work for the app loop, or report presentation updates to the UI.
 
-use crate::app::{AppState, JumpLocation};
+use super::{AppState, JumpLocation};
 use crate::core::command::{Command, CommandParse};
 use crate::core::navigation::{self, Direction, FileNavigationScope};
 use crate::core::search as core_search;
@@ -13,7 +13,7 @@ use crate::core::{
 };
 use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
-pub trait AppView {
+pub trait AppViewport {
     fn hunk_start_rows(&self) -> &[usize];
     fn hunk_end_rows(&self) -> &[usize];
     fn hunk_first_change_rows(&self) -> &[usize];
@@ -51,7 +51,7 @@ pub trait AppView {
 }
 
 #[derive(Debug, Default)]
-pub struct AppUpdate {
+pub struct AppOutput {
     pub handled: bool,
     pub status: Option<StatusUpdate>,
     pub pending_review_toggle: bool,
@@ -68,7 +68,7 @@ pub enum StatusUpdate {
     Clear,
 }
 
-impl AppUpdate {
+impl AppOutput {
     fn handled() -> Self {
         Self {
             handled: true,
@@ -109,7 +109,7 @@ impl AppUpdate {
     }
 }
 
-pub fn interaction_context(state: &AppState) -> InteractionContext {
+pub(super) fn interaction_context(state: &AppState) -> InteractionContext {
     InteractionContext {
         focused_pane: Some(match state.pane_focus {
             PaneFocus::FileList => PaneId::FileList,
@@ -122,19 +122,22 @@ pub fn interaction_context(state: &AppState) -> InteractionContext {
     }
 }
 
-pub fn prompt_submit_context(state: &AppState, view: &impl AppView) -> InteractionContext {
+pub(super) fn prompt_submit_context(
+    state: &AppState,
+    view: &impl AppViewport,
+) -> InteractionContext {
     InteractionContext {
         fallback_word: extract_word_at_cursor(state, view),
         ..InteractionContext::default()
     }
 }
 
-pub fn apply_core_effects(
+pub(super) fn apply_core_effects(
     state: &mut AppState,
-    view: &impl AppView,
+    view: &impl AppViewport,
     effects: Vec<CoreEffect>,
-) -> AppUpdate {
-    let mut update = AppUpdate::default();
+) -> AppOutput {
+    let mut update = AppOutput::default();
     for effect in effects {
         update.handled = true;
         match effect {
@@ -217,7 +220,7 @@ pub fn apply_core_effects(
 }
 
 /// Apply a parsed command emitted by the core interaction engine.
-fn apply_command(state: &mut AppState, update: &mut AppUpdate, command: CommandParse) {
+fn apply_command(state: &mut AppState, update: &mut AppOutput, command: CommandParse) {
     match command {
         CommandParse::Empty => {}
         CommandParse::NeedsArgument { usage } | CommandParse::NeedsWord { usage } => {
@@ -279,8 +282,8 @@ fn apply_command(state: &mut AppState, update: &mut AppUpdate, command: CommandP
 
 fn apply_diff_search(
     state: &mut AppState,
-    view: &impl AppView,
-    update: &mut AppUpdate,
+    view: &impl AppViewport,
+    update: &mut AppOutput,
     query: String,
 ) {
     if query.is_empty() {
@@ -305,8 +308,8 @@ fn apply_diff_search(
 
 fn navigate_diff_search_match(
     state: &mut AppState,
-    view: &impl AppView,
-    update: &mut AppUpdate,
+    view: &impl AppViewport,
+    update: &mut AppOutput,
     direction: Direction,
 ) {
     if state.diff_search_query.is_none() || state.diff_search_matches.is_empty() {
@@ -342,7 +345,11 @@ fn clear_diff_search(state: &mut AppState) {
     state.diff_search_current = 0;
 }
 
-fn apply_diff_cursor_effect(state: &mut AppState, view: &impl AppView, effect: DiffCursorEffect) {
+fn apply_diff_cursor_effect(
+    state: &mut AppState,
+    view: &impl AppViewport,
+    effect: DiffCursorEffect,
+) {
     match effect {
         DiffCursorEffect::MoveTo { line, column } => {
             state.diff_line_cursor = line;
@@ -501,23 +508,23 @@ fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
     }
 }
 
-pub fn navigate_to_search_match(
+pub(super) fn navigate_to_search_match(
     state: &mut AppState,
-    view: &impl AppView,
+    view: &impl AppViewport,
     m: &crate::model::SearchMatch,
-) -> AppUpdate {
-    let mut update = AppUpdate::handled();
+) -> AppOutput {
+    let mut update = AppOutput::handled();
     let target = core_search::resolve_search_target(&state.files, m);
     navigate_to_location_target(state, view, &mut update, target);
     update
 }
 
-pub fn navigate_to_definition(
+pub(super) fn navigate_to_definition(
     state: &mut AppState,
-    view: &impl AppView,
+    view: &impl AppViewport,
     def: &crate::model::DefinitionLocation,
-) -> AppUpdate {
-    let mut update = AppUpdate::handled();
+) -> AppOutput {
+    let mut update = AppOutput::handled();
     let target = core_search::resolve_definition_target(&state.files, def);
     navigate_to_location_target(state, view, &mut update, target);
     update
@@ -525,8 +532,8 @@ pub fn navigate_to_definition(
 
 fn navigate_to_location_target(
     state: &mut AppState,
-    view: &impl AppView,
-    update: &mut AppUpdate,
+    view: &impl AppViewport,
+    update: &mut AppOutput,
     target: core_search::LocationTarget,
 ) {
     match target {
@@ -563,7 +570,7 @@ fn push_jump_stack(state: &mut AppState) {
     });
 }
 
-fn toggle_inline_diff(state: &mut AppState, update: &mut AppUpdate) {
+fn toggle_inline_diff(state: &mut AppState, update: &mut AppOutput) {
     if state.content_mode == ContentMode::Diff {
         state.render_variant = match state.render_variant {
             RenderVariant::Inline => RenderVariant::SideBySide,
@@ -573,14 +580,14 @@ fn toggle_inline_diff(state: &mut AppState, update: &mut AppUpdate) {
     update.clear_status();
 }
 
-fn cycle_diff_algorithm(state: &mut AppState, update: &mut AppUpdate) {
+fn cycle_diff_algorithm(state: &mut AppState, update: &mut AppOutput) {
     state.diff_algorithm = state.diff_algorithm.next();
     state.reload_current_diff();
     update.set_status(format!("Diff algorithm: {}", state.diff_algorithm.label()));
     update.request_layout_save();
 }
 
-fn toggle_diff_base(state: &mut AppState, update: &mut AppUpdate) {
+fn toggle_diff_base(state: &mut AppState, update: &mut AppOutput) {
     let has_reviewed_commit = state.selected_file_entry().is_some_and(|e| {
         matches!(
             &e.status,
@@ -608,7 +615,7 @@ fn toggle_diff_base(state: &mut AppState, update: &mut AppUpdate) {
 }
 
 /// Pop the jump stack and restore the previous location.
-fn pop_jump_stack(state: &mut AppState, view: &impl AppView, update: &mut AppUpdate) {
+fn pop_jump_stack(state: &mut AppState, view: &impl AppViewport, update: &mut AppOutput) {
     if let Some(loc) = state.jump_stack.pop() {
         if loc.file_index != state.selected_file && loc.file_index < state.files.len() {
             state.selected_file = loc.file_index;
@@ -626,7 +633,7 @@ fn pop_jump_stack(state: &mut AppState, view: &impl AppView, update: &mut AppUpd
 }
 
 /// Request go-to-definition for the word under the cursor.
-fn request_go_to_definition(state: &mut AppState, view: &impl AppView, update: &mut AppUpdate) {
+fn request_go_to_definition(state: &mut AppState, view: &impl AppViewport, update: &mut AppOutput) {
     let word = extract_word_at_cursor(state, view);
     if let Some(word) = word {
         if word.is_empty() {
@@ -640,12 +647,15 @@ fn request_go_to_definition(state: &mut AppState, view: &impl AppView, update: &
 }
 
 /// Extract the identifier-like word under the current diff column cursor.
-fn extract_word_at_cursor(state: &AppState, view: &impl AppView) -> Option<String> {
+fn extract_word_at_cursor(state: &AppState, view: &impl AppViewport) -> Option<String> {
     let content = content_for_word_extraction(state, view)?;
     word_at_char_offset(content, state.diff_col_cursor)
 }
 
-fn content_for_word_extraction<'a>(state: &AppState, view: &'a impl AppView) -> Option<&'a str> {
+fn content_for_word_extraction<'a>(
+    state: &AppState,
+    view: &'a impl AppViewport,
+) -> Option<&'a str> {
     let line = view.diff_rendered_text().get(state.diff_line_cursor)?;
     let gutter = view.diff_gutter_cols();
     let content = if gutter < line.len() {
@@ -696,11 +706,11 @@ fn is_identifier_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-fn clamp_diff_scroll(state: &mut AppState, view: &impl AppView) {
+fn clamp_diff_scroll(state: &mut AppState, view: &impl AppViewport) {
     state.diff_scroll = state.diff_scroll.min(view.max_diff_scroll());
 }
 
-fn clamp_cursor_and_scroll(state: &mut AppState, view: &impl AppView) {
+fn clamp_cursor_and_scroll(state: &mut AppState, view: &impl AppViewport) {
     let max = view.max_diff_scroll();
     state.diff_line_cursor = state.diff_line_cursor.min(max);
     if state.diff_line_cursor < state.diff_scroll {
@@ -716,12 +726,12 @@ fn clamp_cursor_and_scroll(state: &mut AppState, view: &impl AppView) {
     clamp_diff_scroll(state, view);
 }
 
-fn clamp_col_cursor(state: &mut AppState, view: &impl AppView) {
+fn clamp_col_cursor(state: &mut AppState, view: &impl AppViewport) {
     let max = view.current_line_text_len(state).saturating_sub(1);
     state.diff_col_cursor = state.diff_col_cursor.min(max);
 }
 
-fn recompute_diff_search_matches(state: &mut AppState, view: &impl AppView) -> Option<String> {
+fn recompute_diff_search_matches(state: &mut AppState, view: &impl AppViewport) -> Option<String> {
     state.diff_search_matches.clear();
     state.diff_search_current = 0;
     let query = match &state.diff_search_query {
@@ -759,7 +769,7 @@ fn recompute_diff_search_matches(state: &mut AppState, view: &impl AppView) -> O
     None
 }
 
-fn diff_search_jump_to_current(state: &mut AppState, view: &impl AppView) {
+fn diff_search_jump_to_current(state: &mut AppState, view: &impl AppViewport) {
     if state.diff_search_matches.is_empty() {
         return;
     }
@@ -778,7 +788,7 @@ fn on_file_changed(state: &mut AppState) {
     state.on_file_changed();
 }
 
-fn cycle_view_mode(state: &mut AppState, view: &impl AppView) {
+fn cycle_view_mode(state: &mut AppState, view: &impl AppViewport) {
     let approx_line = estimate_current_line(state, view);
 
     match (&state.content_mode, &state.render_variant) {
@@ -816,7 +826,7 @@ fn cycle_view_mode(state: &mut AppState, view: &impl AppView) {
     }
 }
 
-fn estimate_current_line(state: &AppState, view: &impl AppView) -> usize {
+fn estimate_current_line(state: &AppState, view: &impl AppViewport) -> usize {
     match state.content_mode {
         ContentMode::Diff => {
             let scroll = state.diff_line_cursor;
@@ -847,7 +857,7 @@ fn estimate_current_line(state: &AppState, view: &impl AppView) -> usize {
     }
 }
 
-fn jump_to_next_hunk(state: &mut AppState, view: &impl AppView) {
+fn jump_to_next_hunk(state: &mut AppState, view: &impl AppViewport) {
     if let Some(jump) = navigation::jump_to_next_hunk(
         state.diff_line_cursor,
         state.diff_scroll,
@@ -862,7 +872,7 @@ fn jump_to_next_hunk(state: &mut AppState, view: &impl AppView) {
     }
 }
 
-fn jump_to_prev_hunk(state: &mut AppState, view: &impl AppView) {
+fn jump_to_prev_hunk(state: &mut AppState, view: &impl AppViewport) {
     if let Some(jump) = navigation::jump_to_prev_hunk(
         state.diff_line_cursor,
         state.diff_scroll,
@@ -887,7 +897,7 @@ fn char_class(c: char) -> u8 {
     }
 }
 
-fn word_forward(state: &mut AppState, view: &impl AppView) {
+fn word_forward(state: &mut AppState, view: &impl AppViewport) {
     let content = view.line_content_trimmed(state.diff_line_cursor);
     let chars: Vec<char> = content.chars().collect();
     let text_len = chars.len();
@@ -938,7 +948,7 @@ fn word_forward(state: &mut AppState, view: &impl AppView) {
     state.diff_col_cursor = pos;
 }
 
-fn word_backward(state: &mut AppState, view: &impl AppView) {
+fn word_backward(state: &mut AppState, view: &impl AppViewport) {
     if state.diff_col_cursor == 0 {
         if state.diff_line_cursor > 0 {
             state.diff_line_cursor -= 1;
@@ -980,7 +990,7 @@ fn word_backward(state: &mut AppState, view: &impl AppView) {
     state.diff_col_cursor = pos;
 }
 
-fn bigword_forward(state: &mut AppState, view: &impl AppView) {
+fn bigword_forward(state: &mut AppState, view: &impl AppViewport) {
     let content = view.line_content_trimmed(state.diff_line_cursor);
     let chars: Vec<char> = content.chars().collect();
     let text_len = chars.len();
@@ -1030,7 +1040,7 @@ fn bigword_forward(state: &mut AppState, view: &impl AppView) {
     state.diff_col_cursor = pos;
 }
 
-fn bigword_backward(state: &mut AppState, view: &impl AppView) {
+fn bigword_backward(state: &mut AppState, view: &impl AppViewport) {
     if state.diff_col_cursor == 0 {
         if state.diff_line_cursor > 0 {
             state.diff_line_cursor -= 1;
@@ -1087,7 +1097,7 @@ fn navigate_file(state: &mut AppState, dir: Direction) {
     }
 }
 
-fn toggle_review(state: &AppState, update: &mut AppUpdate) {
+fn toggle_review(state: &AppState, update: &mut AppOutput) {
     if state.files.get(state.selected_file).is_some() {
         update.request_review_toggle();
     }

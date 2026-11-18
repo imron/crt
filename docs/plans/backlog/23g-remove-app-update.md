@@ -1,6 +1,6 @@
 # Stage 23g: Remove app_update
 
-## Status: Backlog
+## Status: Complete
 
 ## Order
 
@@ -48,12 +48,12 @@ app-domain input handling and app-owned reducer logic.
 
 ## Acceptance Criteria
 
-- [ ] No `app_update` module remains.
-- [ ] TUI code no longer imports app reducer helpers directly.
-- [ ] `App` owns app-domain input handling.
-- [ ] TUI remains thin: native event capture, prompt editing, backend hit maps,
+- [x] No `app_update` module remains.
+- [x] TUI code no longer imports app reducer helpers directly.
+- [x] `App` owns app-domain input handling.
+- [x] TUI remains thin: native event capture, prompt editing, backend hit maps,
       rendering, and event-loop mechanics.
-- [ ] `cargo test` passes.
+- [x] `cargo test` passes.
 
 ## Resolved Decisions
 
