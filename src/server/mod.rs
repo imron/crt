@@ -7,12 +7,20 @@
 pub mod api;
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
+use hyper::body::Incoming;
+use hyper::header::CONTENT_TYPE;
+use hyper::service::service_fn;
+use hyper::{Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
@@ -70,6 +78,11 @@ pub struct ServerState {
 struct ActiveSessionEntry {
     session: ActiveReviewSession,
     client_count: usize,
+}
+
+struct HttpConnectionState {
+    conn_ctx: Option<ConnectionContext>,
+    conn_db: Option<Arc<Mutex<Database>>>,
 }
 
 impl Default for ServerState {
@@ -457,93 +470,92 @@ async fn handle_connection(stream: UnixStream, state: Arc<ServerState>) -> Resul
 }
 
 async fn handle_http_connection(stream: TcpStream, state: Arc<ServerState>) -> Result<()> {
-    let (reader, mut writer) = stream.into_split();
-    let mut reader = BufReader::new(reader);
-    let mut conn_ctx: Option<ConnectionContext> = None;
-    let mut conn_db: Option<Arc<Mutex<Database>>> = None;
+    let connection_state = Arc::new(Mutex::new(HttpConnectionState {
+        conn_ctx: None,
+        conn_db: None,
+    }));
+    let state_for_service = Arc::clone(&state);
+    let connection_state_for_service = Arc::clone(&connection_state);
 
-    loop {
-        let Some(body) = read_http_body(&mut reader).await? else {
-            break;
-        };
+    hyper::server::conn::http1::Builder::new()
+        .serve_connection(
+            TokioIo::new(stream),
+            service_fn(move |request| {
+                handle_http_request(
+                    request,
+                    Arc::clone(&state_for_service),
+                    Arc::clone(&connection_state_for_service),
+                )
+            }),
+        )
+        .await
+        .context("HTTP connection failed")?;
 
-        let request: JsonRpcRequest = match serde_json::from_slice(&body) {
-            Ok(req) => req,
-            Err(e) => {
-                let resp = JsonRpcResponse::error(
-                    serde_json::Value::Null,
-                    ERR_PARSE,
-                    format!("Parse error: {e}"),
-                );
-                write_http_response(&mut writer, &resp).await?;
-                continue;
-            }
-        };
-
-        let id = match &request.id {
-            Some(id) => id.clone(),
-            None => continue,
-        };
-
-        let response = dispatch(&request, &id, &state, &mut conn_ctx, &mut conn_db).await;
-        write_http_response(&mut writer, &response).await?;
-    }
-
-    if let Some(ctx) = conn_ctx.as_ref() {
+    if let Some(ctx) = connection_state.lock().await.conn_ctx.as_ref() {
         state.unregister_session(ctx).await;
     }
 
     Ok(())
 }
 
-async fn read_http_body<R: tokio::io::AsyncRead + Unpin>(
-    reader: &mut BufReader<R>,
-) -> Result<Option<Vec<u8>>> {
-    let mut request_line = String::new();
-    if reader.read_line(&mut request_line).await? == 0 {
-        return Ok(None);
-    }
-    if request_line.trim().is_empty() {
-        return Ok(None);
+async fn handle_http_request(
+    request: Request<Incoming>,
+    state: Arc<ServerState>,
+    connection_state: Arc<Mutex<HttpConnectionState>>,
+) -> Result<Response<Full<Bytes>>, Infallible> {
+    if request.method() != hyper::Method::POST || request.uri().path() != "/rpc" {
+        return Ok(empty_http_response(StatusCode::NOT_FOUND));
     }
 
-    let mut content_length = None;
-    loop {
-        let mut header = String::new();
-        let n = reader.read_line(&mut header).await?;
-        if n == 0 {
-            return Ok(None);
+    let body = match request.into_body().collect().await {
+        Ok(body) => body.to_bytes(),
+        Err(e) => {
+            let resp = JsonRpcResponse::error(
+                serde_json::Value::Null,
+                ERR_PARSE,
+                format!("Failed to read request body: {e}"),
+            );
+            return Ok(json_http_response(StatusCode::BAD_REQUEST, &resp));
         }
-        let trimmed = header.trim_end_matches(['\r', '\n']);
-        if trimmed.is_empty() {
-            break;
-        }
-        if let Some((name, value)) = trimmed.split_once(':')
-            && name.eq_ignore_ascii_case("content-length")
-        {
-            content_length = value.trim().parse::<usize>().ok();
-        }
-    }
+    };
 
-    let len = content_length.context("HTTP request missing Content-Length")?;
-    let mut body = vec![0; len];
-    reader.read_exact(&mut body).await?;
-    Ok(Some(body))
+    let request: JsonRpcRequest = match serde_json::from_slice(&body) {
+        Ok(req) => req,
+        Err(e) => {
+            let resp = JsonRpcResponse::error(
+                serde_json::Value::Null,
+                ERR_PARSE,
+                format!("Parse error: {e}"),
+            );
+            return Ok(json_http_response(StatusCode::OK, &resp));
+        }
+    };
+
+    let id = match &request.id {
+        Some(id) => id.clone(),
+        None => return Ok(empty_http_response(StatusCode::NO_CONTENT)),
+    };
+
+    let mut connection_state = connection_state.lock().await;
+    let HttpConnectionState { conn_ctx, conn_db } = &mut *connection_state;
+    let response = dispatch(&request, &id, &state, conn_ctx, conn_db).await;
+    Ok(json_http_response(StatusCode::OK, &response))
 }
 
-async fn write_http_response(
-    writer: &mut tokio::net::tcp::OwnedWriteHalf,
-    response: &JsonRpcResponse,
-) -> Result<()> {
-    let body = serde_json::to_vec(response).context("Failed to serialize response")?;
-    let headers = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
-        body.len()
-    );
-    writer.write_all(headers.as_bytes()).await?;
-    writer.write_all(&body).await?;
-    writer.flush().await?;
-    Ok(())
+fn json_http_response(status: StatusCode, response: &JsonRpcResponse) -> Response<Full<Bytes>> {
+    let body = serde_json::to_vec(response).unwrap_or_else(|_| b"{}".to_vec());
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "application/json")
+        .body(Full::new(Bytes::from(body)))
+        .unwrap_or_else(|_| empty_http_response(StatusCode::INTERNAL_SERVER_ERROR))
+}
+
+fn empty_http_response(status: StatusCode) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(status)
+        .body(Full::new(Bytes::new()))
+        .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
 }
 
 async fn send_response(
