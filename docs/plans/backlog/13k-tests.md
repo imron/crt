@@ -628,9 +628,8 @@ Each edge case should state the owning layer before implementation.
 
 5. File is renamed without content changes.
 
-   Expected: current 13k may mark orphaned unless rename-aware lookup is
-   implemented; if rename support is added, assert the segment anchors with
-   `exact_elsewhere`.
+   Expected: rename-aware lookup resolves the current path before anchoring.
+   The segment anchors against the renamed file path.
 
 6. File is deleted on one side.
 

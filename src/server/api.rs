@@ -1012,12 +1012,13 @@ pub async fn handle_list_comments(
     };
 
     let head_ref = ctx.head_scope_key();
+    let requested_file_path = p.file_path.clone();
     let comments = {
         let db_guard = db.lock().await;
         match db_guard.list_comments(
             ctx.merge_base_key(),
             &head_ref,
-            p.file_path.as_deref(),
+            None,
             p.include_resolved,
             p.include_previous_bases,
         ) {
@@ -1041,6 +1042,14 @@ pub async fn handle_list_comments(
                 format!("Failed to re-anchor comments: {e:#}"),
             );
         }
+    };
+    let comments = if let Some(file_path) = requested_file_path {
+        comments
+            .into_iter()
+            .filter(|comment| comment_has_file_path(comment, &file_path))
+            .collect()
+    } else {
+        comments
     };
 
     let result = review_types::ListCommentsResult {
@@ -1424,6 +1433,7 @@ enum ReanchorEndpoint {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReanchorFileContent {
+    file_path: String,
     content: String,
     file_blob_sha: String,
 }
@@ -1467,11 +1477,10 @@ async fn range_preferred_blob_matches(
     let Some(segment) = preferred_anchor_segment(comment) else {
         return Ok(false);
     };
-    let Some(content) = range_file_content(ctx, range, segment.side, &segment.file_path).await?
-    else {
+    let Some(content) = range_file_content_for_segment(ctx, range, comment, segment).await? else {
         return Ok(comment.file_blob_sha.is_empty());
     };
-    Ok(content.file_blob_sha == comment.file_blob_sha)
+    Ok(content.file_path == segment.file_path && content.file_blob_sha == comment.file_blob_sha)
 }
 
 fn preferred_anchor_segment(
@@ -1492,12 +1501,15 @@ async fn resolve_anchor_for_range(
 ) -> anyhow::Result<NewCommentAnchor> {
     let mut segments = Vec::with_capacity(comment.anchor.segments.len());
     for segment in &comment.anchor.segments {
-        let content = range_file_content(ctx, range, segment.side, &segment.file_path).await?;
+        let content = range_file_content_for_segment(ctx, range, comment, segment).await?;
         let resolved = match content {
             Some(content) => {
-                let adjusted_hint = adjusted_hint_for_range_segment(ctx, range, segment).await;
+                let mut resolved_segment = segment.clone();
+                resolved_segment.file_path = content.file_path;
+                let adjusted_hint =
+                    adjusted_hint_for_range_segment(ctx, range, &resolved_segment).await;
                 resolve_anchor_segment(
-                    segment,
+                    &resolved_segment,
                     &content.content,
                     content.file_blob_sha,
                     adjusted_hint,
@@ -1512,6 +1524,26 @@ async fn resolve_anchor_for_range(
         aggregate_status: aggregate_status_for_new_segments(&segments),
         segments,
     })
+}
+
+async fn range_file_content_for_segment(
+    ctx: &ConnectionContext,
+    range: &CommentReanchorRange,
+    comment: &StoredComment,
+    segment: &review_types::CommentAnchorSegment,
+) -> anyhow::Result<Option<ReanchorFileContent>> {
+    if let Some(content) = range_file_content(ctx, range, segment.side, &segment.file_path).await? {
+        return Ok(Some(content));
+    }
+
+    let Some(renamed_path) = renamed_path_for_segment(ctx, range, comment, segment).await? else {
+        return Ok(None);
+    };
+    if renamed_path == segment.file_path {
+        return Ok(None);
+    }
+
+    range_file_content(ctx, range, segment.side, &renamed_path).await
 }
 
 async fn range_file_content(
@@ -1534,6 +1566,7 @@ async fn endpoint_file_content(
             Ok(current_file_content(ctx, file_path)
                 .await?
                 .map(|(content, file_blob_sha)| ReanchorFileContent {
+                    file_path: file_path.to_string(),
                     content,
                     file_blob_sha,
                 }))
@@ -1541,10 +1574,119 @@ async fn endpoint_file_content(
         ReanchorEndpoint::Commit { refspec } => Ok(commit_file_content(ctx, refspec, file_path)
             .await?
             .map(|(content, file_blob_sha)| ReanchorFileContent {
+                file_path: file_path.to_string(),
                 content,
                 file_blob_sha,
             })),
     }
+}
+
+async fn renamed_path_for_segment(
+    ctx: &ConnectionContext,
+    range: &CommentReanchorRange,
+    comment: &StoredComment,
+    segment: &review_types::CommentAnchorSegment,
+) -> anyhow::Result<Option<String>> {
+    let endpoint = range.endpoint_for_side(segment.side);
+    match endpoint {
+        ReanchorEndpoint::Root => Ok(None),
+        ReanchorEndpoint::Commit { refspec } => {
+            let Some(source_ref) = segment_source_ref(comment, segment.side) else {
+                return Ok(None);
+            };
+            renamed_path_between_refs(ctx, &source_ref, refspec, &segment.file_path).await
+        }
+        ReanchorEndpoint::Worktree {
+            compare_to: Some(compare_to),
+        } => {
+            let mut candidate = segment.file_path.clone();
+            if let Some(source_ref) = segment_source_ref(comment, segment.side) {
+                if let Some(committed_path) =
+                    renamed_path_between_refs(ctx, &source_ref, compare_to, &candidate).await?
+                {
+                    candidate = committed_path;
+                }
+            }
+            if let Some(worktree_path) =
+                renamed_path_between_ref_and_worktree(ctx, compare_to, &candidate).await?
+            {
+                candidate = worktree_path;
+            }
+            if candidate == segment.file_path {
+                Ok(None)
+            } else {
+                Ok(Some(candidate))
+            }
+        }
+        ReanchorEndpoint::Worktree { compare_to: None } => Ok(None),
+    }
+}
+
+fn segment_source_ref(
+    comment: &StoredComment,
+    side: review_types::CommentAnchorSide,
+) -> Option<String> {
+    match side {
+        review_types::CommentAnchorSide::Base => {
+            (!comment.merge_base.is_empty()).then(|| comment.merge_base.clone())
+        }
+        review_types::CommentAnchorSide::Head => {
+            (!comment.created_head_commit.is_empty()).then(|| comment.created_head_commit.clone())
+        }
+    }
+}
+
+async fn renamed_path_between_refs(
+    ctx: &ConnectionContext,
+    from_ref: &str,
+    to_ref: &str,
+    file_path: &str,
+) -> anyhow::Result<Option<String>> {
+    if from_ref == to_ref {
+        return Ok(None);
+    }
+
+    let worktree = ctx.worktree.clone();
+    let from_ref = from_ref.to_string();
+    let to_ref = to_ref.to_string();
+    let file_path = file_path.to_string();
+
+    tokio::task::spawn_blocking(move || -> anyhow::Result<Option<String>> {
+        let repo = git::Repo::open(&worktree)?;
+        let changes = repo.list_changed_files(&from_ref, &to_ref)?;
+        Ok(renamed_path_from_changes(&changes, &file_path))
+    })
+    .await?
+}
+
+async fn renamed_path_between_ref_and_worktree(
+    ctx: &ConnectionContext,
+    from_ref: &str,
+    file_path: &str,
+) -> anyhow::Result<Option<String>> {
+    let worktree = ctx.worktree.clone();
+    let from_ref = from_ref.to_string();
+    let file_path = file_path.to_string();
+
+    tokio::task::spawn_blocking(move || -> anyhow::Result<Option<String>> {
+        let repo = git::Repo::open(&worktree)?;
+        let changes = repo.list_changed_files_workdir(&from_ref)?;
+        Ok(renamed_path_from_changes(&changes, &file_path))
+    })
+    .await?
+}
+
+fn renamed_path_from_changes(
+    changes: &[review_types::FileChange],
+    file_path: &str,
+) -> Option<String> {
+    changes
+        .iter()
+        .find(|change| {
+            change.kind == review_types::ChangeKind::Renamed
+                && change.old_path.as_deref() == Some(file_path)
+        })
+        .map(|change| change.path.clone())
 }
 
 async fn adjusted_hint_for_range_segment(
@@ -2295,6 +2437,15 @@ fn apply_anchor(mut comment: StoredComment, anchor: &NewCommentAnchor) -> Stored
         aggregate_status: anchor.aggregate_status,
     };
     comment
+}
+
+fn comment_has_file_path(comment: &StoredComment, file_path: &str) -> bool {
+    comment.file_path == file_path
+        || comment
+            .anchor
+            .segments
+            .iter()
+            .any(|segment| segment.file_path == file_path)
 }
 
 fn comment_response(id: &serde_json::Value, stored: StoredComment) -> JsonRpcResponse {
@@ -3100,6 +3251,27 @@ mod tests {
         }
     }
 
+    fn test_context_for_repo(
+        repo_path: &std::path::Path,
+        merge_base: String,
+        head: String,
+    ) -> ConnectionContext {
+        ConnectionContext {
+            repo_root: repo_path.to_path_buf(),
+            worktree: repo_path.to_path_buf(),
+            base_ref: merge_base.clone(),
+            review_base: git::ReviewBase::Anonymous {
+                input: merge_base.clone(),
+                resolved_commit: git::CommitId::new(merge_base.clone()),
+            },
+            merge_base: git::CommitId::new(merge_base),
+            head: git::HeadIdentity::Detached {
+                commit: git::CommitId::new(head),
+            },
+            db_path: repo_path.join(".crt/reviews.db"),
+        }
+    }
+
     #[tokio::test]
     async fn set_merge_base_resolves_ref_to_full_hash_and_updates_session() {
         let (dir, base, head) = setup_merge_base_repo();
@@ -3214,6 +3386,82 @@ mod tests {
         assert_eq!(
             head.placement_status,
             review_types::AnchorPlacementStatus::Anchored
+        );
+    }
+
+    #[tokio::test]
+    async fn head_reanchor_follows_committed_file_rename() {
+        let dir = tempfile::tempdir().expect("temp repo");
+        let repo = init_test_repo(dir.path());
+        std::fs::write(dir.path().join("old.rs"), "before\ntarget\nafter\n")
+            .expect("write old file");
+        let created_head = commit_all(&repo, "initial").to_string();
+        std::fs::rename(dir.path().join("old.rs"), dir.path().join("new.rs")).expect("rename file");
+        let head = commit_all(&repo, "rename").to_string();
+        let ctx = test_context_for_repo(dir.path(), created_head.clone(), head);
+        let mut comment = stored_comment(2, "target");
+        comment.file_path = "old.rs".to_string();
+        comment.created_head_commit = created_head;
+        comment.anchor = review_types::CommentAnchor {
+            segments: vec![anchor_segment(
+                review_types::CommentAnchorSide::Head,
+                2,
+                "target",
+                "before",
+                "after",
+            )],
+            aggregate_status: review_types::AnchorAggregateStatus::Anchored,
+        };
+        comment.anchor.segments[0].file_path = "old.rs".to_string();
+        let range = CommentReanchorRange::current_session(&ctx);
+
+        let anchor = resolve_anchor_for_range(&ctx, &range, &comment)
+            .await
+            .expect("resolve anchor");
+
+        let head = segment_for_side(&anchor, review_types::CommentAnchorSide::Head);
+        assert_eq!(
+            anchor.aggregate_status,
+            review_types::AnchorAggregateStatus::Anchored
+        );
+        assert_eq!(head.file_path, "new.rs");
+        assert_eq!(head.line_start, 2);
+        assert_eq!(
+            head.match_method,
+            review_types::AnchorMatchMethod::ExactAtLine
+        );
+    }
+
+    #[tokio::test]
+    async fn base_reanchor_follows_merge_base_file_rename() {
+        let dir = tempfile::tempdir().expect("temp repo");
+        let repo = init_test_repo(dir.path());
+        std::fs::write(dir.path().join("old.rs"), "before\ntarget\nafter\n")
+            .expect("write old file");
+        let old_base = commit_all(&repo, "initial").to_string();
+        std::fs::rename(dir.path().join("old.rs"), dir.path().join("new.rs")).expect("rename file");
+        let new_base = commit_all(&repo, "rename").to_string();
+        let ctx = test_context_for_repo(dir.path(), new_base.clone(), new_base);
+        let mut comment = base_only_comment(2, "target");
+        comment.file_path = "old.rs".to_string();
+        comment.merge_base = old_base;
+        comment.anchor.segments[0].file_path = "old.rs".to_string();
+        let range = CommentReanchorRange::current_session(&ctx);
+
+        let anchor = resolve_anchor_for_range(&ctx, &range, &comment)
+            .await
+            .expect("resolve anchor");
+
+        let base = segment_for_side(&anchor, review_types::CommentAnchorSide::Base);
+        assert_eq!(
+            anchor.aggregate_status,
+            review_types::AnchorAggregateStatus::Anchored
+        );
+        assert_eq!(base.file_path, "new.rs");
+        assert_eq!(base.line_start, 2);
+        assert_eq!(
+            base.match_method,
+            review_types::AnchorMatchMethod::ExactAtLine
         );
     }
 
