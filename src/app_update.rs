@@ -5,7 +5,7 @@
 //! async work for the app loop, or report presentation updates to the UI.
 
 use crate::app::{AppState, JumpLocation};
-use crate::core::command::{self, Command, CommandParse};
+use crate::core::command::{Command, CommandParse};
 use crate::core::navigation::{self, Direction, FileNavigationScope};
 use crate::core::search as core_search;
 use crate::core::{
@@ -172,22 +172,6 @@ pub fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> App
             | CoreEffect::TransientError(_) => {}
         }
     }
-    update
-}
-
-pub fn apply_unscoped_command_prompt(state: &mut AppState, command_text: String) -> AppUpdate {
-    let mut update = AppUpdate::handled();
-    apply_command(
-        state,
-        &mut update,
-        command::parse_command(&command_text, None),
-    );
-    update
-}
-
-pub fn apply_unscoped_diff_search_prompt(state: &mut AppState, query: String) -> AppUpdate {
-    let mut update = AppUpdate::handled();
-    apply_diff_search(state, &mut update, query);
     update
 }
 
