@@ -26,8 +26,9 @@ a few C strings into Swift after connect.
    `crt_gui_run` on the main thread.
 2. Resolve git context from the current directory (repo name,
    worktree, HEAD). Do not `init` a review session yet.
-3. Pass version, repo name, worktree, HEAD, and connection status
-   across the existing C ABI. Swift copies the strings immediately.
+3. Pass version, repo name, worktree, HEAD, and connection status as
+   one JSON envelope (`{"data": ...}`) with pointer + length. Swift
+   copies the bytes immediately and decodes them.
 4. After the window closes, shut down the client so an embedded
    server started by this process is cancelled.
 5. `crt gui` still rejects a base ref, `--root`, `--reset`, and

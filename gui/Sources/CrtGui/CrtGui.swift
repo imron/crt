@@ -1,25 +1,14 @@
 import AppKit
+import Foundation
 import SwiftUI
 
 private var retainedDelegate: AppDelegate?
 
 @_cdecl("crt_gui_run")
-public func crtGuiRun(
-    _ version: UnsafePointer<CChar>?,
-    _ repoName: UnsafePointer<CChar>?,
-    _ worktree: UnsafePointer<CChar>?,
-    _ headRef: UnsafePointer<CChar>?,
-    _ status: UnsafePointer<CChar>?
-) {
-    let snapshot = GuiSnapshot(
-        version: cString(version),
-        repoName: cString(repoName),
-        worktree: cString(worktree),
-        headRef: cString(headRef),
-        status: cString(status)
-    )
+public func crtGuiRun(_ data: UnsafePointer<UInt8>, _ size: Int) {
     let app = NSApplication.shared
     app.setActivationPolicy(.regular)
+    let snapshot = decodeSnapshot(data, size)
 
     let delegate = AppDelegate(snapshot: snapshot)
     retainedDelegate = delegate
@@ -28,16 +17,56 @@ public func crtGuiRun(
     app.run()
 }
 
-private func cString(_ pointer: UnsafePointer<CChar>?) -> String {
-    pointer.map { String(cString: $0) } ?? ""
+private func decodeSnapshot(_ data: UnsafePointer<UInt8>, _ size: Int) -> GuiSnapshot {
+    guard size > 0 else {
+        return .invalid("empty snapshot")
+    }
+    let bytes = Data(bytes: data, count: size)
+    do {
+        let envelope = try snapshotDecoder.decode(Envelope<GuiSnapshot>.self, from: bytes)
+        if let snapshot = envelope.data {
+            return snapshot
+        }
+        if let error = envelope.error {
+            return .invalid(error.message)
+        }
+        return .invalid("empty envelope")
+    } catch {
+        return .invalid(error.localizedDescription)
+    }
 }
 
-struct GuiSnapshot {
+private let snapshotDecoder: JSONDecoder = {
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    return decoder
+}()
+
+private struct Envelope<T: Decodable>: Decodable {
+    let data: T?
+    let error: SnapshotError?
+}
+
+private struct SnapshotError: Decodable {
+    let message: String
+}
+
+struct GuiSnapshot: Decodable {
     let version: String
     let repoName: String
     let worktree: String
     let headRef: String
     let status: String
+
+    static func invalid(_ message: String) -> GuiSnapshot {
+        GuiSnapshot(
+            version: "",
+            repoName: "",
+            worktree: "",
+            headRef: "",
+            status: message
+        )
+    }
 }
 
 private func makeMainMenu() -> NSMenu {
@@ -65,20 +94,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let content = ContentView(
-            version: snapshot.version,
-            repoName: snapshot.repoName,
-            worktree: snapshot.worktree,
-            headRef: snapshot.headRef,
-            status: snapshot.status
+        let hosting = NSHostingView(
+            rootView: ContentView(
+                version: snapshot.version,
+                repoName: snapshot.repoName,
+                worktree: snapshot.worktree,
+                headRef: snapshot.headRef,
+                status: snapshot.status
+            )
         )
-        let hosting = NSHostingView(rootView: content)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 640, height: 420),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
+        window.isReleasedWhenClosed = false
         window.title = "Code Review Tool"
         window.contentView = hosting
         window.center()
