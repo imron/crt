@@ -524,6 +524,232 @@ impl Repo {
         Ok(changes)
     }
 
+    /// Compute structured workdir diffs for every changed file in a single
+    /// tree-to-workdir pass.
+    ///
+    /// When `include_hunk_lines` is false, hunk line bodies are omitted from
+    /// the returned `DiffContent` (hash and binary flag remain accurate).
+    pub fn diff_all_files_workdir_for_base(
+        &self,
+        base: DiffBase<'_>,
+        algorithm: crate::config::DiffAlgorithm,
+        ignore_whitespace: bool,
+        include_hunk_lines: bool,
+    ) -> Result<Vec<(FileChange, DiffContent)>> {
+        // Histogram is only available via the git CLI and is handled one file
+        // at a time so hashing stays consistent with single-file diffs.
+        if algorithm == crate::config::DiffAlgorithm::Histogram {
+            let changes = self.list_changed_files_workdir_for_base(base)?;
+            let mut files = Vec::with_capacity(changes.len());
+            for change in changes {
+                let mut diff = self.diff_file_workdir_opts_for_base(
+                    base,
+                    &change.path,
+                    algorithm,
+                    ignore_whitespace,
+                )?;
+                if !include_hunk_lines {
+                    diff.hunks.clear();
+                }
+                files.push((change, diff));
+            }
+            return Ok(files);
+        }
+
+        let base_tree = self.resolve_diff_base_tree(base)?;
+
+        let mut diff_opts = git2::DiffOptions::new();
+        match algorithm {
+            crate::config::DiffAlgorithm::Myers => {}
+            crate::config::DiffAlgorithm::Patience => {
+                diff_opts.patience(true);
+            }
+            crate::config::DiffAlgorithm::Minimal => {
+                diff_opts.minimal(true);
+            }
+            crate::config::DiffAlgorithm::Histogram => unreachable!(),
+        }
+        if ignore_whitespace {
+            diff_opts.ignore_whitespace(true);
+        }
+
+        let diff = self
+            .inner
+            .diff_tree_to_workdir_with_index(base_tree.as_ref(), Some(&mut diff_opts))
+            .context("Failed to compute bulk diff between base and working tree")?;
+
+        let mut find_opts = git2::DiffFindOptions::new();
+        find_opts.renames(true);
+        let mut diff = diff;
+        diff.find_similar(Some(&mut find_opts))
+            .context("Failed to detect renames in bulk workdir diff")?;
+
+        let mut files = Vec::new();
+        let delta_count = diff.deltas().len();
+        for idx in 0..delta_count {
+            let Some(delta) = diff.get_delta(idx) else {
+                continue;
+            };
+            if delta.status() == git2::Delta::Untracked {
+                continue;
+            }
+
+            let Some(change) = file_change_from_delta(&delta) else {
+                continue;
+            };
+
+            let is_binary = self.delta_is_binary(&delta);
+            if is_binary {
+                files.push((
+                    change,
+                    DiffContent {
+                        hunks: Vec::new(),
+                        is_binary: true,
+                        diff_hash: hash_bytes(b"<binary>"),
+                    },
+                ));
+                continue;
+            }
+
+            let mut patch = git2::Patch::from_diff(&diff, idx)
+                .context("Failed to build patch from bulk workdir diff")?
+                .context("Missing patch for bulk workdir diff delta")?;
+            let mut content = parse_patch(&mut patch, include_hunk_lines)?.content;
+            content.is_binary = false;
+            files.push((change, content));
+        }
+
+        files.sort_by(|a, b| a.0.path.cmp(&b.0.path));
+        Ok(files)
+    }
+
+    /// Like [`Self::diff_all_files_workdir_for_base`], but returns compact
+    /// per-file summaries without allocating hunk line bodies.
+    pub fn summarize_all_files_workdir_for_base(
+        &self,
+        base: DiffBase<'_>,
+        algorithm: crate::config::DiffAlgorithm,
+        ignore_whitespace: bool,
+    ) -> Result<Vec<(FileChange, crate::review_types::DiffSummary)>> {
+        if algorithm == crate::config::DiffAlgorithm::Histogram {
+            let changes = self.list_changed_files_workdir_for_base(base)?;
+            let mut files = Vec::with_capacity(changes.len());
+            for change in changes {
+                let diff = self.diff_file_workdir_opts_for_base(
+                    base,
+                    &change.path,
+                    algorithm,
+                    ignore_whitespace,
+                )?;
+                files.push((change, summarize_diff_content(&diff)));
+            }
+            return Ok(files);
+        }
+
+        let base_tree = self.resolve_diff_base_tree(base)?;
+
+        let mut diff_opts = git2::DiffOptions::new();
+        match algorithm {
+            crate::config::DiffAlgorithm::Myers => {}
+            crate::config::DiffAlgorithm::Patience => {
+                diff_opts.patience(true);
+            }
+            crate::config::DiffAlgorithm::Minimal => {
+                diff_opts.minimal(true);
+            }
+            crate::config::DiffAlgorithm::Histogram => unreachable!(),
+        }
+        if ignore_whitespace {
+            diff_opts.ignore_whitespace(true);
+        }
+
+        let diff = self
+            .inner
+            .diff_tree_to_workdir_with_index(base_tree.as_ref(), Some(&mut diff_opts))
+            .context("Failed to compute bulk diff between base and working tree")?;
+
+        let mut find_opts = git2::DiffFindOptions::new();
+        find_opts.renames(true);
+        let mut diff = diff;
+        diff.find_similar(Some(&mut find_opts))
+            .context("Failed to detect renames in bulk workdir diff")?;
+
+        let mut files = Vec::new();
+        let delta_count = diff.deltas().len();
+        for idx in 0..delta_count {
+            let Some(delta) = diff.get_delta(idx) else {
+                continue;
+            };
+            if delta.status() == git2::Delta::Untracked {
+                continue;
+            }
+
+            let Some(change) = file_change_from_delta(&delta) else {
+                continue;
+            };
+
+            if self.delta_is_binary(&delta) {
+                files.push((
+                    change,
+                    crate::review_types::DiffSummary {
+                        hunks: 0,
+                        additions: 0,
+                        deletions: 0,
+                        is_binary: true,
+                        diff_hash: hash_bytes(b"<binary>"),
+                    },
+                ));
+                continue;
+            }
+
+            let mut patch = git2::Patch::from_diff(&diff, idx)
+                .context("Failed to build patch from bulk workdir diff")?
+                .context("Missing patch for bulk workdir diff delta")?;
+            let parsed = parse_patch(&mut patch, false)?;
+            files.push((
+                change,
+                crate::review_types::DiffSummary {
+                    hunks: parsed.hunk_count,
+                    additions: parsed.additions,
+                    deletions: parsed.deletions,
+                    is_binary: false,
+                    diff_hash: parsed.content.diff_hash,
+                },
+            ));
+        }
+
+        files.sort_by(|a, b| a.0.path.cmp(&b.0.path));
+        Ok(files)
+    }
+
+    fn delta_is_binary(&self, delta: &git2::DiffDelta<'_>) -> bool {
+        if delta.flags().contains(git2::DiffFlags::BINARY) {
+            return true;
+        }
+        let old_binary = if delta.old_file().id().is_zero() {
+            false
+        } else {
+            self.inner
+                .find_blob(delta.old_file().id())
+                .map(|b| b.is_binary())
+                .unwrap_or(false)
+        };
+        let new_binary = if delta.new_file().id().is_zero() {
+            if let Some(path) = delta.new_file().path() {
+                let worktree = self.inner.workdir().unwrap_or_else(|| self.inner.path());
+                is_likely_binary_file(&worktree.join(path))
+            } else {
+                false
+            }
+        } else {
+            self.inner
+                .find_blob(delta.new_file().id())
+                .map(|b| b.is_binary())
+                .unwrap_or(false)
+        };
+        old_binary || new_binary
+    }
+
     /// Compute the structured diff for a single file between base and HEAD.
     pub fn diff_file(
         &self,
@@ -1042,39 +1268,171 @@ impl Repo {
     }
 }
 
+fn file_change_from_delta(delta: &git2::DiffDelta<'_>) -> Option<FileChange> {
+    let kind = match delta.status() {
+        git2::Delta::Added | git2::Delta::Copied => ChangeKind::Added,
+        git2::Delta::Deleted => ChangeKind::Deleted,
+        git2::Delta::Modified => ChangeKind::Modified,
+        git2::Delta::Renamed => ChangeKind::Renamed,
+        git2::Delta::Untracked => return None,
+        _ => ChangeKind::Modified,
+    };
+
+    let new_path = delta
+        .new_file()
+        .path()
+        .map(|p| p.to_string_lossy().into_owned());
+    let old_path = delta
+        .old_file()
+        .path()
+        .map(|p| p.to_string_lossy().into_owned());
+
+    let path = match kind {
+        ChangeKind::Deleted => old_path.clone().unwrap_or_default(),
+        _ => new_path.unwrap_or_default(),
+    };
+    if path.is_empty() {
+        return None;
+    }
+
+    let old_path = if kind == ChangeKind::Renamed {
+        old_path
+    } else {
+        None
+    };
+
+    Some(FileChange {
+        path,
+        old_path,
+        kind,
+    })
+}
+
+struct ParsedDiff {
+    content: DiffContent,
+    hunk_count: usize,
+    additions: usize,
+    deletions: usize,
+}
+
 /// Parse a `git2::Diff` into our `DiffContent` structure.
 fn parse_diff(diff: &git2::Diff<'_>) -> Result<DiffContent> {
     let mut hunks: Vec<DiffHunk> = Vec::new();
     let mut hasher = Sha256::new();
+    let mut hunk_count = 0usize;
+    let mut additions = 0usize;
+    let mut deletions = 0usize;
 
     diff.print(git2::DiffFormat::Patch, |_delta, hunk, line| {
-        match line.origin() {
-            '+' | '-' | ' ' => {
-                // Hash only the semantic diff content (origin + text).
-                hasher.update([line.origin() as u8]);
-                hasher.update(line.content());
+        accumulate_diff_line(
+            hunk.as_ref(),
+            &line,
+            true,
+            &mut hunks,
+            &mut hasher,
+            &mut hunk_count,
+            &mut additions,
+            &mut deletions,
+        );
+        true
+    })
+    .context("Failed to print diff")?;
 
-                let diff_line = DiffLine {
-                    kind: match line.origin() {
-                        '+' => LineKind::Addition,
-                        '-' => LineKind::Deletion,
-                        _ => LineKind::Context,
-                    },
-                    content: String::from_utf8_lossy(line.content()).into_owned(),
-                    old_lineno: line.old_lineno(),
-                    new_lineno: line.new_lineno(),
-                };
+    let _ = (hunk_count, additions, deletions);
+    Ok(DiffContent {
+        hunks,
+        is_binary: false,
+        diff_hash: format!("{:x}", hasher.finalize()),
+    })
+}
 
-                if let Some(current_hunk) = hunks.last_mut() {
-                    current_hunk.lines.push(diff_line);
-                }
+/// Parse a single-file `git2::Patch` into `DiffContent` plus stats.
+///
+/// When `include_hunk_lines` is false, line bodies are hashed but not stored.
+fn parse_patch(patch: &mut git2::Patch<'_>, include_hunk_lines: bool) -> Result<ParsedDiff> {
+    let mut hunks: Vec<DiffHunk> = Vec::new();
+    let mut hasher = Sha256::new();
+    let mut hunk_count = 0usize;
+    let mut additions = 0usize;
+    let mut deletions = 0usize;
+
+    patch
+        .print(&mut |_delta, hunk, line| {
+            accumulate_diff_line(
+                hunk.as_ref(),
+                &line,
+                include_hunk_lines,
+                &mut hunks,
+                &mut hasher,
+                &mut hunk_count,
+                &mut additions,
+                &mut deletions,
+            );
+            true
+        })
+        .context("Failed to print patch")?;
+
+    Ok(ParsedDiff {
+        content: DiffContent {
+            hunks,
+            is_binary: false,
+            diff_hash: format!("{:x}", hasher.finalize()),
+        },
+        hunk_count,
+        additions,
+        deletions,
+    })
+}
+
+fn accumulate_diff_line(
+    hunk: Option<&git2::DiffHunk<'_>>,
+    line: &git2::DiffLine<'_>,
+    include_hunk_lines: bool,
+    hunks: &mut Vec<DiffHunk>,
+    hasher: &mut Sha256,
+    hunk_count: &mut usize,
+    additions: &mut usize,
+    deletions: &mut usize,
+) {
+    match line.origin() {
+        '+' | '-' | ' ' => {
+            // Hash only the semantic diff content (origin + text).
+            hasher.update([line.origin() as u8]);
+            hasher.update(line.content());
+
+            match line.origin() {
+                '+' => *additions += 1,
+                '-' => *deletions += 1,
+                _ => {}
             }
-            'H' => {
-                // Hunk headers are part of the semantic content.
-                hasher.update([line.origin() as u8]);
-                hasher.update(line.content());
 
-                if let Some(h) = hunk {
+            if !include_hunk_lines {
+                return;
+            }
+
+            let diff_line = DiffLine {
+                kind: match line.origin() {
+                    '+' => LineKind::Addition,
+                    '-' => LineKind::Deletion,
+                    _ => LineKind::Context,
+                },
+                content: String::from_utf8_lossy(line.content()).into_owned(),
+                old_lineno: line.old_lineno(),
+                new_lineno: line.new_lineno(),
+            };
+
+            if let Some(current_hunk) = hunks.last_mut() {
+                current_hunk.lines.push(diff_line);
+            }
+        }
+        'H' => {
+            // Hunk headers are part of the semantic content.
+            hasher.update([line.origin() as u8]);
+            hasher.update(line.content());
+            *hunk_count += 1;
+
+            if let Some(h) = hunk {
+                if include_hunk_lines {
                     hunks.push(DiffHunk {
                         old_start: h.old_start(),
                         old_lines: h.old_lines(),
@@ -1087,24 +1445,35 @@ fn parse_diff(diff: &git2::Diff<'_>) -> Result<DiffContent> {
                     });
                 }
             }
-            _ => {
-                // File headers, "No newline at end of file", etc.
-                // NOT included in the hash — they contain metadata
-                // (blob OIDs, mode bits) that can vary without the
-                // actual diff content changing.
+        }
+        _ => {
+            // File headers, "No newline at end of file", etc.
+            // NOT included in the hash — they contain metadata
+            // (blob OIDs, mode bits) that can vary without the
+            // actual diff content changing.
+        }
+    }
+}
+
+fn summarize_diff_content(diff: &DiffContent) -> crate::review_types::DiffSummary {
+    let mut additions = 0usize;
+    let mut deletions = 0usize;
+    for hunk in &diff.hunks {
+        for line in &hunk.lines {
+            match line.kind {
+                LineKind::Addition => additions += 1,
+                LineKind::Deletion => deletions += 1,
+                LineKind::Context => {}
             }
         }
-        true
-    })
-    .context("Failed to print diff")?;
-
-    let hash = format!("{:x}", hasher.finalize());
-
-    Ok(DiffContent {
-        hunks,
-        is_binary: false,
-        diff_hash: hash,
-    })
+    }
+    crate::review_types::DiffSummary {
+        hunks: diff.hunks.len(),
+        additions,
+        deletions,
+        is_binary: diff.is_binary,
+        diff_hash: diff.diff_hash.clone(),
+    }
 }
 
 fn hash_bytes(data: &[u8]) -> String {
@@ -1308,6 +1677,67 @@ mod tests {
         let diff1 = repo.diff_file("base", "HEAD", "hello.rs").unwrap();
         let diff2 = repo.diff_file("base", "HEAD", "hello.rs").unwrap();
         assert_eq!(diff1.diff_hash, diff2.diff_hash);
+    }
+
+    #[test]
+    fn bulk_workdir_diff_matches_per_file_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        run_git(path, &["init"]);
+        run_git(path, &["config", "user.email", "test@test.com"]);
+        run_git(path, &["config", "user.name", "Test"]);
+        std::fs::write(path.join("a.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(path.join("b.rs"), "fn b() {}\n").unwrap();
+        run_git(path, &["add", "."]);
+        run_git(path, &["commit", "-m", "base"]);
+        run_git(path, &["tag", "base"]);
+        std::fs::write(path.join("a.rs"), "fn a() { changed }\n").unwrap();
+        std::fs::write(path.join("b.rs"), "fn b() { changed }\n").unwrap();
+        std::fs::write(path.join("c.rs"), "fn c() {}\n").unwrap();
+        // Staged+unstaged workdir diffs ignore pure untracked files.
+        run_git(path, &["add", "c.rs"]);
+
+        let repo = Repo::open(path).unwrap();
+        let bulk = repo
+            .diff_all_files_workdir_for_base(
+                DiffBase::Commit("base"),
+                crate::config::DiffAlgorithm::Patience,
+                false,
+                true,
+            )
+            .unwrap();
+        assert_eq!(bulk.len(), 3);
+
+        for (change, diff) in &bulk {
+            let single = repo
+                .diff_file_workdir_opts_for_base(
+                    DiffBase::Commit("base"),
+                    &change.path,
+                    crate::config::DiffAlgorithm::Patience,
+                    false,
+                )
+                .unwrap();
+            assert_eq!(
+                diff.diff_hash, single.diff_hash,
+                "hash mismatch for {}",
+                change.path
+            );
+            assert_eq!(diff.hunks.len(), single.hunks.len());
+        }
+
+        let summary_only = repo
+            .diff_all_files_workdir_for_base(
+                DiffBase::Commit("base"),
+                crate::config::DiffAlgorithm::Patience,
+                false,
+                false,
+            )
+            .unwrap();
+        assert_eq!(summary_only.len(), 3);
+        for ((_, full), (_, summary)) in bulk.iter().zip(summary_only.iter()) {
+            assert_eq!(full.diff_hash, summary.diff_hash);
+            assert!(summary.hunks.is_empty());
+        }
     }
 
     #[test]
