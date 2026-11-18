@@ -9,12 +9,6 @@ mod macos;
 mod stub;
 
 #[cfg(target_os = "macos")]
-use macos::run_gui;
+pub use macos::run_gui;
 #[cfg(not(target_os = "macos"))]
-use stub::run_gui;
-
-use anyhow::Result;
-
-pub fn run() -> Result<()> {
-    run_gui()
-}
+pub use stub::run_gui;

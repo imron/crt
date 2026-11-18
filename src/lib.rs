@@ -161,7 +161,7 @@ fn cmd_review(base: Option<String>, root: bool, reset: bool, standalone: bool) -
 
 /// `crt gui` — native GUI (macOS).
 fn cmd_gui() -> Result<()> {
-    gui::run()
+    gui::run_gui()
 }
 
 /// `crt mcp-server` — start MCP adapter over stdio.
