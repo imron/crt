@@ -242,13 +242,7 @@ impl TuiState {
     }
 
     pub fn diff_content_start_col(&self) -> usize {
-        if self.diff_content_start_col > 0 {
-            self.diff_content_start_col
-        } else if self.diff_gutter_cols > 0 {
-            self.diff_gutter_cols + 3
-        } else {
-            0
-        }
+        self.diff_content_start_col
     }
 
     pub fn pane_at(&self, col: u16, row: u16) -> Option<PaneFocus> {

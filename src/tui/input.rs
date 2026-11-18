@@ -1243,6 +1243,7 @@ mod tests {
         let tui_state = TuiState {
             diff_area: Rect::new(0, 0, 80, 20),
             diff_gutter_cols: 4,
+            diff_content_start_col: 7,
             ..TuiState::default()
         };
 
