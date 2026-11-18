@@ -110,7 +110,8 @@ struct DiffView: View {
         if diff.isBinary {
             Text("Binary file")
                 .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding()
         } else {
             GeometryReader { geo in
                 ScrollView([.horizontal, .vertical]) {
@@ -119,12 +120,14 @@ struct DiffView: View {
                             Text(displayText(for: line))
                                 .font(.system(.body, design: .monospaced))
                                 .foregroundStyle(color(for: line.kind))
-                                .frame(
-                                    minWidth: geo.size.width,
-                                    alignment: .leading
-                                )
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
+                    .frame(
+                        minWidth: geo.size.width,
+                        minHeight: geo.size.height,
+                        alignment: .topLeading
+                    )
                 }
             }
         }
