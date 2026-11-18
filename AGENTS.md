@@ -36,3 +36,15 @@ making changes.
 - Avoid mixing unrelated changes in a single commit.
 - Do not commit local scratch files or personal data exports.
 - All `.md` files must wrap lines at a maximum of 80 characters.
+
+## Panic Hygiene
+
+- Do not use `.unwrap()` outside test-only code.
+- Do not use `.expect()` outside app startup/bootstrap paths where failing fast
+  is intentional.
+- Prefer `?`, explicit `match` handling, or `let Some(...) = ... else` control
+  flow in non-test runtime code.
+- If a fallible path needs simpler propagation, add an appropriate error type or
+  conversion instead of panicking.
+- Tests may use `.unwrap()` and `.expect()` when they keep setup or assertions
+  clear.

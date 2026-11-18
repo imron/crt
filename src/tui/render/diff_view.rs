@@ -79,11 +79,18 @@ pub fn draw(
 
     // From here we know the cache is populated.
     // Extract values we need without keeping state mutations tied to cache shape.
-    let (hunk_starts, hunk_ends, hunk_first_changes, gutter_w, content_height, rendered_text) = {
-        let cache = tui_state
-            .diff_cache
-            .as_ref()
-            .expect("diff cache should be populated before rendering");
+    let (
+        hunk_starts,
+        hunk_ends,
+        hunk_first_changes,
+        gutter_w,
+        content_height,
+        rendered_text,
+        cache_lines,
+    ) = {
+        let Some(cache) = tui_state.diff_cache.as_ref() else {
+            return;
+        };
         (
             cache.hunk_starts.clone(),
             cache.hunk_ends.clone(),
@@ -91,6 +98,7 @@ pub fn draw(
             cache.gutter_w,
             cache.lines.len(),
             cache.rendered_text.clone(),
+            cache.lines.clone(),
         )
     };
 
@@ -143,11 +151,7 @@ pub fn draw(
     )
     .unwrap_or_else(|| diff.search_highlights.clone());
     let current_search_highlight = current_search_highlight(diff, &search_highlights);
-    let visible_source: Vec<Line> = tui_state
-        .diff_cache
-        .as_ref()
-        .expect("diff cache should be populated before rendering")
-        .lines
+    let visible_source: Vec<Line> = cache_lines
         .iter()
         .skip(diff.scroll)
         .take(diff_view_height)
