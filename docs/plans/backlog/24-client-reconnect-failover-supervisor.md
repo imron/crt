@@ -1,5 +1,12 @@
 # Stage 24: Client Reconnect and Failover Supervisor
 
+## WIP Branch Note
+
+Before implementing this plan, assess branch `wip-stage-24-supervisor-spike`
+for suitability. It contains an interrupted reconnect supervisor spike that may
+be useful as a reference, but it should be reviewed against the current
+architecture before reuse or discarded if stale.
+
 ## Status: Backlog
 
 ## Order
