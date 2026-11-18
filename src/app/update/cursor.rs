@@ -55,7 +55,7 @@ pub fn apply_diff_cursor_effect(
         }
         DiffCursorEffect::ScrollDown => {
             state.diff_scroll = state.diff_scroll.saturating_add(1);
-            clamp_diff_scroll(state, view);
+            clamp_diff_scroll(state);
             if state.diff_line_cursor < state.diff_scroll {
                 state.diff_line_cursor = state.diff_scroll;
                 state.diff_col_cursor = 0;
@@ -72,7 +72,7 @@ pub fn apply_diff_cursor_effect(
         }
         DiffCursorEffect::WheelDown => {
             state.diff_scroll = state.diff_scroll.saturating_add(3);
-            clamp_diff_scroll(state, view);
+            clamp_diff_scroll(state);
             if state.diff_line_cursor < state.diff_scroll {
                 state.diff_line_cursor = state.diff_scroll;
             }
@@ -92,7 +92,7 @@ pub fn apply_diff_cursor_effect(
             state.diff_col_cursor = 0;
         }
         DiffCursorEffect::Bottom => {
-            state.diff_line_cursor = view.max_diff_scroll();
+            state.diff_line_cursor = active_diff_content_height(state).saturating_sub(1);
             state.diff_col_cursor = 0;
             clamp_cursor_and_scroll(state, view);
         }
@@ -143,8 +143,8 @@ pub fn apply_diff_cursor_effect(
     state.mark_model_changed();
 }
 
-fn clamp_diff_scroll(state: &mut AppState, view: &impl ViewportMetrics) {
-    let content_height = active_diff_content_height(state, view);
+fn clamp_diff_scroll(state: &mut AppState) {
+    let content_height = active_diff_content_height(state);
     if content_height == 0 {
         return;
     }
@@ -152,7 +152,7 @@ fn clamp_diff_scroll(state: &mut AppState, view: &impl ViewportMetrics) {
 }
 
 pub fn clamp_cursor_and_scroll(state: &mut AppState, view: &impl ViewportMetrics) {
-    let content_height = active_diff_content_height(state, view);
+    let content_height = active_diff_content_height(state);
     if content_height == 0 {
         return;
     }
@@ -168,7 +168,7 @@ pub fn clamp_cursor_and_scroll(state: &mut AppState, view: &impl ViewportMetrics
             .diff_line_cursor
             .saturating_sub(view.diff_view_height() - 1);
     }
-    clamp_diff_scroll(state, view);
+    clamp_diff_scroll(state);
 }
 
 fn clamp_col_cursor(state: &mut AppState) {
@@ -204,7 +204,7 @@ fn word_forward(state: &mut AppState, view: &impl ViewportMetrics) {
     let text_len = chars.len();
 
     if text_len == 0 || state.diff_col_cursor >= text_len.saturating_sub(1) {
-        let max_line = active_diff_content_height(state, view).saturating_sub(1);
+        let max_line = active_diff_content_height(state).saturating_sub(1);
         if state.diff_line_cursor < max_line {
             state.diff_line_cursor += 1;
             state.diff_col_cursor = 0;
@@ -229,7 +229,7 @@ fn word_forward(state: &mut AppState, view: &impl ViewportMetrics) {
         pos += 1;
     }
     if pos >= text_len {
-        let max_line = active_diff_content_height(state, view).saturating_sub(1);
+        let max_line = active_diff_content_height(state).saturating_sub(1);
         if state.diff_line_cursor < max_line {
             state.diff_line_cursor += 1;
             state.diff_col_cursor = 0;
@@ -297,7 +297,7 @@ fn bigword_forward(state: &mut AppState, view: &impl ViewportMetrics) {
     let text_len = chars.len();
 
     if text_len == 0 || state.diff_col_cursor >= text_len.saturating_sub(1) {
-        let max_line = active_diff_content_height(state, view).saturating_sub(1);
+        let max_line = active_diff_content_height(state).saturating_sub(1);
         if state.diff_line_cursor < max_line {
             state.diff_line_cursor += 1;
             state.diff_col_cursor = 0;
@@ -321,7 +321,7 @@ fn bigword_forward(state: &mut AppState, view: &impl ViewportMetrics) {
         pos += 1;
     }
     if pos >= text_len {
-        let max_line = active_diff_content_height(state, view).saturating_sub(1);
+        let max_line = active_diff_content_height(state).saturating_sub(1);
         if state.diff_line_cursor < max_line {
             state.diff_line_cursor += 1;
             state.diff_col_cursor = 0;

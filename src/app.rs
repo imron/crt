@@ -1642,32 +1642,20 @@ mod tests {
     struct EmptyViewport;
 
     impl ViewportMetrics for EmptyViewport {
-        fn diff_content_height(&self) -> usize {
-            0
-        }
-
         fn diff_view_height(&self) -> usize {
             0
         }
     }
 
-    struct RenderedViewport {
-        lines: Vec<String>,
-    }
+    struct RenderedViewport;
 
     impl RenderedViewport {
-        fn new(lines: Vec<&str>) -> Self {
-            Self {
-                lines: lines.into_iter().map(str::to_string).collect(),
-            }
+        fn new(_lines: Vec<&str>) -> Self {
+            Self
         }
     }
 
     impl ViewportMetrics for RenderedViewport {
-        fn diff_content_height(&self) -> usize {
-            self.lines.len()
-        }
-
         fn diff_view_height(&self) -> usize {
             10
         }
@@ -5009,8 +4997,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
-        let lines: Vec<String> = (1..=30).map(|n| n.to_string()).collect();
-        let view = RenderedViewport { lines };
+        let view = RenderedViewport;
 
         app.apply_core_effects(
             &view,
@@ -5040,8 +5027,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
-        let lines: Vec<String> = (1..=30).map(|n| n.to_string()).collect();
-        let view = RenderedViewport { lines };
+        let view = RenderedViewport;
 
         app.apply_core_effects(
             &view,
@@ -5075,8 +5061,7 @@ mod tests {
         );
         app.state.diff_scroll = 5;
         app.state.diff_line_cursor = 5;
-        let lines: Vec<String> = (1..=30).map(|n| n.to_string()).collect();
-        let view = RenderedViewport { lines };
+        let view = RenderedViewport;
 
         app.apply_core_effects(
             &view,
@@ -5106,8 +5091,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
-        let lines: Vec<String> = (1..=40).map(|n| n.to_string()).collect();
-        let view = RenderedViewport { lines };
+        let view = RenderedViewport;
 
         app.apply_core_effects(
             &view,
@@ -5138,8 +5122,7 @@ mod tests {
                 .join("\n"),
         );
         app.state.diff_line_cursor = 0;
-        let lines: Vec<String> = (1..=20).map(|n| n.to_string()).collect();
-        let view = RenderedViewport { lines };
+        let view = RenderedViewport;
 
         app.apply_core_effects(
             &view,
@@ -5204,8 +5187,7 @@ mod tests {
         );
         app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
         app.state.diff_line_cursor = 24;
-        let lines: Vec<String> = (1..=34).map(|n| n.to_string()).collect();
-        let view = RenderedViewport { lines };
+        let view = RenderedViewport;
 
         app.apply_core_effects(
             &view,
@@ -5234,8 +5216,7 @@ mod tests {
         );
         app.state.render_variant = RenderVariant::SideBySide;
         app.state.diff_line_cursor = 0;
-        let lines: Vec<String> = (1..=20).map(|n| n.to_string()).collect();
-        let view = RenderedViewport { lines };
+        let view = RenderedViewport;
 
         app.apply_core_effects(
             &view,
@@ -5269,8 +5250,7 @@ mod tests {
                 .join("\n"),
         );
         app.state.diff_line_cursor = 37;
-        let lines: Vec<String> = (1..=60).map(|n| n.to_string()).collect();
-        let view = RenderedViewport { lines };
+        let view = RenderedViewport;
 
         app.apply_core_effects(
             &view,

@@ -481,10 +481,6 @@ impl TuiState {
 }
 
 impl ViewportMetrics for TuiState {
-    fn diff_content_height(&self) -> usize {
-        self.diff_content_height
-    }
-
     fn diff_view_height(&self) -> usize {
         self.diff_view_height
     }
