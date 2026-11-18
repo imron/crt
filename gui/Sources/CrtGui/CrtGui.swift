@@ -51,12 +51,22 @@ private struct SnapshotError: Decodable {
     let message: String
 }
 
+struct GuiFile: Decodable, Identifiable {
+    let path: String
+    let kind: String
+    let status: String
+
+    var id: String { path }
+}
+
 struct GuiSnapshot: Decodable {
     let version: String
     let repoName: String
     let worktree: String
     let headRef: String
+    let mergeBase: String
     let status: String
+    let files: [GuiFile]
 
     static func invalid(_ message: String) -> GuiSnapshot {
         GuiSnapshot(
@@ -64,7 +74,9 @@ struct GuiSnapshot: Decodable {
             repoName: "",
             worktree: "",
             headRef: "",
-            status: message
+            mergeBase: "",
+            status: message,
+            files: []
         )
     }
 }
@@ -94,17 +106,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let hosting = NSHostingView(
-            rootView: ContentView(
-                version: snapshot.version,
-                repoName: snapshot.repoName,
-                worktree: snapshot.worktree,
-                headRef: snapshot.headRef,
-                status: snapshot.status
-            )
-        )
+        let hosting = NSHostingView(rootView: ContentView(snapshot: snapshot))
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 420),
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false

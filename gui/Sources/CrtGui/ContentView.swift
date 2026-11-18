@@ -1,26 +1,46 @@
 import SwiftUI
 
 struct ContentView: View {
-    let version: String
-    let repoName: String
-    let worktree: String
-    let headRef: String
-    let status: String
+    let snapshot: GuiSnapshot
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VSplitView {
+            metadata
+                .padding()
+            fileList
+        }
+        .frame(minWidth: 560, minHeight: 400)
+    }
+
+    private var metadata: some View {
+        VStack(alignment: .leading, spacing: 8) {
             Text("crt")
                 .font(.largeTitle)
-            Text(version)
+            Text(snapshot.version)
                 .foregroundStyle(.secondary)
             Divider()
-            labeled("Repository", repoName)
-            labeled("Worktree", worktree)
-            labeled("HEAD", headRef)
-            labeled("Server", status)
+            labeled("Repository", snapshot.repoName)
+            labeled("Worktree", snapshot.worktree)
+            labeled("HEAD", snapshot.headRef)
+            labeled("Merge base", snapshot.mergeBase)
+            labeled("Server", snapshot.status)
         }
-        .frame(minWidth: 520, minHeight: 320, alignment: .leading)
-        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var fileList: some View {
+        List(snapshot.files) { file in
+            HStack {
+                Text(file.path)
+                    .font(.system(.body, design: .monospaced))
+                Spacer()
+                Text(file.status)
+                    .foregroundStyle(.secondary)
+                Text(file.kind)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .listStyle(.inset)
     }
 
     private func labeled(_ title: String, _ value: String) -> some View {

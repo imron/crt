@@ -54,7 +54,7 @@ pub struct Cli {
     standalone: bool,
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum Command {
     /// Start persistent server (~/.crt/server.sock)
     Server,
@@ -63,7 +63,23 @@ enum Command {
     McpServer,
 
     /// Open the native GUI (macOS)
-    Gui,
+    Gui {
+        /// Base ref to diff against (e.g. "main", "v1.0", a commit hash)
+        #[arg(value_name = "BASE")]
+        base: Option<String>,
+
+        /// Review all changes from the repository root commit
+        #[arg(long)]
+        root: bool,
+
+        /// Clear all review state for the current (base, branch) pair and exit
+        #[arg(long)]
+        reset: bool,
+
+        /// Run with a private embedded server socket
+        #[arg(long)]
+        standalone: bool,
+    },
 
     /// Write review comment markers into worktree source files
     ApplyComments {
@@ -100,13 +116,18 @@ pub fn run_with_cli(cli: Cli) -> Result<()> {
             }
             cmd_mcp_server()
         }
-        Some(Command::Gui) => {
+        Some(Command::Gui {
+            base,
+            root,
+            reset,
+            standalone,
+        }) => {
             if cli.base.is_some() || cli.root || cli.reset || cli.standalone {
                 anyhow::bail!(
-                    "`crt gui` does not accept a base ref, --root, --reset, or --standalone"
+                    "`crt gui` does not accept a global base ref, --root, --reset, or --standalone"
                 );
             }
-            cmd_gui()
+            cmd_gui(base, root, reset, standalone)
         }
         Some(Command::ApplyComments { .. }) => {
             println!("crt apply-comments: not yet implemented");
@@ -160,8 +181,17 @@ fn cmd_review(base: Option<String>, root: bool, reset: bool, standalone: bool) -
 }
 
 /// `crt gui` — native GUI (macOS).
-fn cmd_gui() -> Result<()> {
-    gui::run_gui()
+fn cmd_gui(base: Option<String>, root: bool, reset: bool, standalone: bool) -> Result<()> {
+    if root && base.is_some() {
+        anyhow::bail!("--root cannot be combined with a base ref");
+    }
+    if !root && base.is_none() {
+        anyhow::bail!(
+            "A base ref is required unless --root is specified.\n\n\
+             Usage: crt gui <BASE>\n       crt gui --root\n\nExample: crt gui main"
+        );
+    }
+    gui::run_gui(base.as_deref(), root, reset, standalone)
 }
 
 /// `crt mcp-server` — start MCP adapter over stdio.
@@ -240,18 +270,8 @@ mod tests {
     }
 
     #[test]
-    fn gui_subcommand_parses() {
+    fn gui_subcommand_requires_base() {
         let cli = Cli::parse_from(["crt", "gui"]);
-
-        match cli.command {
-            Some(Command::Gui) => {}
-            _ => panic!("expected gui command"),
-        }
-    }
-
-    #[test]
-    fn gui_rejects_global_base() {
-        let cli = Cli::parse_from(["crt", "main", "gui"]);
         let err = run_with_cli(cli).unwrap_err();
 
         assert!(
@@ -261,8 +281,60 @@ mod tests {
     }
 
     #[test]
-    fn gui_rejects_standalone_flag() {
-        let cli = Cli::parse_from(["crt", "--standalone", "gui"]);
+    fn gui_parses_base() {
+        let cli = Cli::parse_from(["crt", "gui", "main"]);
+
+        match cli.command {
+            Some(Command::Gui {
+                base: Some(base),
+                root: false,
+                reset: false,
+                standalone: false,
+            }) if base == "main" => {}
+            other => panic!("expected gui main, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gui_parses_root() {
+        let cli = Cli::parse_from(["crt", "gui", "--root"]);
+
+        match cli.command {
+            Some(Command::Gui {
+                base: None,
+                root: true,
+                reset: false,
+                standalone: false,
+            }) => {}
+            other => panic!("expected gui --root, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gui_rejects_root_with_base() {
+        let cli = Cli::parse_from(["crt", "gui", "--root", "main"]);
+        let err = run_with_cli(cli).unwrap_err();
+
+        assert!(
+            err.to_string().contains("--root"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn gui_rejects_global_base() {
+        let cli = Cli::parse_from(["crt", "main", "gui"]);
+        let err = run_with_cli(cli).unwrap_err();
+
+        assert!(
+            err.to_string().contains("global"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn gui_rejects_global_standalone_flag() {
+        let cli = Cli::parse_from(["crt", "--standalone", "gui", "main"]);
         let err = run_with_cli(cli).unwrap_err();
 
         assert!(
@@ -272,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn gui_rejects_root_flag() {
+    fn gui_rejects_global_root_flag() {
         let cli = Cli::parse_from(["crt", "--root", "gui"]);
         let err = run_with_cli(cli).unwrap_err();
 
