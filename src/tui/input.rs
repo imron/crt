@@ -309,6 +309,21 @@ fn handle_comment_input(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> Key
         KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             return KeyInputResult::OpenEditor;
         }
+        KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            delete_comment_word_before_cursor(tui_state);
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            delete_comment_to_line_start(tui_state);
+        }
+        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            delete_comment_to_line_end(tui_state);
+        }
+        KeyCode::Tab | KeyCode::BackTab => {
+            tui_state
+                .comment_input
+                .insert(tui_state.comment_cursor, '\t');
+            tui_state.comment_cursor += 1;
+        }
         KeyCode::Enter => {
             tui_state
                 .comment_input
@@ -341,6 +356,14 @@ fn handle_comment_input(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> Key
             tui_state.comment_cursor =
                 next_char_boundary(&tui_state.comment_input, tui_state.comment_cursor);
         }
+        KeyCode::Up => {
+            tui_state.comment_cursor =
+                move_cursor_vertically(&tui_state.comment_input, tui_state.comment_cursor, -1);
+        }
+        KeyCode::Down => {
+            tui_state.comment_cursor =
+                move_cursor_vertically(&tui_state.comment_input, tui_state.comment_cursor, 1);
+        }
         KeyCode::Home => {
             tui_state.comment_cursor =
                 line_start(&tui_state.comment_input, tui_state.comment_cursor);
@@ -355,6 +378,63 @@ fn handle_comment_input(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> Key
         _ => {}
     }
     KeyInputResult::Local
+}
+
+fn delete_comment_word_before_cursor(tui_state: &mut TuiState) {
+    if tui_state.comment_cursor == 0 {
+        return;
+    }
+
+    let mut start = tui_state.comment_cursor;
+    while start > 0 {
+        let previous = previous_char_boundary(&tui_state.comment_input, start);
+        let ch = tui_state.comment_input[previous..start]
+            .chars()
+            .next()
+            .expect("previous boundary should contain a char");
+        if !ch.is_whitespace() {
+            break;
+        }
+        start = previous;
+    }
+    while start > 0 {
+        let previous = previous_char_boundary(&tui_state.comment_input, start);
+        let ch = tui_state.comment_input[previous..start]
+            .chars()
+            .next()
+            .expect("previous boundary should contain a char");
+        if ch.is_whitespace() {
+            break;
+        }
+        start = previous;
+    }
+
+    tui_state
+        .comment_input
+        .replace_range(start..tui_state.comment_cursor, "");
+    tui_state.comment_cursor = start;
+}
+
+fn delete_comment_to_line_start(tui_state: &mut TuiState) {
+    let start = line_start(&tui_state.comment_input, tui_state.comment_cursor);
+    tui_state
+        .comment_input
+        .replace_range(start..tui_state.comment_cursor, "");
+    tui_state.comment_cursor = start;
+}
+
+fn delete_comment_to_line_end(tui_state: &mut TuiState) {
+    let end = line_end(&tui_state.comment_input, tui_state.comment_cursor);
+    if tui_state.comment_cursor < end {
+        tui_state
+            .comment_input
+            .replace_range(tui_state.comment_cursor..end, "");
+    } else if tui_state.comment_cursor < tui_state.comment_input.len() {
+        let next = next_char_boundary(&tui_state.comment_input, tui_state.comment_cursor);
+        tui_state
+            .comment_input
+            .replace_range(tui_state.comment_cursor..next, "");
+    }
 }
 
 fn line_start(text: &str, cursor: usize) -> usize {
@@ -381,6 +461,35 @@ fn next_char_boundary(text: &str, cursor: usize) -> usize {
         index += 1;
     }
     index.min(text.len())
+}
+
+fn move_cursor_vertically(text: &str, cursor: usize, direction: isize) -> usize {
+    let current_start = line_start(text, cursor);
+    let current_end = line_end(text, cursor);
+    let target_col = text[current_start..cursor].chars().count();
+
+    let (target_start, target_end) = if direction < 0 {
+        if current_start == 0 {
+            return cursor;
+        }
+        let previous_end = current_start.saturating_sub(1);
+        (line_start(text, previous_end), previous_end)
+    } else {
+        if current_end >= text.len() {
+            return cursor;
+        }
+        let next_start = current_end + 1;
+        (next_start, line_end(text, next_start))
+    };
+
+    char_boundary_at_column(text, target_start, target_end, target_col)
+}
+
+fn char_boundary_at_column(text: &str, start: usize, end: usize, target_col: usize) -> usize {
+    text[start..end]
+        .char_indices()
+        .nth(target_col)
+        .map_or(end, |(idx, _)| start + idx)
 }
 
 #[cfg(test)]
@@ -630,6 +739,98 @@ mod tests {
 
         assert_eq!(tui_state.comment_input, "x");
         assert_eq!(tui_state.comment_cursor, 0);
+    }
+
+    #[test]
+    fn comment_prompt_supports_readline_delete_keys() {
+        let mut tui_state = TuiState::default();
+        tui_state.open_comment_prompt(PromptId(9), "alpha beta   ".to_string());
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(tui_state.comment_input, "alpha ");
+        assert_eq!(tui_state.comment_cursor, "alpha ".len());
+
+        tui_state.comment_input = "one two\nthree four".to_string();
+        tui_state.comment_cursor = "one two\nthree".len();
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(tui_state.comment_input, "one two\n four");
+        assert_eq!(tui_state.comment_cursor, "one two\n".len());
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(tui_state.comment_input, "one two\n");
+    }
+
+    #[test]
+    fn comment_prompt_inserts_tab_and_shift_enter() {
+        let mut tui_state = TuiState::default();
+        tui_state.open_comment_prompt(PromptId(9), "a".to_string());
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE),
+            ),
+            KeyInputResult::Local
+        );
+
+        assert_eq!(tui_state.comment_input, "a\t\nb");
+    }
+
+    #[test]
+    fn comment_prompt_arrow_keys_move_between_lines() {
+        let mut tui_state = TuiState::default();
+        tui_state.open_comment_prompt(PromptId(9), "short\nlonger\nend".to_string());
+        tui_state.comment_cursor = "short\nlong".len();
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(tui_state.comment_cursor, "shor".len());
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(tui_state.comment_cursor, "short\nlong".len());
     }
 
     #[test]

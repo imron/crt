@@ -421,13 +421,18 @@ fn draw_diff_search_input(
 }
 
 /// Draw the multi-line review comment composer.
-fn draw_comment_input(frame: &mut Frame, tui_state: &TuiState, styles: &StyleConfig) {
+fn draw_comment_input(frame: &mut Frame, tui_state: &mut TuiState, styles: &StyleConfig) {
     let area = frame.area();
     let width = area.width.saturating_sub(4).clamp(20, 100).min(area.width);
-    let height = area.height.saturating_sub(4).clamp(5, 9).min(area.height);
+    let line_count = comment_line_count(&tui_state.comment_input);
+    let max_height = area.height.saturating_div(2).max(3).min(area.height);
+    let min_height = 5.min(max_height);
+    let desired_height = saturating_u16(line_count.saturating_add(2));
+    let height = desired_height.clamp(min_height, max_height);
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height + 1);
     let popup = Rect::new(x, y, width, height);
+    let inner_height = popup.height.saturating_sub(2) as usize;
 
     let hs = &styles.help;
     let body = if tui_state.comment_input.is_empty() {
@@ -435,6 +440,8 @@ fn draw_comment_input(frame: &mut Frame, tui_state: &TuiState, styles: &StyleCon
     } else {
         tui_state.comment_input.clone()
     };
+    let (line, col) = comment_cursor_position(&tui_state.comment_input, tui_state.comment_cursor);
+    keep_comment_cursor_visible(tui_state, line, inner_height, line_count);
     let composer = Paragraph::new(body)
         .block(
             Block::default()
@@ -443,6 +450,7 @@ fn draw_comment_input(frame: &mut Frame, tui_state: &TuiState, styles: &StyleCon
                 .title(" Comment ")
                 .title_bottom(" Ctrl-S submit / Ctrl-E editor / Esc cancel "),
         )
+        .scroll((saturating_u16(tui_state.comment_scroll), 0))
         .style(Style::default().fg(*hs.text_fg).bg(*hs.bg));
 
     frame.render_widget(Clear, popup);
@@ -450,11 +458,38 @@ fn draw_comment_input(frame: &mut Frame, tui_state: &TuiState, styles: &StyleCon
 
     let inner_x = popup.x.saturating_add(1);
     let inner_y = popup.y.saturating_add(1);
-    let (line, col) = comment_cursor_position(&tui_state.comment_input, tui_state.comment_cursor);
     frame.set_cursor_position(Position {
         x: inner_x + col.min(popup.width.saturating_sub(2) as usize) as u16,
-        y: inner_y + line.min(popup.height.saturating_sub(2) as usize) as u16,
+        y: inner_y
+            + line
+                .saturating_sub(tui_state.comment_scroll)
+                .min(inner_height.saturating_sub(1)) as u16,
     });
+}
+
+fn keep_comment_cursor_visible(
+    tui_state: &mut TuiState,
+    cursor_line: usize,
+    inner_height: usize,
+    line_count: usize,
+) {
+    if inner_height == 0 {
+        tui_state.comment_scroll = 0;
+        return;
+    }
+
+    if cursor_line < tui_state.comment_scroll {
+        tui_state.comment_scroll = cursor_line;
+    } else if cursor_line >= tui_state.comment_scroll.saturating_add(inner_height) {
+        tui_state.comment_scroll = cursor_line.saturating_sub(inner_height - 1);
+    }
+
+    let max_scroll = line_count.saturating_sub(inner_height);
+    tui_state.comment_scroll = tui_state.comment_scroll.min(max_scroll);
+}
+
+fn comment_line_count(text: &str) -> usize {
+    text.bytes().filter(|byte| *byte == b'\n').count() + 1
 }
 
 fn comment_cursor_position(text: &str, cursor: usize) -> (usize, usize) {

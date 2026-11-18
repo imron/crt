@@ -119,6 +119,8 @@ pub struct TuiState {
     pub comment_input: String,
     /// Cursor position within `comment_input`.
     pub comment_cursor: usize,
+    /// First visible line in the comment composer.
+    pub comment_scroll: usize,
     /// Active core prompt requested by the interaction engine, if any.
     pub active_core_prompt: Option<PromptId>,
 }
@@ -161,6 +163,7 @@ impl Default for TuiState {
             diff_search_cursor: 0,
             comment_input: String::new(),
             comment_cursor: 0,
+            comment_scroll: 0,
             active_core_prompt: None,
         }
     }
@@ -445,6 +448,7 @@ impl TuiState {
         self.input_mode = InputMode::Comment;
         self.comment_input = initial_value;
         self.comment_cursor = self.comment_input.len();
+        self.comment_scroll = 0;
     }
 
     pub fn clear_prompt(&mut self) {
@@ -456,6 +460,7 @@ impl TuiState {
         self.diff_search_cursor = 0;
         self.comment_input.clear();
         self.comment_cursor = 0;
+        self.comment_scroll = 0;
     }
 }
 
