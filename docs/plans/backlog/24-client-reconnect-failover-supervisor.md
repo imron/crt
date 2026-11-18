@@ -20,7 +20,7 @@ architecture before reuse or discarded if stale.
 - Stage 21 (`21-protocol-type-decoupling.md`)
 - Stage 23 (`23-tui-intent-only-input.md`)
 - Stage 23g (`23g-remove-app-update.md`)
-- Stage 23k (`23k-thin-tui-runtime-cleanup.md`)
+- Stage 23k (`23k-thin-tui-module-splitting.md`)
 
 ## Goal
 
