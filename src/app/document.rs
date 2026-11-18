@@ -310,6 +310,7 @@ impl Document {
         match self.row(row)? {
             DocumentRow::Content(content) => Some(RenderLine::Content(RenderContent {
                 gutter: Cow::Borrowed(content.gutter.text.as_str()),
+                source: content.source,
                 marker: self.overlays.comments.marker_for_row(row),
                 kind: content.kind,
                 blame: content.blame.as_ref(),
@@ -994,6 +995,7 @@ pub enum RenderLine<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderContent<'a> {
     pub gutter: Cow<'a, str>,
+    pub source: SourceLocation,
     pub marker: CommentMarker,
     pub kind: LineKind,
     pub blame: Option<&'a BlameInfo>,
@@ -2149,6 +2151,14 @@ mod tests {
         );
         assert_eq!(content(&document, 0).source.base, Some(1));
         assert_eq!(content(&document, 0).source.head, Some(1));
+        assert_eq!(
+            content(&document, 1).source,
+            SourceLocation::paired(Some(2), None)
+        );
+        assert_eq!(
+            content(&document, 2).source,
+            SourceLocation::paired(None, Some(2))
+        );
         assert!(
             content(&document, 1)
                 .source
@@ -2159,6 +2169,18 @@ mod tests {
                 .source
                 .has_line_in_range(CommentAnchorSide::Head, 2, 2)
         );
+
+        let RenderLine::Content(deletion) = document.line(RowIndex(1)).expect("deletion line")
+        else {
+            panic!("expected deletion content line");
+        };
+        assert_eq!(deletion.source, SourceLocation::paired(Some(2), None));
+
+        let RenderLine::Content(addition) = document.line(RowIndex(2)).expect("addition line")
+        else {
+            panic!("expected addition content line");
+        };
+        assert_eq!(addition.source, SourceLocation::paired(None, Some(2)));
     }
 
     #[test]
