@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use crate::app::model::{AppModel, FileList};
-use crate::app::{AppOutput, AppState, FileListSectionFocus, StatusUpdate, ViewportMetrics};
+use crate::app::{AppOutput, FileListSectionFocus, StatusUpdate, ViewportMetrics};
 use crate::core::{AppTarget, ConnectionState, PaneId, PointerSemanticHit, PromptId, TextAnchor};
 use crate::review_types::PaneFocus;
 use ratatui::layout::Rect;
@@ -168,56 +168,30 @@ impl TuiState {
         Self::default()
     }
 
-    /// Maximum diff scroll offset for the last rendered line.
-    pub fn max_diff_scroll(&self) -> usize {
-        self.diff_content_height.saturating_sub(1)
-    }
-
-    pub fn clamp_diff_scroll(&self, state: &mut AppState) {
-        state.diff_scroll = state.diff_scroll.min(self.max_diff_scroll());
-    }
-
-    pub fn clamp_cursor_and_scroll(&self, state: &mut AppState) {
-        let max = self.max_diff_scroll();
-        state.diff_line_cursor = state.diff_line_cursor.min(max);
-        if state.diff_line_cursor < state.diff_scroll {
-            state.diff_scroll = state.diff_line_cursor;
-        }
-        if self.diff_view_height > 0
-            && state.diff_line_cursor >= state.diff_scroll + self.diff_view_height
-        {
-            state.diff_scroll = state
-                .diff_line_cursor
-                .saturating_sub(self.diff_view_height - 1);
-        }
-        self.clamp_diff_scroll(state);
-    }
-
-    pub fn clamp_file_list_scroll(&self, state: &mut AppState) {
-        let cursor_row =
-            if state.file_list_section_focus == FileListSectionFocus::UnresolvedComments {
-                state.selected_comment_id.and_then(|comment_id| {
-                    self.file_list_row_to_comment
-                        .iter()
-                        .position(|row_comment_id| *row_comment_id == Some(comment_id))
-                })
-            } else {
-                None
-            }
-            .or_else(|| {
-                self.file_list_row_to_file
+    pub fn selected_file_list_row(
+        &self,
+        section_focus: FileListSectionFocus,
+        selected_file: usize,
+        selected_comment_id: Option<i64>,
+    ) -> Option<usize> {
+        if section_focus == FileListSectionFocus::UnresolvedComments {
+            selected_comment_id.and_then(|comment_id| {
+                self.file_list_row_to_comment
                     .iter()
-                    .position(|file_idx| *file_idx == Some(state.selected_file))
-            });
-        let Some(cursor_row) = cursor_row else {
-            return;
-        };
-        let inner_height = self.file_list_area.height.saturating_sub(2) as usize;
-        if cursor_row < state.file_list_scroll {
-            state.file_list_scroll = cursor_row;
-        } else if cursor_row >= state.file_list_scroll + inner_height {
-            state.file_list_scroll = cursor_row.saturating_sub(inner_height) + 1;
+                    .position(|row_comment_id| *row_comment_id == Some(comment_id))
+            })
+        } else {
+            None
         }
+        .or_else(|| {
+            self.file_list_row_to_file
+                .iter()
+                .position(|file_idx| *file_idx == Some(selected_file))
+        })
+    }
+
+    pub fn file_list_visible_rows(&self) -> usize {
+        self.file_list_area.height.saturating_sub(2) as usize
     }
 
     pub fn comments_panel_height(area_height: u16) -> u16 {

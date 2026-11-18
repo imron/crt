@@ -122,23 +122,13 @@ fn draw_diff_region(
             .constraints([Constraint::Min(3), Constraint::Length(panel_height)])
             .split(area);
         tui_state.diff_area = chunks[0];
-        draw_diff_view(frame, model, tui_state, styles, chunks[0]);
+        document_diff_view::draw(frame, model, tui_state, styles, chunks[0]);
         comments_panel::draw(frame, model, tui_state, styles, chunks[1]);
     } else {
         tui_state.diff_area = area;
         tui_state.comments_area = Rect::default();
-        draw_diff_view(frame, model, tui_state, styles, area);
+        document_diff_view::draw(frame, model, tui_state, styles, area);
     }
-}
-
-fn draw_diff_view(
-    frame: &mut Frame,
-    model: &AppModel,
-    tui_state: &mut TuiState,
-    styles: &StyleConfig,
-    area: Rect,
-) {
-    document_diff_view::draw(frame, model, tui_state, styles, area);
 }
 
 // ---------------------------------------------------------------------------
