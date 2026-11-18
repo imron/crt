@@ -10,8 +10,8 @@ use crate::app::diff_rows::{
     LinearDiffRow, LinearDiffRows, SideBySideDiffRows, inline_diff_rows, side_by_side_diff_rows,
 };
 use crate::app::document::{
-    ActiveDocument, ContentId as DocumentContentId, DiffDocumentBuilder, DiffDocumentInput,
-    DocumentKey, RowIndex,
+    ActiveDocument, ColumnIndex, ContentId as DocumentContentId, DiffDocumentBuilder,
+    DiffDocumentInput, DocumentKey, DocumentPosition, RowIndex,
 };
 use crate::app::{AppState, CommentAnchorCapture, FileListSectionFocus, VisualSelectionMode};
 use crate::config::DiffAlgorithm;
@@ -1009,7 +1009,13 @@ pub fn build_active_document(state: &AppState, key: DocumentKey) -> Option<Activ
     })
     .ok()?;
     if let Some(query) = state.diff_search_query.as_ref() {
-        active_document.diff.search(query.clone());
+        active_document.diff.search_with_current(
+            query.clone(),
+            Some(DocumentPosition {
+                row: RowIndex(state.diff_line_cursor),
+                column: ColumnIndex(state.diff_col_cursor),
+            }),
+        );
     }
     Some(active_document)
 }

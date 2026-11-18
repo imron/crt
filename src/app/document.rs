@@ -22,6 +22,7 @@ impl ActiveDocument {
         comments: &[Comment],
         selected_comment_id: Option<i64>,
         cursor: Option<RowIndex>,
+        search_current: Option<DocumentPosition>,
         search_query: Option<&str>,
     ) {
         self.diff.refresh_overlays(
@@ -29,6 +30,7 @@ impl ActiveDocument {
             comments,
             selected_comment_id,
             cursor,
+            search_current,
             search_query,
         );
     }
@@ -96,12 +98,20 @@ impl DiffDocument {
     }
 
     pub fn search(&mut self, query: impl Into<String>) {
+        self.search_with_current(query, None);
+    }
+
+    pub fn search_with_current(
+        &mut self,
+        query: impl Into<String>,
+        current: Option<DocumentPosition>,
+    ) {
         let query = query.into();
         match self {
             Self::Unified(document) | Self::Base(document) | Self::Head(document) => {
-                document.search(query)
+                document.search_with_current(query, current)
             }
-            Self::SideBySide(document) => document.search(query),
+            Self::SideBySide(document) => document.search_with_current(query, current),
         }
     }
 
@@ -111,6 +121,7 @@ impl DiffDocument {
         comments: &[Comment],
         selected_comment_id: Option<i64>,
         cursor: Option<RowIndex>,
+        search_current: Option<DocumentPosition>,
         search_query: Option<&str>,
     ) {
         match self {
@@ -122,6 +133,7 @@ impl DiffDocument {
                     comments,
                     selected_comment_id,
                     cursor,
+                    search_current,
                     search_query,
                 );
             }
@@ -131,6 +143,7 @@ impl DiffDocument {
                     comments,
                     selected_comment_id,
                     cursor,
+                    search_current,
                     search_query,
                 );
             }
@@ -226,9 +239,17 @@ impl SideBySideDocument {
     }
 
     pub fn search(&mut self, query: impl Into<String>) {
+        self.search_with_current(query, None);
+    }
+
+    pub fn search_with_current(
+        &mut self,
+        query: impl Into<String>,
+        current: Option<DocumentPosition>,
+    ) {
         let query = query.into();
-        self.base.search(query.clone());
-        self.head.search(query);
+        self.base.search_with_current(query.clone(), current);
+        self.head.search_with_current(query, current);
     }
 
     fn refresh_overlays(
@@ -237,6 +258,7 @@ impl SideBySideDocument {
         comments: &[Comment],
         selected_comment_id: Option<i64>,
         cursor: Option<RowIndex>,
+        search_current: Option<DocumentPosition>,
         search_query: Option<&str>,
     ) {
         let marker_source_rows = SourceRowIndex::aligned(self.base.rows(), self.head.rows());
@@ -247,6 +269,7 @@ impl SideBySideDocument {
             comments,
             selected_comment_id,
             cursor,
+            search_current,
             search_query,
         );
         refresh_document_overlays(
@@ -256,6 +279,7 @@ impl SideBySideDocument {
             comments,
             selected_comment_id,
             cursor,
+            search_current,
             search_query,
         );
     }
@@ -377,7 +401,15 @@ impl Document {
     }
 
     pub fn search(&mut self, query: impl Into<String>) {
-        self.overlays.search = SearchOverlay::new(query.into());
+        self.search_with_current(query, None);
+    }
+
+    pub fn search_with_current(
+        &mut self,
+        query: impl Into<String>,
+        current: Option<DocumentPosition>,
+    ) {
+        self.overlays.search = SearchOverlay::new(query.into(), current);
     }
 
     pub fn clear_search(&mut self) {
@@ -909,32 +941,41 @@ pub struct RowCommentMarker {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SearchOverlay {
     pub query: Option<String>,
+    pub current: Option<DocumentPosition>,
 }
 
 impl SearchOverlay {
-    pub fn new(query: String) -> Self {
+    pub fn new(query: String, current: Option<DocumentPosition>) -> Self {
         if query.is_empty() {
             return Self::default();
         }
-        Self { query: Some(query) }
+        Self {
+            query: Some(query),
+            current,
+        }
     }
 
-    fn match_spans_for<'a>(
-        &'a self,
-        row: RowIndex,
-        text: &'a str,
-    ) -> impl Iterator<Item = SearchMatch> + 'a {
-        self.query
-            .as_deref()
-            .into_iter()
-            .flat_map(move |query| text.match_indices(query))
-            .map(move |(start, value)| SearchMatch {
+    fn match_spans_for(&self, row: RowIndex, text: &str) -> Vec<SearchMatch> {
+        let Some(query) = self.query.as_deref() else {
+            return Vec::new();
+        };
+        let Ok(regex) = regex::RegexBuilder::new(query)
+            .case_insensitive(true)
+            .build()
+        else {
+            return Vec::new();
+        };
+        regex
+            .find_iter(text)
+            .filter(|match_| match_.start() != match_.end())
+            .map(move |match_| SearchMatch {
                 row,
                 columns: ColumnSpan {
-                    start: ColumnIndex(start),
-                    end: ColumnIndex(start + value.len()),
+                    start: ColumnIndex(match_.start()),
+                    end: ColumnIndex(match_.end()),
                 },
             })
+            .collect()
     }
 
     fn render_runs_for<'a>(
@@ -950,10 +991,19 @@ impl SearchOverlay {
             }];
         }
 
-        let search_spans: Vec<ColumnSpan> = self
-            .match_spans_for(row, text)
+        let search_matches = self.match_spans_for(row, text);
+        let search_spans: Vec<ColumnSpan> = search_matches
+            .iter()
             .map(|search_match| search_match.columns)
             .collect();
+        let current_search_span = self.current.and_then(|current| {
+            search_matches
+                .iter()
+                .find(|search_match| {
+                    search_match.row == current.row && search_match.columns.start == current.column
+                })
+                .map(|search_match| search_match.columns)
+        });
         let mut boundaries =
             Vec::with_capacity(2 + changed_spans.len() * 2 + search_spans.len() * 2);
         boundaries.push(0);
@@ -976,7 +1026,9 @@ impl SearchOverlay {
             }
             advance_span_index(&search_spans, &mut search_index, start);
             advance_span_index(changed_spans, &mut changed_index, start);
-            let kind = if span_at(&search_spans, search_index, start) {
+            let kind = if current_search_span.is_some_and(|span| span.contains(start)) {
+                TextRunKind::CurrentSearchMatch
+            } else if span_at(&search_spans, search_index, start) {
                 TextRunKind::SearchMatch
             } else if span_at(changed_spans, changed_index, start) {
                 TextRunKind::Changed
@@ -1023,6 +1075,12 @@ pub struct ColumnSpan {
     pub end: ColumnIndex,
 }
 
+impl ColumnSpan {
+    fn contains(self, offset: usize) -> bool {
+        offset >= self.start.0 && offset < self.end.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenderLine<'a> {
     Content(RenderContent<'a>),
@@ -1050,6 +1108,7 @@ pub enum TextRunKind {
     Plain,
     Changed,
     SearchMatch,
+    CurrentSearchMatch,
 }
 
 #[derive(Debug, Clone)]
@@ -1099,6 +1158,7 @@ pub fn build_unified_document(input: &DiffDocumentInput<'_>) -> Document {
         input.selected_comment_id,
         input.cursor,
         None,
+        None,
     );
     document
 }
@@ -1117,6 +1177,7 @@ pub fn build_head_document(input: &DiffDocumentInput<'_>) -> Document {
         input.comments,
         input.selected_comment_id,
         input.cursor,
+        None,
         None,
     );
     document
@@ -1137,6 +1198,7 @@ pub fn build_base_document(input: &DiffDocumentInput<'_>) -> Document {
         input.selected_comment_id,
         input.cursor,
         None,
+        None,
     );
     document
 }
@@ -1154,6 +1216,7 @@ pub fn build_side_by_side_document(
         input.selected_comment_id,
         input.cursor,
         None,
+        None,
     );
     refresh_document_overlays(
         &mut head,
@@ -1162,6 +1225,7 @@ pub fn build_side_by_side_document(
         input.comments,
         input.selected_comment_id,
         input.cursor,
+        None,
         None,
     );
     SideBySideDocument::new(base, head)
@@ -1174,6 +1238,7 @@ fn refresh_document_overlays(
     comments: &[Comment],
     selected_comment_id: Option<i64>,
     cursor: Option<RowIndex>,
+    search_current: Option<DocumentPosition>,
     search_query: Option<&str>,
 ) {
     document.overlays.comments = project_comments(
@@ -1185,7 +1250,7 @@ fn refresh_document_overlays(
         cursor,
     );
     if let Some(query) = search_query {
-        document.search(query.to_string());
+        document.search_with_current(query.to_string(), search_current);
     } else {
         document.clear_search();
     }
@@ -2361,6 +2426,7 @@ mod tests {
             comments,
             search: SearchOverlay {
                 query: Some("needle".to_string()),
+                current: None,
             },
             selection: Some(VisibleSelection::Line(RowSpan {
                 start: RowIndex(0),
@@ -4004,6 +4070,46 @@ mod tests {
         };
         assert_eq!(rendered.runs[0].kind, TextRunKind::SearchMatch);
         assert_eq!(rendered.runs[1].kind, TextRunKind::Plain);
+        assert_eq!(rendered.runs[2].kind, TextRunKind::SearchMatch);
+
+        document.search_with_current(
+            "needle",
+            Some(DocumentPosition {
+                row: RowIndex(0),
+                column: ColumnIndex(11),
+            }),
+        );
+        let RenderLine::Content(rendered) = document.line(RowIndex(0)).expect("render line") else {
+            panic!("expected content render line");
+        };
+        assert_eq!(rendered.runs[0].kind, TextRunKind::SearchMatch);
+        assert_eq!(rendered.runs[1].kind, TextRunKind::Plain);
+        assert_eq!(rendered.runs[2].kind, TextRunKind::CurrentSearchMatch);
+
+        document.search("NEEDLE");
+        assert_eq!(
+            document.search_matches(RowIndex(0)).collect::<Vec<_>>(),
+            vec![
+                SearchMatch {
+                    row: RowIndex(0),
+                    columns: ColumnSpan {
+                        start: ColumnIndex(0),
+                        end: ColumnIndex(6)
+                    }
+                },
+                SearchMatch {
+                    row: RowIndex(0),
+                    columns: ColumnSpan {
+                        start: ColumnIndex(11),
+                        end: ColumnIndex(17)
+                    }
+                }
+            ]
+        );
+        let RenderLine::Content(rendered) = document.line(RowIndex(0)).expect("render line") else {
+            panic!("expected content render line");
+        };
+        assert_eq!(rendered.runs[0].kind, TextRunKind::SearchMatch);
         assert_eq!(rendered.runs[2].kind, TextRunKind::SearchMatch);
 
         document.search("");
