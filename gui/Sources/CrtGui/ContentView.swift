@@ -5,10 +5,11 @@ struct ContentView: View {
     @State private var selection: String?
 
     var body: some View {
-        NavigationSplitView {
+        HSplitView {
             fileList
-        } detail: {
+                .frame(minWidth: 180, idealWidth: 260, maxWidth: 420)
             diffPane
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 800, minHeight: 480)
         .onAppear {
@@ -18,26 +19,39 @@ struct ContentView: View {
             selection = path
         }
         .onChange(of: selection) { _, path in
-            guard let path, path != store.snapshot.selectedPath else {
+            guard let path,
+                  path != store.snapshot.selectedPath,
+                  store.snapshot.files.contains(where: { $0.path == path })
+            else {
                 return
             }
             store.selectFile(path)
         }
     }
 
+    private var unreviewed: [GuiFile] {
+        store.snapshot.files.filter { $0.status != "reviewed" }
+    }
+
+    private var reviewed: [GuiFile] {
+        store.snapshot.files.filter { $0.status == "reviewed" }
+    }
+
     private var fileList: some View {
-        List(store.snapshot.files, selection: $selection) { file in
-            VStack(alignment: .leading, spacing: 2) {
-                Text(file.path)
-                    .font(.system(.body, design: .monospaced))
-                Text("\(file.status) · \(file.kind)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .tag(file.path)
+        List(selection: $selection) {
+            treeSection(title: "Unreviewed", files: unreviewed)
+            treeSection(title: "Reviewed", files: reviewed)
         }
         .listStyle(.sidebar)
-        .navigationTitle(store.snapshot.repoName)
+    }
+
+    @ViewBuilder
+    private func treeSection(title: String, files: [GuiFile]) -> some View {
+        if !files.isEmpty {
+            Section(title) {
+                FileTreeRows(nodes: FileTreeNode.forest(from: files))
+            }
+        }
     }
 
     @ViewBuilder
@@ -45,11 +59,46 @@ struct ContentView: View {
         if let diff = store.snapshot.diff {
             DiffView(diff: diff)
         } else {
-            ContentUnavailableView(
-                "No file selected",
-                systemImage: "doc.text",
-                description: Text("Choose a file from the sidebar.")
-            )
+            Text("Choose a file from the sidebar.")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+struct FileTreeRows: View {
+    let nodes: [FileTreeNode]
+
+    var body: some View {
+        ForEach(nodes) { node in
+            FileTreeItem(node: node)
+        }
+    }
+}
+
+struct FileTreeItem: View {
+    let node: FileTreeNode
+    @State private var expanded = true
+
+    var body: some View {
+        if let children = node.children {
+            DisclosureGroup(isExpanded: $expanded) {
+                FileTreeRows(nodes: children)
+            } label: {
+                Label(node.name, systemImage: "folder")
+            }
+        } else if let file = node.file {
+            Label {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(node.name)
+                    Text(file.kind)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } icon: {
+                Image(systemName: "doc")
+            }
+            .tag(file.path)
         }
     }
 }
@@ -58,29 +107,34 @@ struct DiffView: View {
     let diff: GuiDiff
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(diff.path)
-                .font(.headline)
-                .padding(8)
-            Divider()
-            if diff.isBinary {
-                Text("Binary file")
-                    .foregroundStyle(.secondary)
-                    .padding()
-            } else {
+        if diff.isBinary {
+            Text("Binary file")
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            GeometryReader { geo in
                 ScrollView([.horizontal, .vertical]) {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(diff.lines.enumerated()), id: \.offset) { _, line in
-                            Text(line.content)
+                            Text(displayText(for: line))
                                 .font(.system(.body, design: .monospaced))
                                 .foregroundStyle(color(for: line.kind))
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .frame(
+                                    minWidth: geo.size.width,
+                                    alignment: .leading
+                                )
                         }
                     }
-                    .padding(8)
                 }
             }
         }
+    }
+
+    private func displayText(for line: GuiDiffLine) -> String {
+        if line.kind == "hunk" {
+            return line.content
+        }
+        return line.content
     }
 
     private func color(for kind: String) -> Color {
