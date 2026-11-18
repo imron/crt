@@ -2068,6 +2068,102 @@ mod tests {
     }
 
     #[test]
+    fn comment_navigation_places_fitting_comment_end_above_bottom() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        let mut comment = stored_comment(7, "src/main.rs");
+        comment.line_start = 18;
+        comment.line_end = 20;
+        app.state.comments = vec![comment];
+        app.state.head_content = Some(
+            (1..=30)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let lines: Vec<String> = (1..=30).map(|n| n.to_string()).collect();
+        let view = RenderedViewport { lines };
+
+        app.apply_core_effects(
+            &view,
+            vec![CoreEffect::CommentsPanel(
+                CommentsPanelEffect::NavigateNextComment,
+            )],
+        );
+
+        assert_eq!(app.state.selected_comment_id, Some(7));
+        assert_eq!(app.state.diff_line_cursor, 17);
+        assert_eq!(app.state.diff_scroll, 11);
+    }
+
+    #[test]
+    fn comment_navigation_keeps_view_full_near_file_end() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        let mut comment = stored_comment(7, "src/main.rs");
+        comment.line_start = 27;
+        comment.line_end = 29;
+        app.state.comments = vec![comment];
+        app.state.head_content = Some(
+            (1..=30)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let lines: Vec<String> = (1..=30).map(|n| n.to_string()).collect();
+        let view = RenderedViewport { lines };
+
+        app.apply_core_effects(
+            &view,
+            vec![CoreEffect::CommentsPanel(
+                CommentsPanelEffect::NavigateNextComment,
+            )],
+        );
+
+        assert_eq!(app.state.selected_comment_id, Some(7));
+        assert_eq!(app.state.diff_line_cursor, 26);
+        assert_eq!(app.state.diff_scroll, 20);
+    }
+
+    #[test]
+    fn comment_navigation_starts_large_comment_after_bounded_context() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        let mut comment = stored_comment(7, "src/main.rs");
+        comment.line_start = 12;
+        comment.line_end = 30;
+        app.state.comments = vec![comment];
+        app.state.head_content = Some(
+            (1..=40)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let lines: Vec<String> = (1..=40).map(|n| n.to_string()).collect();
+        let view = RenderedViewport { lines };
+
+        app.apply_core_effects(
+            &view,
+            vec![CoreEffect::CommentsPanel(
+                CommentsPanelEffect::NavigateNextComment,
+            )],
+        );
+
+        assert_eq!(app.state.selected_comment_id, Some(7));
+        assert_eq!(app.state.diff_line_cursor, 11);
+        assert_eq!(app.state.diff_scroll, 6);
+    }
+
+    #[test]
     fn comment_navigation_works_from_inline_deletion_row() {
         let mut app = App::new(
             Config::default(),

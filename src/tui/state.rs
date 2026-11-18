@@ -233,6 +233,27 @@ impl TuiState {
         }
     }
 
+    pub fn comments_panel_height(area_height: u16) -> u16 {
+        (area_height / 3).clamp(6, 12)
+    }
+
+    pub fn project_comments_panel_open(&mut self) {
+        if self.comments_area != Rect::default() || self.diff_area.height < 8 {
+            return;
+        }
+
+        let panel_height = Self::comments_panel_height(self.diff_area.height);
+        let diff_height = self.diff_area.height.saturating_sub(panel_height);
+        self.comments_area = Rect::new(
+            self.diff_area.x,
+            self.diff_area.y.saturating_add(diff_height),
+            self.diff_area.width,
+            panel_height,
+        );
+        self.diff_area.height = diff_height;
+        self.diff_view_height = diff_height.saturating_sub(2) as usize;
+    }
+
     pub fn diff_content_start_col(&self) -> usize {
         if self.diff_content_start_col > 0 {
             self.diff_content_start_col

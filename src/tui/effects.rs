@@ -2,7 +2,7 @@
 
 use super::state::TuiState;
 use crate::app::App;
-use crate::core::{CoreEffect, PromptKind};
+use crate::core::{CommentsPanelEffect, CoreEffect, PromptKind};
 
 pub fn apply_core_effects(
     app: &mut App,
@@ -46,8 +46,122 @@ pub fn apply_core_effects(
         }
     }
 
+    if opens_comments_panel_for_navigation(app, &app_effects) {
+        tui_state.project_comments_panel_open();
+    }
+
     let app_output = app.apply_core_effects(tui_state, app_effects);
     let app_handled = app_output.handled;
     tui_state.apply_app_output(app_output);
     app_handled || handled
+}
+
+fn opens_comments_panel_for_navigation(app: &App, effects: &[CoreEffect]) -> bool {
+    !app.state.show_comments_panel
+        && effects.iter().any(|effect| {
+            matches!(
+                effect,
+                CoreEffect::CommentsPanel(
+                    CommentsPanelEffect::NavigateNextComment
+                        | CommentsPanelEffect::NavigatePreviousComment
+                )
+            )
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::review_types::{
+        AnchorStatus, ChangeKind, Comment, ConnectionContext, DiffContent, FileChange, FileEntry,
+        ReviewStatus,
+    };
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn comment_jump_uses_projected_diff_height_when_panel_opens() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        let mut comment = stored_comment(7, "src/main.rs");
+        comment.line_start = 16;
+        comment.line_end = 24;
+        app.state.comments = vec![comment];
+        app.state.head_content = Some(
+            (1..=60)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.state.show_comments_panel = false;
+
+        let mut tui_state = TuiState::default();
+        tui_state.diff_area = Rect::new(0, 0, 100, 30);
+        tui_state.diff_content_height = 60;
+        tui_state.diff_view_height = 28;
+        tui_state.diff_rendered_text = (1..=60).map(|n| n.to_string()).collect();
+
+        apply_core_effects(
+            &mut app,
+            &mut tui_state,
+            vec![CoreEffect::CommentsPanel(
+                CommentsPanelEffect::NavigateNextComment,
+            )],
+        );
+
+        assert!(app.state.show_comments_panel);
+        assert_eq!(app.state.selected_comment_id, Some(7));
+        assert_eq!(app.state.diff_line_cursor, 15);
+        assert_eq!(app.state.diff_scroll, 7);
+    }
+
+    fn test_context() -> ConnectionContext {
+        ConnectionContext {
+            repo_root: "/repo".to_string(),
+            worktree: "/repo".to_string(),
+            base_ref: "main".to_string(),
+            head_ref: "feature".to_string(),
+            merge_base: "abc123".to_string(),
+        }
+    }
+
+    fn test_file(path: &str) -> FileEntry {
+        FileEntry {
+            change: FileChange {
+                path: path.to_string(),
+                old_path: None,
+                kind: ChangeKind::Modified,
+            },
+            status: ReviewStatus::Unreviewed,
+            diff: DiffContent {
+                hunks: Vec::new(),
+                is_binary: false,
+                diff_hash: format!("hash-{path}"),
+            },
+        }
+    }
+
+    fn stored_comment(id: i64, file_path: &str) -> Comment {
+        Comment {
+            id,
+            merge_base: "abc123".to_string(),
+            head_ref: "feature".to_string(),
+            file_path: file_path.to_string(),
+            line_start: 2,
+            line_end: 2,
+            char_start: None,
+            char_end: None,
+            anchor_text: "anchor".to_string(),
+            context_before: String::new(),
+            context_after: String::new(),
+            body: "comment".to_string(),
+            resolved: false,
+            created_at: "2026-06-28T00:00:00+10:00".to_string(),
+            updated_at: "2026-06-28T00:00:00+10:00".to_string(),
+            anchor_status: AnchorStatus::Anchored,
+        }
+    }
 }

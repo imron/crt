@@ -190,10 +190,45 @@ fn navigate_to_comment(state: &mut AppState, view: &impl AppViewport, comment: &
     }
     state.selected_comment_id = Some(comment.id);
     state.pane_focus = PaneFocus::Diff;
-    state.diff_line_cursor = display_row_for_head_line(state, comment.line_start as u32);
+    let start_row = display_row_for_head_line(state, comment_line(comment.line_start));
+    let end_row = display_row_for_head_line(state, comment_line(comment.line_end)).max(start_row);
+    state.diff_line_cursor = start_row;
     state.diff_col_cursor = 0;
+    scroll_to_comment(state, view, start_row, end_row);
     clamp_cursor_and_scroll(state, view);
     state.mark_model_changed();
+}
+
+fn comment_line(line: i64) -> u32 {
+    u32::try_from(line.max(1)).unwrap_or(u32::MAX)
+}
+
+fn scroll_to_comment(
+    state: &mut AppState,
+    view: &impl AppViewport,
+    start_row: usize,
+    end_row: usize,
+) {
+    let view_height = view.diff_view_height();
+    if view_height == 0 {
+        return;
+    }
+
+    let comment_height = end_row.saturating_sub(start_row).saturating_add(1);
+    let scroll = if comment_height <= view_height {
+        let max_full_view_scroll = view.diff_content_height().saturating_sub(view_height);
+        end_row
+            .saturating_add(2)
+            .saturating_sub(view_height)
+            .min(max_full_view_scroll)
+    } else {
+        let max_start_offset = view_height / 2;
+        start_row
+            .saturating_sub(max_start_offset)
+            .min(view.max_diff_scroll())
+    };
+
+    state.diff_scroll = scroll;
 }
 
 pub fn ensure_selected_comment(state: &mut AppState) {
