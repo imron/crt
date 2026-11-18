@@ -2456,6 +2456,61 @@ mod tests {
     }
 
     #[test]
+    fn inline_diff_toggle_preserves_current_source_line() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_offset_multiline_replacement_hunk(
+                "src/main.rs",
+            )],
+        );
+        app.state.render_variant = RenderVariant::Inline;
+        app.state.base_content = Some(
+            (1..=32)
+                .map(|n| format!("base {n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.state.head_content = Some(
+            (1..=34)
+                .map(|n| format!("head {n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.state.diff_line_cursor = 27;
+
+        app.apply_core_effects(&EmptyViewport, vec![CoreEffect::ToggleInlineDiff]);
+
+        assert_eq!(app.state.render_variant, RenderVariant::SideBySide);
+        assert_eq!(app.state.diff_line_cursor, 26);
+        let row = app
+            .model()
+            .diff
+            .side_by_side_rows
+            .rows
+            .get(app.state.diff_line_cursor)
+            .expect("cursor should land on a side-by-side row")
+            .clone();
+        assert_eq!(row.base.as_ref().map(|cell| cell.line_number), Some(26));
+        assert_eq!(row.head.as_ref().map(|cell| cell.line_number), Some(27));
+
+        app.apply_core_effects(&EmptyViewport, vec![CoreEffect::ToggleInlineDiff]);
+
+        assert_eq!(app.state.render_variant, RenderVariant::Inline);
+        assert_eq!(app.state.diff_line_cursor, 27);
+        let row = app
+            .model()
+            .diff
+            .inline_rows
+            .rows
+            .get(app.state.diff_line_cursor)
+            .expect("cursor should land on an inline row")
+            .clone();
+        assert_eq!(row.old_lineno, None);
+        assert_eq!(row.new_lineno, Some(27));
+    }
+
+    #[test]
     fn side_by_side_toggle_loads_base_content_for_shared_tail_rows() {
         let path = "src/app/update/comments.rs";
         let mut base_lines: Vec<String> = (1..=90).map(|n| format!("base {n}")).collect();
