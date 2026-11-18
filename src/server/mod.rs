@@ -467,7 +467,7 @@ async fn dispatch(
         Method::ListChangedFiles => {
             let ctx = conn_ctx.as_ref().unwrap();
             let db = conn_db.as_ref().unwrap();
-            api::handle_list_changed_files(id, ctx, db).await
+            api::handle_list_changed_files(id, ctx, db, &state.notify_tx).await
         }
         Method::GetFileDiff => {
             let ctx = conn_ctx.as_ref().unwrap();

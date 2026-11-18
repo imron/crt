@@ -128,6 +128,7 @@ pub async fn handle_list_changed_files(
     id: &serde_json::Value,
     ctx: &ConnectionContext,
     db: &Arc<Mutex<Database>>,
+    notify_tx: &broadcast::Sender<notify::Notification>,
 ) -> JsonRpcResponse {
     // Load stored reviews from DB (async lock, then sync DB call).
     let reviews = {
@@ -142,6 +143,23 @@ pub async fn handle_list_changed_files(
                 );
             }
         }
+    };
+
+    // --- Rebase migration ---
+    // If no reviews exist for the current scope, check whether reviews
+    // exist under the same head_ref but a different (old) merge_base.
+    // If so, migrate them to the new scope.
+    let reviews = if reviews.is_empty() {
+        match try_migrate_reviews(ctx, db, notify_tx).await {
+            Ok(Some(migrated)) => migrated,
+            Ok(None) => reviews,
+            Err(e) => {
+                eprintln!("Warning: rebase migration failed: {e:#}");
+                reviews
+            }
+        }
+    } else {
+        reviews
     };
 
     let worktree = ctx.worktree.clone();
@@ -207,6 +225,159 @@ pub async fn handle_list_changed_files(
             format!("Git task panicked: {e}"),
         ),
     }
+}
+
+/// Attempt to migrate reviews from an old scope (different merge_base, same
+/// head_ref) to the current scope. This handles the common case where a
+/// branch has been rebased, causing the merge_base to change.
+///
+/// Returns `Ok(Some(reviews))` if migration occurred, `Ok(None)` if no
+/// old-scope reviews were found, or `Err` on failure.
+async fn try_migrate_reviews(
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    notify_tx: &broadcast::Sender<notify::Notification>,
+) -> anyhow::Result<Option<std::collections::HashMap<String, crate::db::StoredReview>>> {
+    use std::collections::HashMap;
+
+    // 1. Find old-scope reviews for this head_ref.
+    let old_scopes = {
+        let db_guard = db.lock().await;
+        db_guard.load_reviews_by_head_ref(&ctx.head_ref)?
+    };
+
+    // Filter out the current merge_base (shouldn't have any, but be safe).
+    let old_scopes: Vec<_> = old_scopes
+        .into_iter()
+        .filter(|(mb, _)| mb != &ctx.merge_base)
+        .collect();
+
+    if old_scopes.is_empty() {
+        return Ok(None);
+    }
+
+    // 2. Pick the most recent old scope (first in the list, ordered by
+    //    most recent reviewed_at).
+    let (old_merge_base, old_reviews) = old_scopes.into_iter().next().unwrap();
+
+    // 3. Run the migration logic on a blocking thread (git operations).
+    let worktree = ctx.worktree.clone();
+    let new_merge_base = ctx.merge_base.clone();
+    let old_mb = old_merge_base.clone();
+
+    let migration_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let repo = git::Repo::open(&worktree)?;
+
+        // Get the list of currently changed files so we know which files
+        // are still relevant in the new scope.
+        let current_changes = repo.list_changed_files_workdir(&new_merge_base)?;
+        let current_paths: std::collections::HashSet<String> =
+            current_changes.iter().map(|c| c.path.clone()).collect();
+
+        let mut migrated: Vec<(String, String, String)> = Vec::new(); // (file_path, diff_hash, reviewed_commit)
+
+        for (file_path, old_review) in &old_reviews {
+            // Skip files no longer in the changed set.
+            if !current_paths.contains(file_path) {
+                continue;
+            }
+
+            let reviewed_commit = &old_review.reviewed_commit;
+
+            if !reviewed_commit.is_empty() && repo.commit_exists(reviewed_commit) {
+                // Old reviewed_commit is resolvable.
+                // Compare blob at reviewed_commit vs blob at current HEAD.
+                let old_blob = repo.file_blob_hash(reviewed_commit, file_path)?;
+                let new_blob = repo.file_blob_hash("HEAD", file_path)
+                    .ok()
+                    .flatten();
+
+                if old_blob == new_blob {
+                    // File content unchanged after rebase.
+                    // Recompute diff_hash against new merge_base.
+                    let diff = repo.diff_file_workdir(&new_merge_base, file_path)?;
+                    migrated.push((
+                        file_path.clone(),
+                        diff.diff_hash,
+                        repo.resolve_commit("HEAD")?,
+                    ));
+                } else {
+                    // File content changed during rebase.
+                    // Migrate as Changed — keep the old reviewed_commit so
+                    // the diff shows only what changed since the review.
+                    // Recompute diff_hash against new merge_base.
+                    let diff = repo.diff_file_workdir(&new_merge_base, file_path)?;
+                    migrated.push((
+                        file_path.clone(),
+                        diff.diff_hash,
+                        reviewed_commit.clone(),
+                    ));
+                }
+            } else {
+                // reviewed_commit is empty or GC'd.
+                // Fall back to diff_hash comparison.
+                let diff = repo.diff_file_workdir(&new_merge_base, file_path)?;
+                if diff.diff_hash == old_review.diff_hash {
+                    // Diff unchanged — keep as reviewed.
+                    migrated.push((
+                        file_path.clone(),
+                        diff.diff_hash,
+                        String::new(),
+                    ));
+                }
+                // If diff_hash differs, treat as unreviewed (don't migrate).
+            }
+        }
+
+        Ok((migrated, old_mb))
+    })
+    .await??;
+
+    let (migrated_entries, old_mb) = migration_result;
+
+    if migrated_entries.is_empty() {
+        // Nothing to migrate — clean up old scope anyway.
+        let db_guard = db.lock().await;
+        db_guard.clear_reviews(&old_mb, &ctx.head_ref)?;
+        return Ok(None);
+    }
+
+    // 4. Store migrated reviews under the new scope and delete old scope.
+    let migrated_count = migrated_entries.len();
+    let mut new_reviews = HashMap::new();
+
+    {
+        let db_guard = db.lock().await;
+        for (file_path, diff_hash, reviewed_commit) in &migrated_entries {
+            let review = db_guard.store_review(
+                &ctx.merge_base,
+                &ctx.head_ref,
+                file_path,
+                diff_hash,
+                reviewed_commit,
+            )?;
+            new_reviews.insert(file_path.clone(), review);
+        }
+        // Delete old scope records.
+        db_guard.clear_reviews(&old_mb, &ctx.head_ref)?;
+    }
+
+    // 5. Broadcast migration notification.
+    let _ = notify_tx.send(notify::Notification {
+        base_ref: ctx.merge_base.clone(),
+        head_ref: ctx.head_ref.clone(),
+        kind: notify::NotificationKind::ReviewsMigrated {
+            count: migrated_count,
+        },
+    });
+
+    eprintln!(
+        "Migrated {} review(s) from old scope (merge_base: {}..)",
+        migrated_count,
+        &old_mb[..8.min(old_mb.len())]
+    );
+
+    Ok(Some(new_reviews))
 }
 
 // ---------------------------------------------------------------------------

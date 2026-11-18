@@ -518,15 +518,33 @@ impl AppState {
         if let Some(entry) = self.files.get(self.selected_file) {
             let path = entry.change.path.clone();
             let diff_base = self.effective_diff_base().to_string();
+            let merge_base = self.context.merge_base.clone();
             if let Ok(repo) =
                 crate::git::Repo::open(std::path::Path::new(&self.context.worktree))
             {
-                if let Ok(diff) = repo.diff_file_workdir_opts(
-                    &diff_base,
-                    &path,
-                    self.diff_algorithm,
-                    self.ignore_whitespace,
-                ) {
+                let diff = repo
+                    .diff_file_workdir_opts(
+                        &diff_base,
+                        &path,
+                        self.diff_algorithm,
+                        self.ignore_whitespace,
+                    )
+                    .or_else(|_| {
+                        // If the diff base (reviewed_commit) is unresolvable
+                        // (e.g. GC'd after interactive rebase), fall back to
+                        // the merge base.
+                        if diff_base != merge_base {
+                            repo.diff_file_workdir_opts(
+                                &merge_base,
+                                &path,
+                                self.diff_algorithm,
+                                self.ignore_whitespace,
+                            )
+                        } else {
+                            Err(anyhow::anyhow!("diff failed"))
+                        }
+                    });
+                if let Ok(diff) = diff {
                     if let Some(entry) = self.files.get_mut(self.selected_file) {
                         entry.diff = diff;
                     }
@@ -543,15 +561,32 @@ impl AppState {
         if let Some(entry) = self.files.get(self.selected_file) {
             let path = entry.change.path.clone();
             let diff_base = self.effective_diff_base().to_string();
+            let merge_base = self.context.merge_base.clone();
             if let Ok(repo) =
                 crate::git::Repo::open(std::path::Path::new(&self.context.worktree))
             {
-                if let Ok(diff) = repo.diff_file_workdir_opts(
-                    &diff_base,
-                    &path,
-                    self.diff_algorithm,
-                    self.ignore_whitespace,
-                ) {
+                let diff = repo
+                    .diff_file_workdir_opts(
+                        &diff_base,
+                        &path,
+                        self.diff_algorithm,
+                        self.ignore_whitespace,
+                    )
+                    .or_else(|_| {
+                        // Fall back to merge_base if reviewed_commit is
+                        // unresolvable (e.g. squashed + GC'd).
+                        if diff_base != merge_base {
+                            repo.diff_file_workdir_opts(
+                                &merge_base,
+                                &path,
+                                self.diff_algorithm,
+                                self.ignore_whitespace,
+                            )
+                        } else {
+                            Err(anyhow::anyhow!("diff failed"))
+                        }
+                    });
+                if let Ok(diff) = diff {
                     if let Some(entry) = self.files.get_mut(self.selected_file) {
                         entry.diff = diff;
                     }
@@ -1230,6 +1265,7 @@ impl App {
                 n.kind,
                 crate::server::notify::NotificationKind::ReviewChanged { .. }
                     | crate::server::notify::NotificationKind::ReviewsCleared
+                    | crate::server::notify::NotificationKind::ReviewsMigrated { .. }
             )
         });
 
