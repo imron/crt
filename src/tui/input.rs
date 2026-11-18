@@ -318,6 +318,9 @@ fn handle_comment_input(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> Key
         KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             delete_comment_to_line_end(tui_state);
         }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            delete_comment_char_at_cursor(tui_state);
+        }
         KeyCode::Tab | KeyCode::BackTab => {
             tui_state
                 .comment_input
@@ -347,6 +350,48 @@ fn handle_comment_input(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> Key
                     .comment_input
                     .replace_range(tui_state.comment_cursor..next, "");
             }
+        }
+        KeyCode::Left
+            if key.modifiers.contains(KeyModifiers::ALT)
+                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            tui_state.comment_cursor =
+                previous_word_boundary(&tui_state.comment_input, tui_state.comment_cursor);
+        }
+        KeyCode::Right
+            if key.modifiers.contains(KeyModifiers::ALT)
+                || key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            tui_state.comment_cursor =
+                next_word_boundary(&tui_state.comment_input, tui_state.comment_cursor);
+        }
+        KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+            tui_state.comment_cursor =
+                previous_word_boundary(&tui_state.comment_input, tui_state.comment_cursor);
+        }
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+            tui_state.comment_cursor =
+                next_word_boundary(&tui_state.comment_input, tui_state.comment_cursor);
+        }
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            tui_state.comment_cursor =
+                line_start(&tui_state.comment_input, tui_state.comment_cursor);
+        }
+        KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            tui_state.comment_cursor =
+                previous_char_boundary(&tui_state.comment_input, tui_state.comment_cursor);
+        }
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            tui_state.comment_cursor =
+                next_char_boundary(&tui_state.comment_input, tui_state.comment_cursor);
+        }
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            tui_state.comment_cursor =
+                move_cursor_vertically(&tui_state.comment_input, tui_state.comment_cursor, -1);
+        }
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            tui_state.comment_cursor =
+                move_cursor_vertically(&tui_state.comment_input, tui_state.comment_cursor, 1);
         }
         KeyCode::Left => {
             tui_state.comment_cursor =
@@ -385,10 +430,18 @@ fn delete_comment_word_before_cursor(tui_state: &mut TuiState) {
         return;
     }
 
-    let mut start = tui_state.comment_cursor;
+    let start = previous_word_boundary(&tui_state.comment_input, tui_state.comment_cursor);
+    tui_state
+        .comment_input
+        .replace_range(start..tui_state.comment_cursor, "");
+    tui_state.comment_cursor = start;
+}
+
+fn previous_word_boundary(text: &str, cursor: usize) -> usize {
+    let mut start = cursor;
     while start > 0 {
-        let previous = previous_char_boundary(&tui_state.comment_input, start);
-        let ch = tui_state.comment_input[previous..start]
+        let previous = previous_char_boundary(text, start);
+        let ch = text[previous..start]
             .chars()
             .next()
             .expect("previous boundary should contain a char");
@@ -398,8 +451,8 @@ fn delete_comment_word_before_cursor(tui_state: &mut TuiState) {
         start = previous;
     }
     while start > 0 {
-        let previous = previous_char_boundary(&tui_state.comment_input, start);
-        let ch = tui_state.comment_input[previous..start]
+        let previous = previous_char_boundary(text, start);
+        let ch = text[previous..start]
             .chars()
             .next()
             .expect("previous boundary should contain a char");
@@ -408,11 +461,34 @@ fn delete_comment_word_before_cursor(tui_state: &mut TuiState) {
         }
         start = previous;
     }
+    start
+}
 
-    tui_state
-        .comment_input
-        .replace_range(start..tui_state.comment_cursor, "");
-    tui_state.comment_cursor = start;
+fn next_word_boundary(text: &str, cursor: usize) -> usize {
+    let mut end = cursor;
+    while end < text.len() {
+        let next = next_char_boundary(text, end);
+        let ch = text[end..next]
+            .chars()
+            .next()
+            .expect("next boundary should contain a char");
+        if ch.is_whitespace() {
+            break;
+        }
+        end = next;
+    }
+    while end < text.len() {
+        let next = next_char_boundary(text, end);
+        let ch = text[end..next]
+            .chars()
+            .next()
+            .expect("next boundary should contain a char");
+        if !ch.is_whitespace() {
+            break;
+        }
+        end = next;
+    }
+    end
 }
 
 fn delete_comment_to_line_start(tui_state: &mut TuiState) {
@@ -429,7 +505,13 @@ fn delete_comment_to_line_end(tui_state: &mut TuiState) {
         tui_state
             .comment_input
             .replace_range(tui_state.comment_cursor..end, "");
-    } else if tui_state.comment_cursor < tui_state.comment_input.len() {
+    } else {
+        delete_comment_char_at_cursor(tui_state);
+    }
+}
+
+fn delete_comment_char_at_cursor(tui_state: &mut TuiState) {
+    if tui_state.comment_cursor < tui_state.comment_input.len() {
         let next = next_char_boundary(&tui_state.comment_input, tui_state.comment_cursor);
         tui_state
             .comment_input
@@ -831,6 +913,101 @@ mod tests {
             KeyInputResult::Local
         );
         assert_eq!(tui_state.comment_cursor, "short\nlong".len());
+    }
+
+    #[test]
+    fn comment_prompt_supports_terminal_word_movement() {
+        let mut tui_state = TuiState::default();
+        tui_state.open_comment_prompt(PromptId(9), "alpha beta gamma".to_string());
+        tui_state.comment_cursor = "alpha beta".len();
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Left, KeyModifiers::ALT),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(tui_state.comment_cursor, "alpha ".len());
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Right, KeyModifiers::ALT),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(tui_state.comment_cursor, "alpha beta ".len());
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(tui_state.comment_cursor, "alpha beta gamma".len());
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(tui_state.comment_cursor, "alpha beta ".len());
+    }
+
+    #[test]
+    fn comment_prompt_supports_control_character_movement() {
+        let mut tui_state = TuiState::default();
+        tui_state.open_comment_prompt(PromptId(9), "one\ntwo".to_string());
+        tui_state.comment_cursor = "one\nt".len();
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(tui_state.comment_cursor, "one\n".len());
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(tui_state.comment_cursor, "one\nt".len());
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(tui_state.comment_cursor, "o".len());
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(tui_state.comment_cursor, "one\nt".len());
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(tui_state.comment_input, "one\nto");
     }
 
     #[test]
