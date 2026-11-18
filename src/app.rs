@@ -139,11 +139,25 @@ impl App {
         self.client()?.find_definition(symbol, context_file).await
     }
 
-    pub async fn drain_notifications(&self) -> Result<Vec<Notification>> {
+    async fn drain_notifications(&self) -> Result<Vec<Notification>> {
         Ok(self.client()?.drain_notifications().await)
     }
 
-    pub async fn process_pending_work(&mut self) -> Option<StatusUpdate> {
+    pub async fn process_background_work(&mut self) -> Option<StatusUpdate> {
+        let mut status = self.process_pending_work().await;
+
+        if let Some(notification_status) = self.process_notifications().await {
+            status = Some(notification_status);
+        }
+
+        if let Some(work_status) = self.process_pending_work().await {
+            status = Some(work_status);
+        }
+
+        status
+    }
+
+    async fn process_pending_work(&mut self) -> Option<StatusUpdate> {
         let mut status = None;
         while let Some(work) = self.pending_work.pop_front() {
             let work_status = match work {
@@ -157,7 +171,7 @@ impl App {
         status
     }
 
-    pub async fn process_notifications(&mut self) -> Option<StatusUpdate> {
+    async fn process_notifications(&mut self) -> Option<StatusUpdate> {
         let notifications = match self.drain_notifications().await {
             Ok(notifications) => notifications,
             Err(e) => return Some(StatusUpdate::Set(format!("Notification error: {e}"))),
