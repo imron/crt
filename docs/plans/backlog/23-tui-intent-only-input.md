@@ -149,6 +149,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   adapter so prompt submit semantics stay behind the core interaction engine.
 - Introduced an `App` boundary that owns `AppState` and `Config`, and moved
   shared style access out of `TuiState` to app-owned configuration.
+- Changed the TUI key input adapter to emit core effects instead of applying
+  them, keeping effect application at the TUI runtime boundary.
 
 ## Acceptance Criteria
 

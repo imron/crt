@@ -9,13 +9,12 @@ use crossterm::event::{
     KeyCode, KeyEvent as CrosstermKeyEvent, KeyEventKind as CrosstermKeyEventKind, KeyModifiers,
 };
 
-use super::effects::apply_core_effects;
 use super::state::{InputMode, TuiState};
 use crate::app::AppState;
 use crate::app_update;
 use crate::core::{
-    InputEvent, InputModifiers, InteractionContext, Key as CoreKey, KeyEvent as CoreKeyEvent,
-    KeyEventKind as CoreKeyEventKind,
+    CoreEffect, InputEvent, InputModifiers, InteractionContext, Key as CoreKey,
+    KeyEvent as CoreKeyEvent, KeyEventKind as CoreKeyEventKind,
 };
 
 /// How long the "Press Ctrl-C again" prompt stays active.
@@ -56,16 +55,17 @@ fn input_event_from_key(key: CrosstermKeyEvent) -> Option<InputEvent> {
 
 fn dispatch_core_input(
     state: &mut AppState,
-    tui_state: &mut TuiState,
+    tui_state: &TuiState,
     key: CrosstermKeyEvent,
-) -> bool {
+) -> Option<Vec<CoreEffect>> {
     let Some(event) = input_event_from_key(key) else {
-        return false;
+        return None;
     };
-    let effects = state
-        .core_interaction
-        .handle_input(event, &interaction_context(state, tui_state));
-    apply_core_effects(state, tui_state, effects)
+    Some(
+        state
+            .core_interaction
+            .handle_input(event, &interaction_context(state, tui_state)),
+    )
 }
 
 fn interaction_context(state: &AppState, tui_state: &TuiState) -> InteractionContext {
@@ -78,80 +78,94 @@ fn interaction_context(state: &AppState, tui_state: &TuiState) -> InteractionCon
     }
 }
 
-fn submit_active_prompt(state: &mut AppState, tui_state: &mut TuiState, value: String) -> bool {
+fn submit_active_prompt(
+    state: &mut AppState,
+    tui_state: &mut TuiState,
+    value: String,
+) -> Option<Vec<CoreEffect>> {
     let Some(id) = tui_state.active_core_prompt else {
-        return false;
+        return None;
     };
-    let effects = state.core_interaction.handle_input(
+    Some(state.core_interaction.handle_input(
         InputEvent::PromptSubmit { id, value },
         &app_update::prompt_submit_context(state),
-    );
-    apply_core_effects(state, tui_state, effects)
+    ))
 }
 
-fn cancel_active_prompt(state: &mut AppState, tui_state: &mut TuiState) -> bool {
+fn cancel_active_prompt(state: &mut AppState, tui_state: &mut TuiState) -> Option<Vec<CoreEffect>> {
     let Some(id) = tui_state.active_core_prompt else {
-        return false;
+        return None;
     };
-    let effects = state
-        .core_interaction
-        .handle_input(InputEvent::PromptCancel { id }, &Default::default());
-    apply_core_effects(state, tui_state, effects)
+    Some(
+        state
+            .core_interaction
+            .handle_input(InputEvent::PromptCancel { id }, &Default::default()),
+    )
 }
 
-/// Handle a key press event by mutating the application state.
-pub fn handle_key_event(state: &mut AppState, tui_state: &mut TuiState, key: CrosstermKeyEvent) {
+/// Handle a key press event by updating local TUI input state and emitting core effects.
+pub fn handle_key_event(
+    state: &mut AppState,
+    tui_state: &mut TuiState,
+    key: CrosstermKeyEvent,
+) -> Vec<CoreEffect> {
     if tui_state.input_mode == InputMode::Command {
-        handle_command_input(state, tui_state, key);
-        return;
+        return handle_command_input(state, tui_state, key);
     }
 
     if tui_state.input_mode == InputMode::DiffSearch {
-        handle_diff_search_input(state, tui_state, key);
-        return;
+        return handle_diff_search_input(state, tui_state, key);
     }
 
     if tui_state.search_results.is_some() {
-        dispatch_core_input(state, tui_state, key);
-        return;
+        return dispatch_core_input(state, tui_state, key).unwrap_or_default();
     }
 
     if tui_state.definition_results.is_some() {
-        dispatch_core_input(state, tui_state, key);
-        return;
+        return dispatch_core_input(state, tui_state, key).unwrap_or_default();
     }
 
     if tui_state.show_help {
-        dispatch_core_input(state, tui_state, key);
-        return;
+        return dispatch_core_input(state, tui_state, key).unwrap_or_default();
     }
 
-    if dispatch_core_input(state, tui_state, key) {
-        return;
+    if let Some(effects) = dispatch_core_input(state, tui_state, key) {
+        if !effects.is_empty() {
+            return effects;
+        }
     }
 
     tui_state.clear_status_message();
+    Vec::new()
 }
 
 /// Handle keystrokes while in command mode.
-fn handle_command_input(state: &mut AppState, tui_state: &mut TuiState, key: CrosstermKeyEvent) {
+fn handle_command_input(
+    state: &mut AppState,
+    tui_state: &mut TuiState,
+    key: CrosstermKeyEvent,
+) -> Vec<CoreEffect> {
     match key.code {
         KeyCode::Esc => {
-            if !cancel_active_prompt(state, tui_state) {
-                tui_state.clear_prompt();
+            if let Some(effects) = cancel_active_prompt(state, tui_state) {
+                return effects;
             }
+            tui_state.clear_prompt();
         }
         KeyCode::Enter => {
             let cmd = tui_state.command_input.clone();
-            if !submit_active_prompt(state, tui_state, cmd) {
-                tui_state.clear_prompt();
+            if let Some(effects) = submit_active_prompt(state, tui_state, cmd) {
+                return effects;
             }
+            tui_state.clear_prompt();
         }
         KeyCode::Backspace => {
             if tui_state.command_cursor > 0 {
                 tui_state.command_cursor -= 1;
                 tui_state.command_input.remove(tui_state.command_cursor);
-            } else if !cancel_active_prompt(state, tui_state) {
+            } else if let Some(effects) = cancel_active_prompt(state, tui_state) {
+                return effects;
+            } else {
                 tui_state.clear_prompt();
             }
         }
@@ -182,6 +196,7 @@ fn handle_command_input(state: &mut AppState, tui_state: &mut TuiState, key: Cro
         }
         _ => {}
     }
+    Vec::new()
 }
 
 /// Handle keystrokes while in diff search mode.
@@ -189,18 +204,20 @@ fn handle_diff_search_input(
     state: &mut AppState,
     tui_state: &mut TuiState,
     key: CrosstermKeyEvent,
-) {
+) -> Vec<CoreEffect> {
     match key.code {
         KeyCode::Esc => {
-            if !cancel_active_prompt(state, tui_state) {
-                tui_state.clear_prompt();
+            if let Some(effects) = cancel_active_prompt(state, tui_state) {
+                return effects;
             }
+            tui_state.clear_prompt();
         }
         KeyCode::Enter => {
             let query = tui_state.diff_search_input.clone();
-            if !submit_active_prompt(state, tui_state, query) {
-                tui_state.clear_prompt();
+            if let Some(effects) = submit_active_prompt(state, tui_state, query) {
+                return effects;
             }
+            tui_state.clear_prompt();
         }
         KeyCode::Backspace => {
             if tui_state.diff_search_cursor > 0 {
@@ -208,7 +225,9 @@ fn handle_diff_search_input(
                 tui_state
                     .diff_search_input
                     .remove(tui_state.diff_search_cursor);
-            } else if !cancel_active_prompt(state, tui_state) {
+            } else if let Some(effects) = cancel_active_prompt(state, tui_state) {
+                return effects;
+            } else {
                 tui_state.clear_prompt();
             }
         }
@@ -245,12 +264,52 @@ fn handle_diff_search_input(
         }
         _ => {}
     }
+    Vec::new()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::DiffAlgorithm;
+    use crate::core::PromptKind;
+    use crate::model::{
+        ChangeKind, ConnectionContext, DiffContent, FileChange, FileEntry, ReviewStatus,
+    };
     use crossterm::event::KeyEvent as CrosstermKeyEvent;
+
+    fn test_context() -> ConnectionContext {
+        ConnectionContext {
+            repo_root: "/repo".to_string(),
+            worktree: "/repo".to_string(),
+            base_ref: "main".to_string(),
+            head_ref: "feature".to_string(),
+            merge_base: "abc123".to_string(),
+        }
+    }
+
+    fn test_file(path: &str) -> FileEntry {
+        FileEntry {
+            change: FileChange {
+                path: path.to_string(),
+                old_path: None,
+                kind: ChangeKind::Modified,
+            },
+            status: ReviewStatus::Unreviewed,
+            diff: DiffContent {
+                hunks: Vec::new(),
+                is_binary: false,
+                diff_hash: format!("hash-{path}"),
+            },
+        }
+    }
+
+    fn test_state() -> AppState {
+        AppState::new(
+            DiffAlgorithm::Myers,
+            test_context(),
+            vec![test_file("src/lib.rs")],
+        )
+    }
 
     #[test]
     fn translates_printable_key_to_core_input_event() {
@@ -300,5 +359,25 @@ mod tests {
             input_event_from_key(CrosstermKeyEvent::new(KeyCode::Null, KeyModifiers::NONE,))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn handle_key_event_emits_core_effects_without_applying_them() {
+        let mut state = test_state();
+        let mut tui_state = TuiState::default();
+
+        let effects = handle_key_event(
+            &mut state,
+            &mut tui_state,
+            CrosstermKeyEvent::new(KeyCode::Char(':'), KeyModifiers::SHIFT),
+        );
+
+        match effects.as_slice() {
+            [CoreEffect::RequestPrompt(prompt)] => {
+                assert_eq!(prompt.kind, PromptKind::CommandLine);
+            }
+            other => panic!("unexpected effects: {other:?}"),
+        }
+        assert_eq!(tui_state.input_mode, InputMode::Normal);
     }
 }
