@@ -25,6 +25,7 @@ struct InitResult {
     repo_root: String,
     worktree: String,
     head_ref: String,
+    merge_base: String,
     base_ref: String,
 }
 
@@ -49,19 +50,20 @@ pub async fn handle_init(
     let worktree_path = PathBuf::from(&init_params.worktree);
     let base_ref = init_params.base_ref.clone();
 
-    // Resolve repo context via git module (blocking operation)
+    // Resolve repo context and merge-base via git module (blocking operation)
     let wt = worktree_path.clone();
     let br = base_ref.clone();
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let repo = git::Repo::open(&wt)?;
         let ctx = repo.context()?;
         repo.resolve_commit(&br)?; // validate base ref
-        Ok(ctx)
+        let merge_base = repo.merge_base(&br, "HEAD")?;
+        Ok((ctx, merge_base))
     })
     .await;
 
-    let git_ctx = match git_result {
-        Ok(Ok(ctx)) => ctx,
+    let (git_ctx, merge_base) = match git_result {
+        Ok(Ok(pair)) => pair,
         Ok(Err(e)) => {
             return JsonRpcResponse::error(id.clone(), ERR_INVALID_PARAMS, format!("{e}"));
         }
@@ -101,7 +103,7 @@ pub async fn handle_init(
     let ctx = ConnectionContext {
         repo_root: git_ctx.repo_root.clone(),
         worktree: worktree_path.clone(),
-        base_ref: base_ref.clone(),
+        merge_base: merge_base.clone(),
         head_ref: git_ctx.head_ref.clone(),
         db_path,
     };
@@ -110,6 +112,7 @@ pub async fn handle_init(
         repo_root: git_ctx.repo_root.to_string_lossy().into_owned(),
         worktree: worktree_path.to_string_lossy().into_owned(),
         head_ref: git_ctx.head_ref,
+        merge_base,
         base_ref,
     };
 

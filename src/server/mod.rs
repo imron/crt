@@ -90,7 +90,8 @@ pub const ERR_NOT_IMPLEMENTED: i64 = -32001;
 pub struct ConnectionContext {
     pub repo_root: PathBuf,
     pub worktree: PathBuf,
-    pub base_ref: String,
+    /// The merge-base commit hash (stable scope key).
+    pub merge_base: String,
     pub head_ref: String,
     pub db_path: PathBuf,
 }
