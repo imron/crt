@@ -950,6 +950,19 @@ mod tests {
     #[test]
     fn editor_document_wraps_comment_with_anchor_context() {
         let anchor = crate::app::CommentAnchorCapture {
+            segments: vec![crate::review_types::CommentAnchorSegment {
+                side: crate::review_types::CommentAnchorSide::Head,
+                file_path: "src/main.rs".to_string(),
+                line_start: 4,
+                line_end: 5,
+                char_start: None,
+                char_end: None,
+                anchor_text: "selected one\nselected two".to_string(),
+                context_before: "before".to_string(),
+                context_after: "after".to_string(),
+                placement_status: crate::review_types::AnchorPlacementStatus::Anchored,
+                match_method: crate::review_types::AnchorMatchMethod::ExactAtLine,
+            }],
             file_path: "src/main.rs".to_string(),
             line_start: 4,
             line_end: 5,
@@ -978,6 +991,19 @@ mod tests {
     #[test]
     fn editor_template_strip_keeps_changed_context() {
         let anchor = crate::app::CommentAnchorCapture {
+            segments: vec![crate::review_types::CommentAnchorSegment {
+                side: crate::review_types::CommentAnchorSide::Head,
+                file_path: "src/main.rs".to_string(),
+                line_start: 4,
+                line_end: 4,
+                char_start: None,
+                char_end: None,
+                anchor_text: "selected".to_string(),
+                context_before: String::new(),
+                context_after: String::new(),
+                placement_status: crate::review_types::AnchorPlacementStatus::Anchored,
+                match_method: crate::review_types::AnchorMatchMethod::ExactAtLine,
+            }],
             file_path: "src/main.rs".to_string(),
             line_start: 4,
             line_end: 4,

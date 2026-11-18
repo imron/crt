@@ -119,6 +119,7 @@ pub struct VisualSelection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommentAnchorCapture {
+    pub segments: Vec<CommentAnchorSegment>,
     pub file_path: String,
     pub line_start: i64,
     pub line_end: i64,
@@ -1693,6 +1694,13 @@ mod tests {
         }
     }
 
+    fn segment_for_side(
+        capture: &CommentAnchorCapture,
+        side: CommentAnchorSide,
+    ) -> Option<&CommentAnchorSegment> {
+        capture.segments.iter().find(|segment| segment.side == side)
+    }
+
     #[test]
     fn app_owns_config_and_state() {
         let config = Config::default();
@@ -2240,6 +2248,13 @@ mod tests {
         assert_eq!(capture.anchor_text, "let alpha = beta;\nlet gamma = delta;");
         assert_eq!(capture.context_before, "line8\nline9\nline10");
         assert_eq!(capture.context_after, "after one\nafter two\nafter three");
+        assert_eq!(capture.segments.len(), 1);
+        let head = segment_for_side(capture, CommentAnchorSide::Head)
+            .expect("added-line selection should capture a head segment");
+        assert_eq!(head.file_path, "src/main.rs");
+        assert_eq!(head.line_start, 11);
+        assert_eq!(head.line_end, 12);
+        assert_eq!(head.anchor_text, "let alpha = beta;\nlet gamma = delta;");
         assert!(app.state.visual_selection.is_some());
     }
 
@@ -2368,6 +2383,150 @@ mod tests {
     }
 
     #[test]
+    fn deleted_line_visual_selection_captures_base_only_segment() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_leading_deletion_hunk("src/main.rs")],
+        );
+        app.state.base_content = Some(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n\
+             line11\nline12\nline13\nline14\nline15\nremoved\nkept\n"
+                .to_string(),
+        );
+        app.state.head_content = Some(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n\
+             line11\nline12\nline13\nline14\nline15\nkept\n"
+                .to_string(),
+        );
+        app.state.pane_focus = PaneFocus::Diff;
+        app.state.diff_line_cursor = 15;
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartLine),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+            ],
+        );
+
+        let capture = app
+            .state
+            .pending_comment_anchor
+            .as_ref()
+            .expect("deleted-line selection should capture anchor data");
+        assert_eq!(capture.segments.len(), 1);
+        assert!(segment_for_side(capture, CommentAnchorSide::Head).is_none());
+        let base = segment_for_side(capture, CommentAnchorSide::Base)
+            .expect("deleted-line selection should capture a base segment");
+        assert_eq!(base.file_path, "src/main.rs");
+        assert_eq!(base.line_start, 16);
+        assert_eq!(base.line_end, 16);
+        assert_eq!(base.anchor_text, "removed");
+        assert_eq!(capture.file_path, "src/main.rs");
+        assert_eq!(capture.line_start, 16);
+        assert_eq!(capture.line_end, 16);
+        assert_eq!(capture.anchor_text, "removed");
+    }
+
+    #[test]
+    fn replacement_visual_selection_captures_base_and_head_segments() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_replacement_hunk("src/main.rs")],
+        );
+        app.state.base_content = Some(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n\
+             line11\nline12\nline13\nline14\nbefore\nold\nafter\n"
+                .to_string(),
+        );
+        app.state.head_content = Some(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n\
+             line11\nline12\nline13\nline14\nbefore\nnew\nafter\n"
+                .to_string(),
+        );
+        app.state.pane_focus = PaneFocus::Diff;
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartText {
+                    anchor: TextAnchor {
+                        line: 15,
+                        column: 0,
+                    },
+                }),
+                CoreEffect::VisualSelection(VisualSelectionEffect::ExtendTo {
+                    anchor: TextAnchor {
+                        line: 16,
+                        column: 0,
+                    },
+                }),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+            ],
+        );
+
+        let capture = app
+            .state
+            .pending_comment_anchor
+            .as_ref()
+            .expect("replacement selection should capture anchor data");
+        assert_eq!(capture.segments.len(), 2);
+        let base = segment_for_side(capture, CommentAnchorSide::Base)
+            .expect("replacement selection should capture a base segment");
+        let head = segment_for_side(capture, CommentAnchorSide::Head)
+            .expect("replacement selection should capture a head segment");
+        assert_eq!(base.line_start, 16);
+        assert_eq!(base.line_end, 16);
+        assert_eq!(base.anchor_text, "old");
+        assert_eq!(head.line_start, 16);
+        assert_eq!(head.line_end, 16);
+        assert_eq!(head.anchor_text, "new");
+        assert_eq!(capture.file_path, "src/main.rs");
+        assert_eq!(capture.line_start, 16);
+        assert_eq!(capture.line_end, 16);
+        assert_eq!(capture.anchor_text, "old\nnew");
+    }
+
+    #[test]
+    fn full_file_base_visual_selection_captures_base_segment() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::BaseVersion;
+        app.state.base_content = Some("base one\nbase two\nbase three\n".to_string());
+        app.state.head_content = Some("head one\nhead two\nhead three\n".to_string());
+        app.state.pane_focus = PaneFocus::Diff;
+        app.state.diff_line_cursor = 1;
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartLine),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+            ],
+        );
+
+        let capture = app
+            .state
+            .pending_comment_anchor
+            .as_ref()
+            .expect("full-file base selection should capture anchor data");
+        assert_eq!(capture.segments.len(), 1);
+        assert!(segment_for_side(capture, CommentAnchorSide::Head).is_none());
+        let base = segment_for_side(capture, CommentAnchorSide::Base)
+            .expect("full-file base selection should capture a base segment");
+        assert_eq!(base.line_start, 2);
+        assert_eq!(base.line_end, 2);
+        assert_eq!(base.anchor_text, "base two");
+        assert_eq!(capture.anchor_text, "base two");
+    }
+
+    #[test]
     fn visual_selection_cancel_clears_without_capture() {
         let mut app = App::new(
             Config::default(),
@@ -2395,6 +2554,7 @@ mod tests {
             vec![test_file("src/main.rs")],
         );
         let anchor = CommentAnchorCapture {
+            segments: test_anchor("src/main.rs", 1, 1, "fn main() {}").segments,
             file_path: "src/main.rs".to_string(),
             line_start: 1,
             line_end: 1,
@@ -2434,6 +2594,7 @@ mod tests {
             vec![test_file("src/main.rs")],
         );
         let anchor = CommentAnchorCapture {
+            segments: test_anchor("src/main.rs", 1, 1, "fn main() {}").segments,
             file_path: "src/main.rs".to_string(),
             line_start: 1,
             line_end: 1,
@@ -2848,6 +3009,7 @@ mod tests {
             vec![test_file("src/main.rs")],
         );
         app.state.pending_comment_anchor = Some(CommentAnchorCapture {
+            segments: test_anchor("src/main.rs", 1, 1, "fn main() {}").segments,
             file_path: "src/main.rs".to_string(),
             line_start: 1,
             line_end: 1,

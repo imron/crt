@@ -4,7 +4,10 @@ use super::viewport::AppViewport;
 use crate::app::{AppState, CommentAnchorCapture, VisualSelection, VisualSelectionMode};
 use crate::core::text::char_to_byte_index;
 use crate::core::{TextAnchor, VisualSelectionEffect};
-use crate::review_types::{ContentMode, LineKind, PaneFocus, RenderVariant};
+use crate::review_types::{
+    AnchorMatchMethod, AnchorPlacementStatus, CommentAnchorSegment, CommentAnchorSide, ContentMode,
+    LineKind, PaneFocus, RenderVariant,
+};
 
 const CONTEXT_LINES: usize = 3;
 
@@ -158,6 +161,19 @@ fn capture_visual_selection(
     };
 
     Some(CommentAnchorCapture {
+        segments: vec![CommentAnchorSegment {
+            side: CommentAnchorSide::Head,
+            file_path: file_path.clone(),
+            line_start,
+            line_end,
+            char_start: None,
+            char_end: None,
+            anchor_text: anchor_text.clone(),
+            context_before: context_before.clone(),
+            context_after: context_after.clone(),
+            placement_status: AnchorPlacementStatus::Anchored,
+            match_method: AnchorMatchMethod::ExactAtLine,
+        }],
         file_path,
         line_start,
         line_end,
