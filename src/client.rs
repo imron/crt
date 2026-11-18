@@ -151,27 +151,36 @@ impl Client {
     }
 
     // -----------------------------------------------------------------------
-    // Search (stubs)
+    // Search
     // -----------------------------------------------------------------------
 
-    pub async fn search_codebase(&self, pattern: &str, scope: &str) -> Result<serde_json::Value> {
-        self.call(
-            "search_codebase",
-            serde_json::json!({ "pattern": pattern, "scope": scope }),
-        )
-        .await
+    pub async fn search_codebase(
+        &self,
+        pattern: &str,
+        scope: &str,
+    ) -> Result<crate::model::SearchCodebaseResult> {
+        let value = self
+            .call(
+                "search_codebase",
+                serde_json::json!({ "pattern": pattern, "scope": scope }),
+            )
+            .await?;
+        serde_json::from_value(value).map_err(|e| anyhow::anyhow!("Failed to parse search result: {e}"))
     }
 
     pub async fn find_definition(
         &self,
         symbol: &str,
         context_file: Option<&str>,
-    ) -> Result<serde_json::Value> {
-        self.call(
-            "find_definition",
-            serde_json::json!({ "symbol": symbol, "context_file": context_file }),
-        )
-        .await
+    ) -> Result<crate::model::FindDefinitionResult> {
+        let value = self
+            .call(
+                "find_definition",
+                serde_json::json!({ "symbol": symbol, "context_file": context_file }),
+            )
+            .await?;
+        serde_json::from_value(value)
+            .map_err(|e| anyhow::anyhow!("Failed to parse definition result: {e}"))
     }
 
     // -----------------------------------------------------------------------

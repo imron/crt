@@ -462,3 +462,140 @@ fn check_gitignore(repo_root: &Path) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// search_codebase
+// ---------------------------------------------------------------------------
+
+pub async fn handle_search_codebase(
+    params: &serde_json::Value,
+    id: &serde_json::Value,
+    ctx: &ConnectionContext,
+) -> JsonRpcResponse {
+    let search_params: model::SearchCodebaseParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INVALID_PARAMS,
+                format!("Invalid search params: {e}"),
+            );
+        }
+    };
+
+    let repo_root = ctx.worktree.clone();
+    let pattern = search_params.pattern.clone();
+    let scope = search_params.scope.clone();
+
+    // Get diff files if scope is "diff".
+    let diff_files = if scope.as_deref() == Some("diff") {
+        let repo = match git::Repo::open(&repo_root) {
+            Ok(r) => r,
+            Err(e) => {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INTERNAL,
+                    format!("Failed to open repo: {e:#}"),
+                );
+            }
+        };
+        match repo.list_changed_files(&ctx.merge_base, "HEAD") {
+            Ok(files) => Some(files.iter().map(|f| f.path.clone()).collect::<Vec<_>>()),
+            Err(e) => {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INTERNAL,
+                    format!("Failed to list changed files: {e:#}"),
+                );
+            }
+        }
+    } else {
+        None
+    };
+
+    // Run the search on a blocking thread to avoid stalling the runtime.
+    let id_owned = id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        crate::search::search_codebase(
+            &repo_root,
+            &pattern,
+            diff_files.as_deref(),
+        )
+    })
+    .await;
+
+    match result {
+        Ok(Ok(search_result)) => match serde_json::to_value(search_result) {
+            Ok(v) => JsonRpcResponse::success(id_owned, v),
+            Err(e) => JsonRpcResponse::error(
+                id_owned,
+                ERR_INTERNAL,
+                format!("Serialization error: {e}"),
+            ),
+        },
+        Ok(Err(e)) => JsonRpcResponse::error(
+            id_owned,
+            ERR_INTERNAL,
+            format!("Search failed: {e:#}"),
+        ),
+        Err(e) => JsonRpcResponse::error(
+            id_owned,
+            ERR_INTERNAL,
+            format!("Search task panicked: {e}"),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// find_definition
+// ---------------------------------------------------------------------------
+
+pub async fn handle_find_definition(
+    params: &serde_json::Value,
+    id: &serde_json::Value,
+    ctx: &ConnectionContext,
+) -> JsonRpcResponse {
+    let def_params: model::FindDefinitionParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INVALID_PARAMS,
+                format!("Invalid find_definition params: {e}"),
+            );
+        }
+    };
+
+    let repo_root = ctx.worktree.clone();
+    let symbol = def_params.symbol.clone();
+    let context_file = def_params.context_file.clone();
+    let id_owned = id.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        use crate::search::{DefinitionFinder, RegexDefinitionFinder};
+        let finder = RegexDefinitionFinder;
+        finder.find_definition(&symbol, context_file.as_deref(), &repo_root)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(def_result)) => match serde_json::to_value(def_result) {
+            Ok(v) => JsonRpcResponse::success(id_owned, v),
+            Err(e) => JsonRpcResponse::error(
+                id_owned,
+                ERR_INTERNAL,
+                format!("Serialization error: {e}"),
+            ),
+        },
+        Ok(Err(e)) => JsonRpcResponse::error(
+            id_owned,
+            ERR_INTERNAL,
+            format!("Definition search failed: {e:#}"),
+        ),
+        Err(e) => JsonRpcResponse::error(
+            id_owned,
+            ERR_INTERNAL,
+            format!("Definition task panicked: {e}"),
+        ),
+    }
+}
