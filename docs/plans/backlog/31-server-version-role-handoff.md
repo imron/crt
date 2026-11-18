@@ -1,4 +1,4 @@
-# Stage 31: Server Version and Role Handoff
+# Stage 31: Server Version Compatibility and Role Handoff
 
 ## Status
 
@@ -6,13 +6,16 @@ Backlog.
 
 ## Goal
 
-Make shared server ownership explicit when different `crt` API versions or
-client roles are present.
+Make shared server ownership explicit when `crt` API versions or client roles
+are present.
 
-Newer interactive `crt` instances should be able to replace an older shared
-server. MCP should be able to start a low-priority fallback server when no
-other server exists, but must relinquish server ownership when an interactive
-`crt` instance starts.
+Clients that connect to an incompatible server API version should fail with a
+clear error so the user can choose whether to upgrade, downgrade, stop the
+existing server, or restart their sessions.
+
+MCP should be able to start a low-priority fallback server when no other
+server exists, but must relinquish server ownership when a same-version
+interactive `crt` instance starts.
 
 ## Why
 
@@ -20,26 +23,27 @@ The current lifecycle model assumes one shared server elected by socket bind
 ownership. That works for failover, but it does not encode two important
 cases:
 
-1. A newly started binary may speak a newer incompatible server API than the
+1. A newly started binary may speak an incompatible server API from the
    currently running server.
 2. MCP can be useful even before a TUI exists, but an MCP-owned fallback server
    should not become the long-lived authority once a real interactive `crt`
    session starts.
 
-We need explicit server metadata and handoff semantics so ownership decisions
-are deterministic, testable, and not hidden in TUI or MCP adapters.
+We need explicit server metadata and handoff semantics so compatibility errors
+and ownership decisions are deterministic, testable, and not hidden in TUI or
+MCP adapters.
 
 ## Scope
 
 - In scope: server API version metadata.
 - In scope: server role metadata and priority decisions.
-- In scope: explicit handoff/shutdown RPCs.
+- In scope: explicit same-version handoff/shutdown RPCs.
 - In scope: client reconnect behavior after handoff.
 - In scope: MCP low-priority fallback startup.
-- In scope: tests for version and role takeover behavior.
+- In scope: tests for version compatibility and role takeover behavior.
 - Out of scope: durable daemon/service management.
 - Out of scope: preserving old pre-feature servers that do not implement the
-  handoff RPC. They can receive a clear incompatible-server error.
+  metadata RPC. They can receive a clear incompatible-server error.
 
 ## Design Principles
 
@@ -52,7 +56,7 @@ are deterministic, testable, and not hidden in TUI or MCP adapters.
 - Protocol behavior should use typed enums in Rust. Database columns, if ever
   needed, may remain strings mapped through enum conversions.
 - Socket bind still decides final ownership after a handoff window. Metadata
-  decides whether a handoff should be requested.
+  decides whether a same-version role handoff should be requested.
 
 ## Terminology
 
@@ -65,7 +69,8 @@ pub const SERVER_API_VERSION: u32 = 1;
 ```
 
 This is an incompatible protocol version, not a package version. Compatible
-additions do not need to increment it. Breaking wire/protocol changes do.
+additions do not need to increment it. Breaking wire/protocol changes do. A
+client may only operate against a server with the exact same API version.
 
 ### Client Kind
 
@@ -107,10 +112,12 @@ Role priority for the same API version:
 2. `Primary`
 3. `LowPriorityMcp`
 
-API version takes precedence over role. A newer interactive `crt` can replace
-an older server even if the older server is persistent. Same-version
-interactive clients do not replace an existing `Primary` or `Persistent`
-server.
+API version compatibility is checked before role priority. If the server API
+version differs from the client API version, startup fails with a clear error
+and no handoff is attempted.
+
+Role priority only applies when versions match. Same-version interactive
+clients do not replace an existing `Primary` or `Persistent` server.
 
 ## Protocol Additions
 
@@ -155,7 +162,6 @@ pub struct ServerHandoffRequest {
 }
 
 pub enum ServerHandoffReason {
-    NewerApiVersion,
     InteractiveReplacingLowPriorityMcp,
 }
 
@@ -166,7 +172,8 @@ pub enum ServerHandoffResult {
 ```
 
 The server validates the request against its current role, API version, and
-active client roles. It never trusts the caller to decide final authority.
+active client roles. It rejects requests from incompatible API versions and
+never trusts the caller to decide final authority.
 
 ### Shutdown Notification
 
@@ -189,11 +196,12 @@ the existing supervisor loop.
 1. Try to connect to the default socket.
 2. If no server is reachable, start an embedded `Primary` server.
 3. If a server is reachable, call `server_info`.
-4. If the server API version is older than this binary:
-   - request handoff with `NewerApiVersion`,
-   - wait for socket release,
-   - attempt to start a `Primary` server,
-   - reconnect through the normal supervisor path.
+4. If the server API version differs from this binary:
+   - print a clear incompatible-server error,
+   - do not request handoff,
+   - do not attempt socket takeover,
+   - let the user decide whether to upgrade, downgrade, stop the existing
+     server, or restart their sessions.
 5. If the server role is `LowPriorityMcp` with the same API version:
    - request handoff with `InteractiveReplacingLowPriorityMcp`,
    - wait for socket release,
@@ -209,8 +217,7 @@ and verify `server_info` again.
 1. Starts as `Persistent`.
 2. If another same-version `Persistent` or `Primary` server exists, keep the
    current bind-conflict behavior.
-3. If a lower-version server exists and supports handoff, request handoff and
-   then bind.
+3. If an incompatible-version server exists, print a clear error and exit.
 4. If a same-version `LowPriorityMcp` server exists, request handoff and then
    bind.
 
@@ -236,13 +243,11 @@ The server tracks active client roles per connection:
 
 Handoff acceptance rules:
 
-- accept if requester API version is greater than current API version and the
-  requester is `Interactive` or `Cli` running `crt server`;
 - accept if current role is `LowPriorityMcp` and requester will start
   `Primary` or `Persistent`;
 - reject same-version `Primary` replacing `Primary`;
 - reject MCP replacing any reachable server;
-- reject lower API version replacing higher API version.
+- reject any request from an incompatible API version.
 
 When handoff is accepted:
 
@@ -267,24 +272,28 @@ pub enum StartupRole {
 `connect_or_start` should:
 
 - discover `server_info` before `init`;
+- reject incompatible API versions with a user-facing error;
 - decide whether to request handoff;
 - perform handoff wait/reconnect/bind race;
 - preserve existing reconnect behavior after transport loss.
 
-The decision logic should be factored into a pure helper so role/version cases
-can be unit tested without sockets.
+The decision logic should be factored into a pure helper so compatibility and
+role cases can be unit tested without sockets.
 
 ## Compatibility Behavior
 
 If `server_info` is missing because the existing server predates this feature,
-the new client cannot reliably ask it to shut down.
+the new client cannot prove API compatibility.
 
 Initial behavior should be conservative:
 
-- return a clear error explaining that an incompatible older server is running;
-- tell the user to stop the old server or restart existing `crt` sessions.
+- return a clear error explaining that an incompatible or too-old server is
+  running;
+- tell the user to stop the server, upgrade/downgrade one side, or restart
+  existing `crt` sessions.
 
-Once this feature ships, future handoffs are handled automatically.
+Once this feature ships, future same-version role handoffs are handled
+automatically. Incompatible version changes still require user choice.
 
 ## Interaction With Stage 30
 
@@ -300,27 +309,29 @@ addresses:
 
 ### Pure Decision Tests
 
-- Newer interactive client should replace older `Primary`.
-- Newer interactive client should replace older `Persistent`.
+- Incompatible-version interactive client should return a compatibility error.
+- Incompatible-version persistent server should return a compatibility error.
 - Same-version interactive client should not replace `Primary`.
 - Same-version interactive client should replace `LowPriorityMcp`.
 - MCP should not replace `Primary`.
 - MCP should not replace `Persistent`.
-- Lower-version client should not replace higher-version server.
+- Lower-version and higher-version clients should both fail against a
+  different server API version.
 
 ### Server RPC Tests
 
 - `server_info` returns API version, role, instance id, and client counts.
-- `request_server_handoff` accepts newer API requests.
 - `request_server_handoff` accepts interactive-over-MCP requests.
 - `request_server_handoff` rejects same-version primary-over-primary.
+- `request_server_handoff` rejects incompatible-version requests.
 - Accepted handoff broadcasts a notification before shutdown.
 
 ### Supervisor Integration Tests
 
 - Interactive startup replaces a same-version MCP fallback server.
-- Interactive startup replaces an older API server that supports handoff.
-- Two newer interactive clients racing after handoff produce one server.
+- Interactive startup fails clearly against an incompatible server.
+- Two same-version interactive clients racing after MCP handoff produce one
+  server.
 - Clients connected to the old server reconnect to the winner.
 - MCP fallback starts only when no server is reachable.
 - MCP reconnects after relinquishing fallback server ownership.
@@ -328,13 +339,14 @@ addresses:
 ### Compatibility Tests
 
 - Missing `server_info` returns an actionable incompatible-server error.
+- API-version mismatch returns an actionable incompatible-server error.
 - Existing normal same-version startup behavior remains unchanged.
 
 ## Acceptance Criteria
 
 - [ ] Server exposes typed API version and role metadata.
 - [ ] Startup clients check server metadata before `init`.
-- [ ] Newer interactive `crt` can request handoff from an older server.
+- [ ] Incompatible server API versions fail with a clear user-facing error.
 - [ ] MCP can start a low-priority fallback server when no server exists.
 - [ ] Interactive `crt` replaces a low-priority MCP fallback server.
 - [ ] MCP reconnects after relinquishing server status.
@@ -346,8 +358,6 @@ addresses:
 
 ## Open Questions
 
-- Should an explicit `crt server` with an older API always yield to a newer TUI,
-  or should persistent mode require explicit user restart for upgrades?
 - Should MCP fallback startup be enabled by default, or gated behind an option
   for MCP hosts that should never start background work?
 - Should low-priority MCP fallback have an idle timeout when no MCP tools are
