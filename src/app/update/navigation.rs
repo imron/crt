@@ -388,12 +388,12 @@ pub fn navigate_unresolved_comment_from_cursor(
     state: &mut AppState,
     view: &impl AppViewport,
     dir: Direction,
-) {
+) -> bool {
     let targets = unresolved_comment_targets(state);
     if targets.is_empty() {
         state.selected_comment_id = None;
         state.mark_model_changed();
-        return;
+        return false;
     }
 
     let cursor_line = comments::current_head_line_for_navigation(state)
@@ -447,6 +447,7 @@ pub fn navigate_unresolved_comment_from_cursor(
     if let Some(target) = target {
         activate_unresolved_comment(state, view, target.comment_id);
     }
+    true
 }
 
 fn activate_unresolved_comment(state: &mut AppState, view: &impl AppViewport, comment_id: i64) {

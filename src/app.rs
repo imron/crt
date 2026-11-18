@@ -1961,6 +1961,24 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_comment_shortcut_reports_empty_list() {
+        let mut app = App::new(Config::default(), test_context(), vec![test_file("a.rs")]);
+        app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
+        app.state.selected_comment_id = Some(99);
+
+        let output = app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 12]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+
+        assert_eq!(
+            output.status,
+            Some(StatusUpdate::Set("No unresolved comments".to_string()))
+        );
+        assert_eq!(app.state.selected_comment_id, None);
+    }
+
+    #[test]
     fn unresolved_comment_shortcut_visits_same_start_line_comments() {
         let mut app = App::new(
             Config::default(),
