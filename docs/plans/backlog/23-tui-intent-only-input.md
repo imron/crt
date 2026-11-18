@@ -62,6 +62,13 @@ clean reuse in GUI and increases coupling to TUI-only state.
   client layer.
 - Keep prompt editing local to TUI widgets; only submit/cancel and non-text
   input semantics are sent to core.
+- When introducing the `App` boundary, make `App` own runtime configuration
+  (`App { state, config, ... }`). Shared style/theme config belongs there, not
+  in `AppState` and not permanently in `TuiState`.
+- Treat current style storage in `TuiState` as transitional. The later
+  app-boundary slice should pass shared style/theme config from `App` into
+  renderers, with TUI/GUI adapters converting it to backend-specific style
+  primitives at the rendering edge.
 
 ## Deliverables
 
@@ -135,8 +142,9 @@ clean reuse in GUI and increases coupling to TUI-only state.
   handled at the TUI effect boundary.
 - Moved the inline-comments display toggle into TUI-owned state, with command
   handling returning a presentation update.
-- Moved TUI style configuration into TUI-owned state so rendering no longer
-  reads style config from AppState.
+- Moved style configuration out of `AppState` as a transitional step. A later
+  Stage 23 app-boundary slice should make shared config app-owned and keep
+  renderer-specific style conversion at the TUI/GUI edge.
 
 ## Acceptance Criteria
 
@@ -147,6 +155,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
 - [ ] All existing keybindings still function.
 - [ ] Command mode behavior remains compatible.
 - [ ] Input adapter path is reusable by non-terminal UI clients.
+- [ ] Shared style/theme config is owned by `App` configuration, while TUI/GUI
+      adapters own only renderer-specific style conversion.
 
 ## Resolved Decisions
 
