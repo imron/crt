@@ -1,6 +1,6 @@
 # Stage 13e: Comments Panel and Comment Lifecycle
 
-## Status: Implemented
+## Status: Complete
 
 ## Order
 
@@ -102,3 +102,4 @@ blocks.
 - This stage still uses the existing HEAD-line-only comment anchors. Base-side
   and deleted-line comments are tracked separately in the later base/head
   anchor plan.
+- Completed and moved to `docs/plans/completed/`.
