@@ -334,7 +334,7 @@ impl CommentProjection {
         }
     }
 
-    pub(crate) fn new_with_current_inline_rows(
+    pub fn new_with_current_inline_rows(
         comments: &[CommentAttachment],
         current_line: Option<u32>,
         current_row: Option<usize>,
@@ -946,7 +946,7 @@ impl AppModel {
         Self::from_state_with_active_document(state, None)
     }
 
-    pub(crate) fn from_state_with_active_document(
+    pub fn from_state_with_active_document(
         state: &AppState,
         active_document: Option<ActiveDocument>,
     ) -> Self {
@@ -977,7 +977,7 @@ impl AppModel {
     }
 }
 
-pub(crate) fn active_document_key(state: &AppState) -> Option<DocumentKey> {
+pub fn active_document_key(state: &AppState) -> Option<DocumentKey> {
     let entry = state.selected_file_entry()?;
     Some(DocumentKey {
         file_id: entry.change.path.clone(),
@@ -991,7 +991,7 @@ pub(crate) fn active_document_key(state: &AppState) -> Option<DocumentKey> {
     })
 }
 
-pub(crate) fn build_active_document(state: &AppState, key: DocumentKey) -> Option<ActiveDocument> {
+pub fn build_active_document(state: &AppState, key: DocumentKey) -> Option<ActiveDocument> {
     let entry = state.selected_file_entry()?;
     let head_blame: Vec<BlameLine> = state.head_blame.iter().map(BlameLine::from).collect();
     let base_blame: Vec<BlameLine> = state.base_blame.iter().map(BlameLine::from).collect();
