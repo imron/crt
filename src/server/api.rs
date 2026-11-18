@@ -2203,6 +2203,30 @@ mod tests {
         }
     }
 
+    fn base_only_comment(line_start: i64, anchor_text: &str) -> StoredComment {
+        let mut comment = stored_comment(line_start, anchor_text);
+        comment.anchor = review_types::CommentAnchor {
+            segments: vec![review_types::CommentAnchorSegment {
+                side: review_types::CommentAnchorSide::Base,
+                file_path: "src/lib.rs".to_string(),
+                line_start,
+                line_end: line_start,
+                char_start: None,
+                char_end: None,
+                anchor_text: anchor_text.to_string(),
+                context_before: "before".to_string(),
+                context_after: "after".to_string(),
+                placement_status: review_types::AnchorPlacementStatus::Anchored,
+                match_method: review_types::AnchorMatchMethod::ExactAtLine,
+            }],
+            aggregate_status: review_types::AnchorAggregateStatus::Anchored,
+        };
+        comment.anchor_text = anchor_text.to_string();
+        comment.context_before = "before".to_string();
+        comment.context_after = "after".to_string();
+        comment
+    }
+
     fn head_segment(anchor: &NewCommentAnchor) -> &NewCommentAnchorSegment {
         anchor
             .segments
@@ -2534,6 +2558,133 @@ mod tests {
             segment.placement_status == review_types::AnchorPlacementStatus::Orphaned
                 && segment.match_method == review_types::AnchorMatchMethod::NotFound
         }));
+    }
+
+    #[test]
+    fn same_branch_head_start_context_change_keeps_exact_anchor() {
+        let comment = stored_comment(3, "target");
+
+        let anchor = resolve_anchor(
+            &comment,
+            "changed before\ntarget\nafter\n",
+            "new".to_string(),
+            None,
+        );
+        let head = segment_for_side(&anchor, review_types::CommentAnchorSide::Head);
+
+        assert_eq!(
+            anchor.aggregate_status,
+            review_types::AnchorAggregateStatus::Anchored
+        );
+        assert_eq!(head.line_start, 2);
+        assert_eq!(
+            head.match_method,
+            review_types::AnchorMatchMethod::ExactElsewhere
+        );
+        assert_eq!(head.context_before, "changed before");
+    }
+
+    #[test]
+    fn same_branch_head_selected_text_change_anchors_by_context() {
+        let comment = stored_comment(2, "old target");
+
+        let anchor = resolve_anchor(
+            &comment,
+            "before\nnew target\nafter\n",
+            "new".to_string(),
+            None,
+        );
+        let head = segment_for_side(&anchor, review_types::CommentAnchorSide::Head);
+
+        assert_eq!(
+            anchor.aggregate_status,
+            review_types::AnchorAggregateStatus::Anchored
+        );
+        assert_eq!(head.line_start, 2);
+        assert_eq!(head.anchor_text, "new target");
+        assert_eq!(head.match_method, review_types::AnchorMatchMethod::Context);
+    }
+
+    #[test]
+    fn same_branch_head_selected_text_removed_without_context_orphans() {
+        let mut comment = stored_comment(2, "target");
+        comment.context_before = "missing before".to_string();
+        comment.context_after = "missing after".to_string();
+        comment.anchor = review_types::CommentAnchor {
+            segments: vec![review_types::CommentAnchorSegment {
+                side: review_types::CommentAnchorSide::Head,
+                file_path: "src/lib.rs".to_string(),
+                line_start: 2,
+                line_end: 2,
+                char_start: None,
+                char_end: None,
+                anchor_text: "target".to_string(),
+                context_before: "missing before".to_string(),
+                context_after: "missing after".to_string(),
+                placement_status: review_types::AnchorPlacementStatus::Anchored,
+                match_method: review_types::AnchorMatchMethod::ExactAtLine,
+            }],
+            aggregate_status: review_types::AnchorAggregateStatus::Anchored,
+        };
+
+        let anchor = resolve_anchor(&comment, "unrelated\ncontent\n", "new".to_string(), None);
+        let head = segment_for_side(&anchor, review_types::CommentAnchorSide::Head);
+
+        assert_eq!(
+            anchor.aggregate_status,
+            review_types::AnchorAggregateStatus::Orphaned
+        );
+        assert_eq!(
+            head.placement_status,
+            review_types::AnchorPlacementStatus::Orphaned
+        );
+        assert_eq!(head.match_method, review_types::AnchorMatchMethod::NotFound);
+    }
+
+    #[test]
+    fn rebase_base_only_deleted_line_reanchors_exact_elsewhere() {
+        let comment = base_only_comment(10, "deleted target");
+
+        let anchor = resolve_anchor(
+            &comment,
+            "before\ndeleted target\nafter\n",
+            "base-blob".to_string(),
+            None,
+        );
+
+        assert_eq!(anchor.segments.len(), 1);
+        let base = segment_for_side(&anchor, review_types::CommentAnchorSide::Base);
+        assert_eq!(
+            anchor.aggregate_status,
+            review_types::AnchorAggregateStatus::Anchored
+        );
+        assert_eq!(base.line_start, 2);
+        assert_eq!(
+            base.match_method,
+            review_types::AnchorMatchMethod::ExactElsewhere
+        );
+    }
+
+    #[test]
+    fn rebase_base_only_selected_text_removed_with_context_anchors_by_context() {
+        let comment = base_only_comment(10, "deleted target");
+
+        let anchor = resolve_anchor(
+            &comment,
+            "before\nreplacement base\nafter\n",
+            "base-blob".to_string(),
+            None,
+        );
+
+        assert_eq!(anchor.segments.len(), 1);
+        let base = segment_for_side(&anchor, review_types::CommentAnchorSide::Base);
+        assert_eq!(
+            anchor.aggregate_status,
+            review_types::AnchorAggregateStatus::Anchored
+        );
+        assert_eq!(base.line_start, 2);
+        assert_eq!(base.anchor_text, "replacement base");
+        assert_eq!(base.match_method, review_types::AnchorMatchMethod::Context);
     }
 
     #[test]
