@@ -139,6 +139,20 @@ fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
                 navigate_file(state, direction);
                 state.status_message = None;
             }
+            CoreEffect::JumpHunk(Direction::Next) => {
+                jump_to_next_hunk(state);
+                state.status_message = None;
+            }
+            CoreEffect::JumpHunk(Direction::Prev) => {
+                jump_to_prev_hunk(state);
+                state.status_message = None;
+            }
+            CoreEffect::GoToDefinition => {
+                request_go_to_definition(state);
+            }
+            CoreEffect::PopJumpStack => {
+                pop_jump_stack(state);
+            }
             CoreEffect::Render(_)
             | CoreEffect::ConnectionState(_)
             | CoreEffect::TransientError(_) => {}
@@ -231,6 +245,41 @@ fn apply_diff_search(state: &mut AppState, query: String) {
             let cur = state.diff_search_current + 1;
             state.status_message = Some((format!("{cur}/{total}"), Instant::now()));
         }
+    }
+}
+
+/// Pop the jump stack and restore the previous location.
+fn pop_jump_stack(state: &mut AppState) {
+    if let Some(loc) = state.jump_stack.pop() {
+        if loc.file_index != state.selected_file && loc.file_index < state.files.len() {
+            state.selected_file = loc.file_index;
+            on_file_changed(state);
+        }
+        state.diff_scroll = loc.diff_scroll;
+        state.diff_line_cursor = loc.diff_line_cursor;
+        state.content_mode = loc.content_mode;
+        state.render_variant = loc.render_variant;
+        state.clamp_cursor_and_scroll();
+        state.status_message = Some((
+            format!("Jump stack: {} remaining", state.jump_stack.len()),
+            Instant::now(),
+        ));
+    } else {
+        state.status_message = Some(("Jump stack empty".to_string(), Instant::now()));
+    }
+}
+
+/// Request go-to-definition for the word under the cursor.
+fn request_go_to_definition(state: &mut AppState) {
+    let word = extract_word_at_cursor(state);
+    if let Some(word) = word {
+        if word.is_empty() {
+            state.status_message = Some(("No word under cursor".to_string(), Instant::now()));
+        } else {
+            state.pending_command = Some(Command::FindDefinition { symbol: word });
+        }
+    } else {
+        state.status_message = Some(("No word under cursor".to_string(), Instant::now()));
     }
 }
 
@@ -554,46 +603,6 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
         });
     }
 
-    /// Pop the jump stack and restore the previous location.
-    fn pop_jump_stack(state: &mut AppState) {
-        if let Some(loc) = state.jump_stack.pop() {
-            if loc.file_index != state.selected_file && loc.file_index < state.files.len() {
-                state.selected_file = loc.file_index;
-                on_file_changed(state);
-            }
-            state.diff_scroll = loc.diff_scroll;
-            state.diff_line_cursor = loc.diff_line_cursor;
-            state.content_mode = loc.content_mode;
-            state.render_variant = loc.render_variant;
-            state.clamp_cursor_and_scroll();
-            state.status_message = Some((
-                format!("Jump stack: {} remaining", state.jump_stack.len()),
-                Instant::now(),
-            ));
-        } else {
-            state.status_message = Some(("Jump stack empty".to_string(), Instant::now()));
-        }
-    }
-
-    /// Request go-to-definition for the word under the cursor.
-    /// Sets `pending_command` for the async event loop.
-    fn request_go_to_definition(state: &mut AppState) {
-        // Extract the word at the approximate cursor position in the diff view.
-        // The "cursor" is at diff_scroll line, first non-whitespace token after
-        // the gutter. For simplicity, extract from the first content token of
-        // the current scroll line.
-        let word = extract_word_at_cursor(state);
-        if let Some(word) = word {
-            if word.is_empty() {
-                state.status_message = Some(("No word under cursor".to_string(), Instant::now()));
-            } else {
-                state.pending_command = Some(Command::FindDefinition { symbol: word });
-            }
-        } else {
-            state.status_message = Some(("No word under cursor".to_string(), Instant::now()));
-        }
-    }
-
     // --- Global keys (work from any pane) ---
     match (key.code, key.modifiers) {
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
@@ -726,12 +735,18 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
             return;
         }
         (KeyCode::Char(']'), KeyModifiers::NONE) => {
+            if dispatch_core_input(state, key) {
+                return;
+            }
             // Next hunk.
             jump_to_next_hunk(state);
             state.status_message = None;
             return;
         }
         (KeyCode::Char('['), KeyModifiers::NONE) => {
+            if dispatch_core_input(state, key) {
+                return;
+            }
             // Previous hunk.
             jump_to_prev_hunk(state);
             state.status_message = None;
@@ -813,11 +828,17 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
         }
 
         (KeyCode::Char(']'), KeyModifiers::CONTROL) => {
+            if dispatch_core_input(state, key) {
+                return;
+            }
             // Go-to-definition: extract word under cursor and request definition.
             request_go_to_definition(state);
             return;
         }
         (KeyCode::Char('t'), KeyModifiers::CONTROL) => {
+            if dispatch_core_input(state, key) {
+                return;
+            }
             // Pop the jump stack — return to previous location.
             pop_jump_stack(state);
             return;
