@@ -124,6 +124,12 @@ pub fn apply_core_effects(
             CoreEffect::ToggleInlineDiff => {
                 navigation::toggle_inline_diff(state, &mut update);
             }
+            CoreEffect::ToggleBlame => {
+                navigation::toggle_blame(state, &mut update);
+            }
+            CoreEffect::ToggleWhitespaceIgnored => {
+                navigation::toggle_whitespace_ignored(state, &mut update);
+            }
             CoreEffect::CycleViewMode => {
                 update.clear_status();
                 navigation::cycle_view_mode(state, view);
