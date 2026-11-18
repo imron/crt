@@ -1,6 +1,6 @@
 //! JSON-RPC API method implementations.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -86,6 +86,9 @@ pub async fn handle_init(
         );
     }
 
+    // Warn if .crt/ is not gitignored
+    check_gitignore(&git_ctx.repo_root);
+
     let db_path = crt_dir.join("reviews.db");
 
     // Open database
@@ -126,5 +129,21 @@ pub async fn handle_init(
             ERR_INTERNAL,
             format!("Failed to serialize init result: {e}"),
         ),
+    }
+}
+
+fn check_gitignore(repo_root: &Path) {
+    let gitignore_path = repo_root.join(".gitignore");
+    if let Ok(contents) = std::fs::read_to_string(&gitignore_path) {
+        let has_crt = contents.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed == ".crt" || trimmed == ".crt/" || trimmed == "/.crt" || trimmed == "/.crt/"
+        });
+        if !has_crt {
+            eprintln!(
+                "Warning: .crt/ is not in .gitignore. \
+                 Consider adding it to avoid committing review state."
+            );
+        }
     }
 }
