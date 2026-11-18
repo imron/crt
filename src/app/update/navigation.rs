@@ -450,6 +450,34 @@ pub fn navigate_unresolved_comment_from_cursor(
     true
 }
 
+pub fn selected_comment_visible_in_current_view(state: &AppState) -> bool {
+    let Some(id) = state.selected_comment_id else {
+        return true;
+    };
+    let Some(comment) = state.comments.iter().find(|comment| comment.id == id) else {
+        return true;
+    };
+    match (state.content_mode, state.render_variant) {
+        (
+            crate::review_types::ContentMode::FullFile,
+            crate::review_types::RenderVariant::BaseVersion,
+        ) => comment
+            .anchor
+            .segments
+            .iter()
+            .any(|segment| segment.side == crate::review_types::CommentAnchorSide::Base),
+        (
+            crate::review_types::ContentMode::FullFile,
+            crate::review_types::RenderVariant::HeadVersion,
+        ) => comment
+            .anchor
+            .segments
+            .iter()
+            .any(|segment| segment.side == crate::review_types::CommentAnchorSide::Head),
+        _ => true,
+    }
+}
+
 fn activate_unresolved_comment(state: &mut AppState, view: &impl AppViewport, comment_id: i64) {
     state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
     state.show_comments_panel = true;

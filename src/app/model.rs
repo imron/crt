@@ -822,7 +822,7 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
         })
         .unwrap_or_default();
     let comments = selected
-        .map(|entry| comment_attachments_for_file(&state.comments, &entry.change.path))
+        .map(|entry| comment_attachments_for_current_view(state, &entry.change.path))
         .unwrap_or_default();
     let comment_markers = comment_marker_set_for_current_view(state, &comments);
 
@@ -883,15 +883,16 @@ fn comment_marker_set_for_current_view(
     state: &AppState,
     comments: &[CommentAttachment],
 ) -> CommentMarkerSet {
-    let current_line = current_head_line(state);
+    let current_line = current_visible_line(state);
     match state.content_mode {
         ContentMode::FullFile => match state.render_variant {
-            RenderVariant::HeadVersion => CommentMarkerSet::new_with_current_comment(
-                comments,
-                current_line,
-                state.selected_comment_id,
-            ),
-            RenderVariant::BaseVersion => CommentMarkerSet::new(&[], None),
+            RenderVariant::HeadVersion | RenderVariant::BaseVersion => {
+                CommentMarkerSet::new_with_current_comment(
+                    comments,
+                    current_line,
+                    state.selected_comment_id,
+                )
+            }
             _ => CommentMarkerSet::new_with_current_comment(
                 comments,
                 current_line,
@@ -906,50 +907,85 @@ fn comment_marker_set_for_current_view(
     }
 }
 
+#[cfg(test)]
 fn comment_attachments_for_file(
     comments: &[review_types::Comment],
     file_path: &str,
 ) -> Vec<CommentAttachment> {
+    comment_attachments_for_file_and_side(comments, file_path, None)
+}
+
+fn comment_attachments_for_current_view(
+    state: &AppState,
+    file_path: &str,
+) -> Vec<CommentAttachment> {
+    let side = match (state.content_mode, state.render_variant) {
+        (ContentMode::FullFile, RenderVariant::BaseVersion) => {
+            Some(review_types::CommentAnchorSide::Base)
+        }
+        (ContentMode::FullFile, RenderVariant::HeadVersion) => {
+            Some(review_types::CommentAnchorSide::Head)
+        }
+        _ => None,
+    };
+    comment_attachments_for_file_and_side(&state.comments, file_path, side)
+}
+
+fn comment_attachments_for_file_and_side(
+    comments: &[review_types::Comment],
+    file_path: &str,
+    side: Option<review_types::CommentAnchorSide>,
+) -> Vec<CommentAttachment> {
     comments
         .iter()
         .filter(|comment| comment.file_path == file_path)
-        .map(|comment| CommentAttachment {
-            id: comment.id,
-            line_start: comment_anchor_line_start(comment),
-            line_end: comment_anchor_line_end(comment),
-            resolved: comment.resolved,
-            anchor_status: comment.anchor_status,
+        .filter_map(|comment| {
+            let line_start = comment_anchor_line_start(comment, side)?;
+            let line_end = comment_anchor_line_end(comment, side)?;
+            Some(CommentAttachment {
+                id: comment.id,
+                line_start,
+                line_end,
+                resolved: comment.resolved,
+                anchor_status: comment.anchor_status,
+            })
         })
         .collect()
 }
 
-fn comment_anchor_line_start(comment: &review_types::Comment) -> i64 {
+fn comment_anchor_line_start(
+    comment: &review_types::Comment,
+    side: Option<review_types::CommentAnchorSide>,
+) -> Option<i64> {
     comment
         .anchor
         .segments
         .iter()
         .filter(|segment| segment.file_path == comment.file_path)
+        .filter(|segment| side.is_none_or(|side| segment.side == side))
         .map(|segment| segment.line_start)
         .min()
-        .unwrap_or(comment.line_start)
 }
 
-fn comment_anchor_line_end(comment: &review_types::Comment) -> i64 {
+fn comment_anchor_line_end(
+    comment: &review_types::Comment,
+    side: Option<review_types::CommentAnchorSide>,
+) -> Option<i64> {
     comment
         .anchor
         .segments
         .iter()
         .filter(|segment| segment.file_path == comment.file_path)
+        .filter(|segment| side.is_none_or(|side| segment.side == side))
         .map(|segment| segment.line_end)
         .max()
-        .unwrap_or(comment.line_end)
 }
 
 fn comments_panel_model(state: &AppState) -> CommentsPanel {
     let selected_path = state
         .selected_file_entry()
         .map(|entry| entry.change.path.as_str());
-    let current_line = current_head_line(state).map(i64::from);
+    let current_line = current_visible_line(state).map(i64::from);
     let mut file_comments: Vec<&review_types::Comment> = state
         .comments
         .iter()
@@ -1052,11 +1088,12 @@ fn comment_preview(body: &str) -> String {
         .collect()
 }
 
-fn current_head_line(state: &AppState) -> Option<u32> {
+fn current_visible_line(state: &AppState) -> Option<u32> {
     match state.content_mode {
         ContentMode::FullFile => match state.render_variant {
-            RenderVariant::HeadVersion => Some(state.diff_line_cursor.saturating_add(1) as u32),
-            RenderVariant::BaseVersion => None,
+            RenderVariant::HeadVersion | RenderVariant::BaseVersion => {
+                Some(state.diff_line_cursor.saturating_add(1) as u32)
+            }
             _ => None,
         },
         ContentMode::Diff => diff_new_line_at_row(state, state.diff_line_cursor),

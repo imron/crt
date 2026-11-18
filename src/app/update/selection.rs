@@ -13,8 +13,14 @@ const CONTEXT_LINES: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceLine {
-    line_number: i64,
+    entries: Vec<SourceLineEntry>,
     content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SourceLineEntry {
+    side: CommentAnchorSide,
+    line_number: i64,
 }
 
 pub fn apply_visual_selection_effect(
@@ -108,72 +114,70 @@ fn capture_visual_selection(
     }
 
     let (start_anchor, end_anchor) = ordered_anchors(selection.start, selection.end);
-    let start_row = start_anchor.line.min(source_lines.len().saturating_sub(1));
-    let end_row = end_anchor.line.min(source_lines.len().saturating_sub(1));
-    let selected_lines = &source_lines[start_row..=end_row];
+    let hunk_lines = hunk_source_lines(state);
+    let selection_lines = if state.content_mode == ContentMode::Diff
+        && state.render_variant == RenderVariant::SideBySide
+        && !hunk_lines.is_empty()
+    {
+        &hunk_lines
+    } else if state.content_mode == ContentMode::Diff
+        && !hunk_lines.is_empty()
+        && end_anchor.line < hunk_lines.len()
+    {
+        &hunk_lines
+    } else {
+        &source_lines
+    };
+    let start_row = start_anchor
+        .line
+        .min(selection_lines.len().saturating_sub(1));
+    let end_row = end_anchor.line.min(selection_lines.len().saturating_sub(1));
+    let selected_lines = normalized_selected_lines(state, selection_lines, start_row, end_row);
+
+    let mut segments = Vec::new();
+    for side in [CommentAnchorSide::Base, CommentAnchorSide::Head] {
+        segments.extend(segments_for_selected_lines(
+            state,
+            &file_path,
+            &selected_lines,
+            side,
+        ));
+    }
+    if segments.is_empty() {
+        return None;
+    }
 
     let line_start = selected_lines
         .iter()
-        .map(|line| line.line_number)
+        .flat_map(|line| line.entries.iter().map(|entry| entry.line_number))
         .min()
         .unwrap_or((start_row + 1) as i64);
     let line_end = selected_lines
         .iter()
-        .map(|line| line.line_number)
+        .flat_map(|line| line.entries.iter().map(|entry| entry.line_number))
         .max()
         .unwrap_or((end_row + 1) as i64);
-
-    let head_lines: Vec<&str> = state
-        .head_content
-        .as_deref()
-        .map(|c| c.lines().collect())
+    let anchor_text = selected_lines
+        .iter()
+        .map(|line| line.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let context_before = segments
+        .iter()
+        .find(|segment| segment.side == CommentAnchorSide::Head)
+        .or_else(|| segments.first())
+        .map(|segment| segment.context_before.clone())
         .unwrap_or_default();
-    if head_lines.is_empty() {
-        return None;
-    }
-
-    let s = (line_start as usize)
-        .saturating_sub(1)
-        .min(head_lines.len().saturating_sub(1));
-    let e = (line_end as usize)
-        .saturating_sub(1)
-        .min(head_lines.len().saturating_sub(1));
-    let anchor_text = if s <= e {
-        head_lines[s..=e].join("\n")
-    } else {
-        String::new()
-    };
-
-    let context_before = {
-        let idx = (line_start as usize).saturating_sub(1);
-        let from = idx.saturating_sub(CONTEXT_LINES);
-        head_lines[from..idx.min(head_lines.len())].join("\n")
-    };
-    let context_after = {
-        let idx = (line_end as usize).saturating_sub(1);
-        let from = idx + 1;
-        if from >= head_lines.len() {
-            String::new()
-        } else {
-            let to = (from + CONTEXT_LINES).min(head_lines.len());
-            head_lines[from..to].join("\n")
-        }
-    };
+    let context_after = segments
+        .iter()
+        .rev()
+        .find(|segment| segment.side == CommentAnchorSide::Head)
+        .or_else(|| segments.last())
+        .map(|segment| segment.context_after.clone())
+        .unwrap_or_default();
 
     Some(CommentAnchorCapture {
-        segments: vec![CommentAnchorSegment {
-            side: CommentAnchorSide::Head,
-            file_path: file_path.clone(),
-            line_start,
-            line_end,
-            char_start: None,
-            char_end: None,
-            anchor_text: anchor_text.clone(),
-            context_before: context_before.clone(),
-            context_after: context_after.clone(),
-            placement_status: AnchorPlacementStatus::Anchored,
-            match_method: AnchorMatchMethod::ExactAtLine,
-        }],
+        segments,
         file_path,
         line_start,
         line_end,
@@ -185,6 +189,108 @@ fn capture_visual_selection(
     })
 }
 
+fn segments_for_selected_lines(
+    state: &AppState,
+    file_path: &str,
+    selected_lines: &[SourceLine],
+    side: CommentAnchorSide,
+) -> Vec<CommentAnchorSegment> {
+    let side_rows: Vec<(&SourceLine, i64)> = selected_lines
+        .iter()
+        .flat_map(|line| {
+            line.entries
+                .iter()
+                .filter(move |entry| entry.side == side)
+                .map(move |entry| (line, entry.line_number))
+        })
+        .collect();
+    let Some(content) = content_for_side(state, side) else {
+        return Vec::new();
+    };
+    let content_lines: Vec<&str> = content.lines().collect();
+    let mut segments = Vec::new();
+    let mut current: Vec<(&SourceLine, i64)> = Vec::new();
+
+    for row in side_rows {
+        let starts_new_segment = current
+            .last()
+            .is_some_and(|(_, previous_line)| row.1 != previous_line.saturating_add(1));
+        if starts_new_segment {
+            if let Some(segment) = segment_from_side_rows(file_path, side, &content_lines, &current)
+            {
+                segments.push(segment);
+            }
+            current.clear();
+        }
+        current.push(row);
+    }
+
+    if let Some(segment) = segment_from_side_rows(file_path, side, &content_lines, &current) {
+        segments.push(segment);
+    }
+
+    segments
+}
+
+fn segment_from_side_rows(
+    file_path: &str,
+    side: CommentAnchorSide,
+    content_lines: &[&str],
+    rows: &[(&SourceLine, i64)],
+) -> Option<CommentAnchorSegment> {
+    let line_start = rows.iter().map(|(_, line)| *line).min()?;
+    let line_end = rows.iter().map(|(_, line)| *line).max()?;
+    let anchor_text = rows
+        .iter()
+        .map(|(line, _)| line.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Some(CommentAnchorSegment {
+        side,
+        file_path: file_path.to_string(),
+        line_start,
+        line_end,
+        char_start: None,
+        char_end: None,
+        anchor_text,
+        context_before: context_before(content_lines, line_start),
+        context_after: context_after(content_lines, line_end),
+        placement_status: AnchorPlacementStatus::Anchored,
+        match_method: AnchorMatchMethod::ExactAtLine,
+    })
+}
+
+fn content_for_side(state: &AppState, side: CommentAnchorSide) -> Option<&str> {
+    match side {
+        CommentAnchorSide::Base => state.base_content.as_deref(),
+        CommentAnchorSide::Head => state.head_content.as_deref(),
+    }
+}
+
+fn context_before(lines: &[&str], line_start: i64) -> String {
+    let idx = line_start
+        .checked_sub(1)
+        .and_then(|line| usize::try_from(line).ok())
+        .unwrap_or(0);
+    let from = idx.saturating_sub(CONTEXT_LINES);
+    lines[from..idx.min(lines.len())].join("\n")
+}
+
+fn context_after(lines: &[&str], line_end: i64) -> String {
+    let idx = line_end
+        .checked_sub(1)
+        .and_then(|line| usize::try_from(line).ok())
+        .unwrap_or(0);
+    let from = idx.saturating_add(1);
+    if from >= lines.len() {
+        String::new()
+    } else {
+        let to = (from + CONTEXT_LINES).min(lines.len());
+        lines[from..to].join("\n")
+    }
+}
+
 fn ordered_anchors(start: TextAnchor, end: TextAnchor) -> (TextAnchor, TextAnchor) {
     if (end.line, end.column) < (start.line, start.column) {
         (end, start)
@@ -193,17 +299,99 @@ fn ordered_anchors(start: TextAnchor, end: TextAnchor) -> (TextAnchor, TextAncho
     }
 }
 
+fn normalized_selected_lines(
+    state: &AppState,
+    selection_lines: &[SourceLine],
+    start_row: usize,
+    end_row: usize,
+) -> Vec<SourceLine> {
+    let selected = &selection_lines[start_row..=end_row];
+    let has_change = selected.iter().any(|line| line.entries.len() == 1);
+    if !has_change {
+        if state.render_variant == RenderVariant::SideBySide {
+            let mut rows = Vec::new();
+            for idx in end_row.saturating_add(1)..selection_lines.len() {
+                collect_paired_change_row(selection_lines, idx, &mut rows);
+                if !rows.is_empty() {
+                    rows.sort_by_key(|line| {
+                        line.entries
+                            .first()
+                            .map(|entry| (entry.line_number, side_sort_key(entry.side)))
+                            .unwrap_or((i64::MAX, 1))
+                    });
+                    rows.dedup();
+                    return rows;
+                }
+            }
+        }
+        return selected.to_vec();
+    }
+
+    let mut rows = Vec::new();
+    for idx in start_row..=end_row {
+        collect_paired_change_row(selection_lines, idx, &mut rows);
+    }
+    if rows.is_empty() {
+        for idx in start_row..=end_row {
+            if let Some(line) = selection_lines.get(idx) {
+                if line.entries.len() == 1 {
+                    rows.push(line.clone());
+                }
+            }
+        }
+    }
+    rows.sort_by_key(|line| {
+        line.entries
+            .first()
+            .map(|entry| (entry.line_number, side_sort_key(entry.side)))
+            .unwrap_or((i64::MAX, 1))
+    });
+    rows.dedup();
+    rows
+}
+
+fn side_sort_key(side: CommentAnchorSide) -> u8 {
+    match side {
+        CommentAnchorSide::Base => 0,
+        CommentAnchorSide::Head => 1,
+    }
+}
+
+fn collect_paired_change_row(
+    selection_lines: &[SourceLine],
+    idx: usize,
+    rows: &mut Vec<SourceLine>,
+) {
+    let Some(line) = selection_lines.get(idx) else {
+        return;
+    };
+    if line.entries.len() != 1 {
+        return;
+    }
+    let side = line.entries[0].side;
+    let pair_idx = match side {
+        CommentAnchorSide::Base => idx.saturating_add(1),
+        CommentAnchorSide::Head => idx.saturating_sub(1),
+    };
+    if let Some(pair) = selection_lines.get(pair_idx) {
+        if pair.entries.len() == 1 && pair.entries[0].side != side {
+            rows.push(line.clone());
+            rows.push(pair.clone());
+        }
+    }
+}
+
 fn source_lines_for_state(state: &AppState, view: &impl AppViewport) -> Vec<SourceLine> {
     match (state.content_mode, state.render_variant) {
         (ContentMode::FullFile, RenderVariant::BaseVersion) => state
             .base_content
             .as_deref()
-            .map(source_lines_from_file_content)
+            .map(|content| source_lines_from_file_content(content, CommentAnchorSide::Base))
             .unwrap_or_else(|| fallback_source_lines(view)),
         (ContentMode::FullFile, _) => state
             .head_content
             .as_deref()
-            .map(source_lines_from_file_content)
+            .map(|content| source_lines_from_file_content(content, CommentAnchorSide::Head))
             .unwrap_or_else(|| fallback_source_lines(view)),
         (ContentMode::Diff, _) => {
             diff_source_lines(state).unwrap_or_else(|| fallback_source_lines(view))
@@ -211,12 +399,15 @@ fn source_lines_for_state(state: &AppState, view: &impl AppViewport) -> Vec<Sour
     }
 }
 
-fn source_lines_from_file_content(content: &str) -> Vec<SourceLine> {
+fn source_lines_from_file_content(content: &str, side: CommentAnchorSide) -> Vec<SourceLine> {
     content
         .lines()
         .enumerate()
         .map(|(idx, content)| SourceLine {
-            line_number: (idx + 1) as i64,
+            entries: vec![SourceLineEntry {
+                side,
+                line_number: (idx + 1) as i64,
+            }],
             content: content.to_string(),
         })
         .collect()
@@ -239,7 +430,10 @@ fn diff_source_lines(state: &AppState) -> Option<Vec<SourceLine>> {
                     .iter()
                     .enumerate()
                     .map(|(idx, content)| SourceLine {
-                        line_number: (idx + 1) as i64,
+                        entries: vec![SourceLineEntry {
+                            side: CommentAnchorSide::Head,
+                            line_number: (idx + 1) as i64,
+                        }],
                         content: (*content).to_string(),
                     })
                     .collect(),
@@ -254,7 +448,10 @@ fn diff_source_lines(state: &AppState) -> Option<Vec<SourceLine>> {
     for hunk in &entry.diff.hunks {
         while new_cursor < hunk.new_start && (new_cursor as usize) <= head_lines.len() {
             lines.push(SourceLine {
-                line_number: new_cursor as i64,
+                entries: vec![SourceLineEntry {
+                    side: CommentAnchorSide::Head,
+                    line_number: new_cursor as i64,
+                }],
                 content: head_lines
                     .get((new_cursor - 1) as usize)
                     .copied()
@@ -266,20 +463,42 @@ fn diff_source_lines(state: &AppState) -> Option<Vec<SourceLine>> {
         }
 
         for line in &hunk.lines {
-            let line_number = line.new_lineno.unwrap_or(new_cursor) as i64;
-            lines.push(SourceLine {
-                line_number,
-                content: line.content.trim_end_matches('\n').to_string(),
-            });
             match line.kind {
                 LineKind::Context => {
+                    lines.push(SourceLine {
+                        entries: vec![
+                            SourceLineEntry {
+                                side: CommentAnchorSide::Base,
+                                line_number: line.old_lineno.unwrap_or(old_cursor) as i64,
+                            },
+                            SourceLineEntry {
+                                side: CommentAnchorSide::Head,
+                                line_number: line.new_lineno.unwrap_or(new_cursor) as i64,
+                            },
+                        ],
+                        content: line.content.trim_end_matches('\n').to_string(),
+                    });
                     old_cursor = old_cursor.saturating_add(1);
                     new_cursor = new_cursor.saturating_add(1);
                 }
                 LineKind::Addition => {
+                    lines.push(SourceLine {
+                        entries: vec![SourceLineEntry {
+                            side: CommentAnchorSide::Head,
+                            line_number: line.new_lineno.unwrap_or(new_cursor) as i64,
+                        }],
+                        content: line.content.trim_end_matches('\n').to_string(),
+                    });
                     new_cursor = new_cursor.saturating_add(1);
                 }
                 LineKind::Deletion => {
+                    lines.push(SourceLine {
+                        entries: vec![SourceLineEntry {
+                            side: CommentAnchorSide::Base,
+                            line_number: line.old_lineno.unwrap_or(old_cursor) as i64,
+                        }],
+                        content: line.content.trim_end_matches('\n').to_string(),
+                    });
                     old_cursor = old_cursor.saturating_add(1);
                 }
             }
@@ -288,7 +507,10 @@ fn diff_source_lines(state: &AppState) -> Option<Vec<SourceLine>> {
 
     while (new_cursor as usize) <= head_lines.len() {
         lines.push(SourceLine {
-            line_number: new_cursor as i64,
+            entries: vec![SourceLineEntry {
+                side: CommentAnchorSide::Head,
+                line_number: new_cursor as i64,
+            }],
             content: head_lines
                 .get((new_cursor - 1) as usize)
                 .copied()
@@ -301,6 +523,39 @@ fn diff_source_lines(state: &AppState) -> Option<Vec<SourceLine>> {
     Some(lines)
 }
 
+fn hunk_source_lines(state: &AppState) -> Vec<SourceLine> {
+    let Some(entry) = state.selected_file_entry() else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    for hunk in &entry.diff.hunks {
+        for line in &hunk.lines {
+            lines.push(source_line_from_diff_line(line));
+        }
+    }
+    lines
+}
+
+fn source_line_from_diff_line(line: &crate::review_types::DiffLine) -> SourceLine {
+    let mut entries = Vec::new();
+    if let Some(line_number) = line.old_lineno {
+        entries.push(SourceLineEntry {
+            side: CommentAnchorSide::Base,
+            line_number: line_number as i64,
+        });
+    }
+    if let Some(line_number) = line.new_lineno {
+        entries.push(SourceLineEntry {
+            side: CommentAnchorSide::Head,
+            line_number: line_number as i64,
+        });
+    }
+    SourceLine {
+        entries,
+        content: line.content.trim_end_matches('\n').to_string(),
+    }
+}
+
 fn fallback_source_lines(view: &impl AppViewport) -> Vec<SourceLine> {
     let start = view.diff_content_start_col();
     view.diff_rendered_text()
@@ -311,7 +566,10 @@ fn fallback_source_lines(view: &impl AppViewport) -> Vec<SourceLine> {
                 .map(|start| line[start..].to_string())
                 .unwrap_or_default();
             SourceLine {
-                line_number: (idx + 1) as i64,
+                entries: vec![SourceLineEntry {
+                    side: CommentAnchorSide::Head,
+                    line_number: (idx + 1) as i64,
+                }],
                 content,
             }
         })

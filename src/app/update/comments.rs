@@ -3,7 +3,9 @@ use super::output::AppOutput;
 use super::viewport::AppViewport;
 use crate::app::{AppState, FileListSectionFocus};
 use crate::core::CommentsPanelEffect;
-use crate::review_types::{Comment, ContentMode, LineKind, PaneFocus, RenderVariant};
+use crate::review_types::{
+    Comment, CommentAnchorSide, ContentMode, LineKind, PaneFocus, RenderVariant,
+};
 
 pub fn current_comment(state: &AppState) -> Option<&Comment> {
     if state.pane_focus == PaneFocus::Comments {
@@ -15,11 +17,12 @@ pub fn current_comment(state: &AppState) -> Option<&Comment> {
     }
 
     let path = selected_path(state)?;
-    let line = current_head_line(state)?;
+    let line = current_visible_line(state)?;
     current_comment_for_line(
         &state.comments,
         path,
         i64::from(line),
+        current_comment_side(state),
         state.selected_comment_id,
     )
 }
@@ -91,16 +94,20 @@ fn navigate_to_selected(state: &mut AppState, view: &impl AppViewport) {
     navigate_to_comment(state, view, &comment);
 }
 
-pub fn navigate_to_comment_id(state: &mut AppState, view: &impl AppViewport, comment_id: i64) {
+pub fn navigate_to_comment_id(
+    state: &mut AppState,
+    view: &impl AppViewport,
+    comment_id: i64,
+) -> bool {
     let Some(comment) = state
         .comments
         .iter()
         .find(|comment| comment.id == comment_id)
         .cloned()
     else {
-        return;
+        return false;
     };
-    navigate_to_comment(state, view, &comment);
+    navigate_to_comment(state, view, &comment)
 }
 
 pub fn select_out_of_range_comment(state: &mut AppState, comment_id: i64) {
@@ -127,11 +134,17 @@ fn navigate_adjacent_comment(state: &mut AppState, view: &impl AppViewport, dire
     let next_index = match direction {
         Direction::Next => comments
             .iter()
-            .position(|comment| comment.line_start > cursor_line)
+            .position(|comment| {
+                visible_comment_line_range(state, comment)
+                    .is_some_and(|(line_start, _)| line_start > cursor_line)
+            })
             .unwrap_or(0),
         Direction::Previous => comments
             .iter()
-            .rposition(|comment| comment.line_start < cursor_line)
+            .rposition(|comment| {
+                visible_comment_line_range(state, comment)
+                    .is_some_and(|(line_start, _)| line_start < cursor_line)
+            })
             .unwrap_or(comments.len() - 1),
     };
     let comment = comments[next_index].clone();
@@ -147,11 +160,17 @@ fn select_adjacent(state: &mut AppState, direction: Direction) {
         let next_index = match direction {
             Direction::Next => comments
                 .iter()
-                .position(|comment| comment.line_start > cursor_line)
+                .position(|comment| {
+                    visible_comment_line_range(state, comment)
+                        .is_some_and(|(line_start, _)| line_start > cursor_line)
+                })
                 .unwrap_or(0),
             Direction::Previous => comments
                 .iter()
-                .rposition(|comment| comment.line_start < cursor_line)
+                .rposition(|comment| {
+                    visible_comment_line_range(state, comment)
+                        .is_some_and(|(line_start, _)| line_start < cursor_line)
+                })
                 .unwrap_or(comments.len() - 1),
         };
         state.selected_comment_id = Some(comments[next_index].id);
@@ -189,14 +208,14 @@ fn request_delete_current(state: &mut AppState, update: &mut AppOutput) {
     }
 }
 
-fn navigate_to_comment(state: &mut AppState, view: &impl AppViewport, comment: &Comment) {
+fn navigate_to_comment(state: &mut AppState, view: &impl AppViewport, comment: &Comment) -> bool {
     let Some(file_index) = state
         .files
         .iter()
         .position(|entry| entry.change.path == comment.file_path)
     else {
         select_out_of_range_comment(state, comment.id);
-        return;
+        return false;
     };
     let focus = if state.file_list_section_focus == FileListSectionFocus::UnresolvedComments {
         FileListSectionFocus::UnresolvedComments
@@ -205,14 +224,19 @@ fn navigate_to_comment(state: &mut AppState, view: &impl AppViewport, comment: &
     };
     state.select_file(file_index, focus, false);
     state.selected_comment_id = Some(comment.id);
+    let Some((line_start, line_end)) = visible_comment_line_range(state, comment) else {
+        state.mark_model_changed();
+        return false;
+    };
     state.pane_focus = PaneFocus::Diff;
-    let start_row = display_row_for_head_line(state, comment_line(comment.line_start));
-    let end_row = display_row_for_head_line(state, comment_line(comment.line_end)).max(start_row);
+    let start_row = display_row_for_visible_line(state, comment_line(line_start));
+    let end_row = display_row_for_visible_line(state, comment_line(line_end)).max(start_row);
     state.diff_line_cursor = start_row;
     state.diff_col_cursor = 0;
     scroll_to_comment(state, view, start_row, end_row);
     clamp_cursor_and_scroll(state, view);
     state.mark_model_changed();
+    true
 }
 
 fn comment_line(line: i64) -> u32 {
@@ -260,27 +284,78 @@ fn current_comment_for_line<'a>(
     comments: &'a [Comment],
     path: &str,
     line: i64,
+    side: Option<CommentAnchorSide>,
     selected_comment_id: Option<i64>,
 ) -> Option<&'a Comment> {
     let candidates: Vec<&Comment> = comments
         .iter()
         .filter(|comment| {
-            comment.file_path == path && comment.line_start <= line && comment.line_end >= line
+            comment.file_path == path
+                && visible_comment_line_range_for_side(comment, side)
+                    .is_some_and(|(start, end)| start <= line && end >= line)
         })
         .collect();
-    let max_start = candidates.iter().map(|comment| comment.line_start).max()?;
+    let max_start = candidates
+        .iter()
+        .filter_map(|comment| {
+            visible_comment_line_range_for_side(comment, side).map(|(start, _)| start)
+        })
+        .max()?;
     if let Some(selected) = selected_comment_id.and_then(|id| {
-        candidates
-            .iter()
-            .copied()
-            .find(|comment| comment.id == id && comment.line_start == max_start)
+        candidates.iter().copied().find(|comment| {
+            comment.id == id
+                && visible_comment_line_range_for_side(comment, side)
+                    .is_some_and(|(start, _)| start == max_start)
+        })
     }) {
         return Some(selected);
     }
     candidates
         .into_iter()
-        .filter(|comment| comment.line_start == max_start)
+        .filter(|comment| {
+            visible_comment_line_range_for_side(comment, side)
+                .is_some_and(|(start, _)| start == max_start)
+        })
         .max_by_key(|comment| comment.id)
+}
+
+fn current_comment_side(state: &AppState) -> Option<CommentAnchorSide> {
+    match (state.content_mode, state.render_variant) {
+        (ContentMode::FullFile, RenderVariant::BaseVersion) => Some(CommentAnchorSide::Base),
+        (ContentMode::FullFile, RenderVariant::HeadVersion) => Some(CommentAnchorSide::Head),
+        _ => None,
+    }
+}
+
+fn visible_comment_line_range(state: &AppState, comment: &Comment) -> Option<(i64, i64)> {
+    visible_comment_line_range_for_side(comment, current_comment_side(state))
+}
+
+fn visible_comment_line_range_for_side(
+    comment: &Comment,
+    side: Option<CommentAnchorSide>,
+) -> Option<(i64, i64)> {
+    let Some(side) = side else {
+        return Some((comment.line_start, comment.line_end));
+    };
+    if side == CommentAnchorSide::Head && comment.anchor.segments.len() == 1 {
+        return Some((comment.line_start, comment.line_end));
+    }
+
+    let mut segments = comment
+        .anchor
+        .segments
+        .iter()
+        .filter(|segment| segment.file_path == comment.file_path)
+        .filter(|segment| segment.side == side);
+    let first = segments.next()?;
+    let mut line_start = first.line_start;
+    let mut line_end = first.line_end;
+    for segment in segments {
+        line_start = line_start.min(segment.line_start);
+        line_end = line_end.max(segment.line_end);
+    }
+    Some((line_start, line_end))
 }
 
 fn current_file_comments(state: &AppState) -> Vec<&Comment> {
@@ -290,9 +365,15 @@ fn current_file_comments(state: &AppState) -> Vec<&Comment> {
     let mut comments: Vec<&Comment> = state
         .comments
         .iter()
-        .filter(|comment| comment.file_path == path)
+        .filter(|comment| {
+            comment.file_path == path && visible_comment_line_range(state, comment).is_some()
+        })
         .collect();
-    comments.sort_by_key(|comment| (comment.line_start, comment.line_end, comment.id));
+    comments.sort_by_key(|comment| {
+        let (start, end) = visible_comment_line_range(state, comment)
+            .unwrap_or((comment.line_start, comment.line_end));
+        (start, end, comment.id)
+    });
     comments
 }
 
@@ -302,11 +383,12 @@ fn selected_path(state: &AppState) -> Option<&str> {
         .map(|entry| entry.change.path.as_str())
 }
 
-fn current_head_line(state: &AppState) -> Option<u32> {
+fn current_visible_line(state: &AppState) -> Option<u32> {
     match state.content_mode {
         ContentMode::FullFile => match state.render_variant {
-            RenderVariant::HeadVersion => Some(state.diff_line_cursor.saturating_add(1) as u32),
-            RenderVariant::BaseVersion => None,
+            RenderVariant::HeadVersion | RenderVariant::BaseVersion => {
+                Some(state.diff_line_cursor.saturating_add(1) as u32)
+            }
             _ => None,
         },
         ContentMode::Diff => diff_new_line_at_row(state, state.diff_line_cursor),
@@ -314,13 +396,13 @@ fn current_head_line(state: &AppState) -> Option<u32> {
 }
 
 pub fn current_head_line_for_navigation(state: &AppState) -> Option<u32> {
-    current_head_line(state).or_else(|| match state.content_mode {
+    current_visible_line(state).or_else(|| match state.content_mode {
         ContentMode::Diff => diff_insertion_head_line_before_row(state, state.diff_line_cursor),
         ContentMode::FullFile => None,
     })
 }
 
-fn display_row_for_head_line(state: &AppState, target_line: u32) -> usize {
+fn display_row_for_visible_line(state: &AppState, target_line: u32) -> usize {
     match state.content_mode {
         ContentMode::FullFile => match state.render_variant {
             RenderVariant::HeadVersion => target_line.saturating_sub(1) as usize,

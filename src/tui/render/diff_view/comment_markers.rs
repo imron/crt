@@ -8,13 +8,6 @@ pub struct CommentMarker {
 }
 
 impl CommentMarker {
-    pub fn blank(width: usize) -> Self {
-        Self {
-            text: " ".repeat(width),
-            current: false,
-        }
-    }
-
     pub fn text(&self) -> &str {
         &self.text
     }

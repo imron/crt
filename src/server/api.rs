@@ -1831,13 +1831,6 @@ fn find_context_match(
         }
     }
 
-    if !after.is_empty() {
-        return find_sequence(lines, &after).map(|after_index| {
-            let start = after_index.saturating_sub(span);
-            (start, span)
-        });
-    }
-
     None
 }
 
