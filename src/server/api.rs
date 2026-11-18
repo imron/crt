@@ -7,12 +7,13 @@ use tokio::sync::Mutex;
 
 use tokio::sync::broadcast;
 
-use super::{
-    ConnectionContext, ERR_INTERNAL, ERR_INVALID_PARAMS, JsonRpcResponse, ServerState, notify,
-};
+use super::{ConnectionContext, ServerState};
 use crate::db::Database;
 use crate::git;
 use crate::model;
+use crate::protocol::{
+    ERR_INTERNAL, ERR_INVALID_PARAMS, JsonRpcResponse, Notification, NotificationKind,
+};
 
 pub async fn handle_init(
     params: &serde_json::Value,
@@ -128,7 +129,7 @@ pub async fn handle_list_changed_files(
     id: &serde_json::Value,
     ctx: &ConnectionContext,
     db: &Arc<Mutex<Database>>,
-    notify_tx: &broadcast::Sender<notify::Notification>,
+    notify_tx: &broadcast::Sender<Notification>,
 ) -> JsonRpcResponse {
     // Load stored reviews from DB (async lock, then sync DB call).
     let reviews = {
@@ -232,7 +233,7 @@ pub async fn handle_list_changed_files(
 async fn try_migrate_reviews(
     ctx: &ConnectionContext,
     db: &Arc<Mutex<Database>>,
-    notify_tx: &broadcast::Sender<notify::Notification>,
+    notify_tx: &broadcast::Sender<Notification>,
 ) -> anyhow::Result<Option<std::collections::HashMap<String, crate::db::StoredReview>>> {
     use std::collections::HashMap;
 
@@ -349,10 +350,10 @@ async fn try_migrate_reviews(
     }
 
     // 5. Broadcast migration notification.
-    let _ = notify_tx.send(notify::Notification {
+    let _ = notify_tx.send(Notification {
         base_ref: ctx.merge_base.clone(),
         head_ref: ctx.head_ref.clone(),
-        kind: notify::NotificationKind::ReviewsMigrated {
+        kind: NotificationKind::ReviewsMigrated {
             count: migrated_count,
         },
     });
@@ -422,7 +423,7 @@ pub async fn handle_mark_reviewed(
     id: &serde_json::Value,
     ctx: &ConnectionContext,
     db: &Arc<Mutex<Database>>,
-    notify_tx: &broadcast::Sender<notify::Notification>,
+    notify_tx: &broadcast::Sender<Notification>,
 ) -> JsonRpcResponse {
     let p: model::MarkReviewedParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
@@ -489,10 +490,10 @@ pub async fn handle_mark_reviewed(
     };
 
     // Broadcast notification.
-    let _ = notify_tx.send(notify::Notification {
+    let _ = notify_tx.send(Notification {
         base_ref: merge_base,
         head_ref: ctx.head_ref.clone(),
-        kind: notify::NotificationKind::ReviewChanged {
+        kind: NotificationKind::ReviewChanged {
             file_path: file_path.clone(),
         },
     });
@@ -524,7 +525,7 @@ pub async fn handle_unmark_reviewed(
     id: &serde_json::Value,
     ctx: &ConnectionContext,
     db: &Arc<Mutex<Database>>,
-    notify_tx: &broadcast::Sender<notify::Notification>,
+    notify_tx: &broadcast::Sender<Notification>,
 ) -> JsonRpcResponse {
     let p: model::UnmarkReviewedParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
@@ -550,10 +551,10 @@ pub async fn handle_unmark_reviewed(
     }
 
     // Broadcast notification.
-    let _ = notify_tx.send(notify::Notification {
+    let _ = notify_tx.send(Notification {
         base_ref: ctx.merge_base.clone(),
         head_ref: ctx.head_ref.clone(),
-        kind: notify::NotificationKind::ReviewChanged {
+        kind: NotificationKind::ReviewChanged {
             file_path: p.file_path.clone(),
         },
     });
@@ -581,7 +582,7 @@ pub async fn handle_reset_reviews(
     id: &serde_json::Value,
     ctx: &ConnectionContext,
     db: &Arc<Mutex<Database>>,
-    notify_tx: &broadcast::Sender<notify::Notification>,
+    notify_tx: &broadcast::Sender<Notification>,
 ) -> JsonRpcResponse {
     let cleared = {
         let db_guard = db.lock().await;
@@ -598,10 +599,10 @@ pub async fn handle_reset_reviews(
     };
 
     // Broadcast notification.
-    let _ = notify_tx.send(notify::Notification {
+    let _ = notify_tx.send(Notification {
         base_ref: ctx.merge_base.clone(),
         head_ref: ctx.head_ref.clone(),
-        kind: notify::NotificationKind::ReviewsCleared,
+        kind: NotificationKind::ReviewsCleared,
     });
 
     let result = model::ResetReviewsResult { cleared };

@@ -1,86 +1,26 @@
 //! Server core: Unix socket listener, connection handling, JSON-RPC dispatch.
+//!
+//! The server owns connection lifecycle and method dispatch. Shared wire
+//! models live in `crate::protocol` so clients do not depend on server
+//! internals.
 
 pub mod api;
-pub mod notify;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
 
 use crate::db::Database;
-
-// ---------------------------------------------------------------------------
-// JSON-RPC types
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-pub struct JsonRpcRequest {
-    #[serde(default)]
-    pub jsonrpc: String,
-    pub method: String,
-    #[serde(default)]
-    pub params: serde_json::Value,
-    pub id: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct JsonRpcResponse {
-    pub jsonrpc: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<JsonRpcError>,
-    pub id: serde_json::Value,
-}
-
-#[derive(Debug, Serialize, Clone)]
-pub struct JsonRpcError {
-    pub code: i64,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<serde_json::Value>,
-}
-
-impl JsonRpcResponse {
-    pub fn success(id: serde_json::Value, result: serde_json::Value) -> Self {
-        Self {
-            jsonrpc: "2.0".to_string(),
-            result: Some(result),
-            error: None,
-            id,
-        }
-    }
-
-    pub fn error(id: serde_json::Value, code: i64, message: String) -> Self {
-        Self {
-            jsonrpc: "2.0".to_string(),
-            result: None,
-            error: Some(JsonRpcError {
-                code,
-                message,
-                data: None,
-            }),
-            id,
-        }
-    }
-}
-
-// JSON-RPC standard error codes
-pub const ERR_PARSE: i64 = -32700;
-pub const ERR_METHOD_NOT_FOUND: i64 = -32601;
-pub const ERR_INVALID_PARAMS: i64 = -32602;
-pub const ERR_INTERNAL: i64 = -32603;
-
-// Application error codes
-pub const ERR_NOT_INITIALIZED: i64 = -32000;
-pub const ERR_NOT_IMPLEMENTED: i64 = -32001;
+use crate::protocol::{
+    ERR_METHOD_NOT_FOUND, ERR_NOT_IMPLEMENTED, ERR_NOT_INITIALIZED, ERR_PARSE, JsonRpcRequest,
+    JsonRpcResponse, Notification,
+};
 
 // ---------------------------------------------------------------------------
 // Connection state
@@ -102,7 +42,7 @@ pub struct ServerState {
     /// Open databases keyed by repo root path.
     databases: Mutex<HashMap<PathBuf, Arc<Mutex<Database>>>>,
     /// Broadcast channel for notifications.
-    pub notify_tx: broadcast::Sender<notify::Notification>,
+    pub notify_tx: broadcast::Sender<Notification>,
 }
 
 impl Default for ServerState {

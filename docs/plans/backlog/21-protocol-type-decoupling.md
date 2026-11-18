@@ -1,6 +1,6 @@
 # Stage 21: Protocol Type Decoupling
 
-## Status: Backlog
+## Status: Complete
 
 ## Order
 
@@ -70,11 +70,11 @@ That coupling blocks clean layering and makes future interfaces harder to add.
 
 ## Acceptance Criteria
 
-- [ ] `src/client.rs` has no dependency on `src/server/*` for shared types.
-- [ ] Client and server compile and run together with the updated protocol.
-- [ ] Existing tests are updated as needed and pass.
-- [ ] Notification handling works identically from client perspective.
-- [ ] Module-level docs clearly define dependency direction.
+- [x] `src/client.rs` has no dependency on `src/server/*` for shared types.
+- [x] Client and server compile and run together with the updated protocol.
+- [x] Existing tests are updated as needed and pass.
+- [x] Notification handling works identically from client perspective.
+- [x] Module-level docs clearly define dependency direction.
 
 ## Resolved Decisions
 
