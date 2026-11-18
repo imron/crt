@@ -14,7 +14,7 @@ use crate::app::document::{
 };
 use crate::app::model::{AppModel, ReviewStatus};
 use crate::config::StyleConfig;
-use crate::review_types::{ContentMode, LineKind, PaneFocus, RenderVariant};
+use crate::review_types::{CommentAnchorSide, ContentMode, LineKind, PaneFocus, RenderVariant};
 
 const BLAME_COL_WIDTH: usize = 30;
 const COMMENT_MARKER_WIDTH: usize = 1;
@@ -24,7 +24,8 @@ const SIDE_BY_SIDE_DIVIDER: &str = " │ ";
 enum GutterMode {
     Unified,
     Single,
-    ReservedSingle,
+    ReservedBase,
+    ReservedHead,
 }
 
 /// Draw the diff/file view pane from `ActiveDocument`.
@@ -303,7 +304,7 @@ fn visible_lines(
                             is_cursor,
                         )
                     }),
-                DiffDocument::Base(document) | DiffDocument::Head(document) => document
+                DiffDocument::Base(document) => document
                     .line(crate::app::document::RowIndex(row))
                     .map(|line| {
                         with_column_cursor(
@@ -311,7 +312,25 @@ fn visible_lines(
                                 line,
                                 styles,
                                 layout.gutter_w,
-                                GutterMode::ReservedSingle,
+                                GutterMode::ReservedBase,
+                                inner_w,
+                                diff.show_blame,
+                                is_cursor,
+                            ),
+                            layout.content_start_col,
+                            diff.cursor.column,
+                            is_cursor,
+                        )
+                    }),
+                DiffDocument::Head(document) => document
+                    .line(crate::app::document::RowIndex(row))
+                    .map(|line| {
+                        with_column_cursor(
+                            render_single_line(
+                                line,
+                                styles,
+                                layout.gutter_w,
+                                GutterMode::ReservedHead,
                                 inner_w,
                                 diff.show_blame,
                                 is_cursor,
@@ -480,8 +499,24 @@ fn render_content_line(
             push_single_gutter(&mut spans, &content, gutter_w, gutter_style);
             gutter_w + 1
         }
-        GutterMode::ReservedSingle => {
-            push_reserved_single_gutter(&mut spans, &content, gutter_w, gutter_style);
+        GutterMode::ReservedBase => {
+            push_reserved_gutter(
+                &mut spans,
+                &content,
+                gutter_w,
+                gutter_style,
+                CommentAnchorSide::Base,
+            );
+            gutter_w + 1 + gutter_w + 1
+        }
+        GutterMode::ReservedHead => {
+            push_reserved_gutter(
+                &mut spans,
+                &content,
+                gutter_w,
+                gutter_style,
+                CommentAnchorSide::Head,
+            );
             gutter_w + 1 + gutter_w + 1
         }
     };
@@ -568,24 +603,66 @@ fn push_single_gutter(
     spans.push(Span::styled(" ", gutter_style));
 }
 
-fn push_reserved_single_gutter(
+fn push_reserved_gutter(
     spans: &mut Vec<Span<'static>>,
     content: &RenderContent<'_>,
     gutter_w: usize,
     gutter_style: Style,
+    side: CommentAnchorSide,
 ) {
-    let gutter = single_source_line(content.source)
+    let gutter = content
+        .source
+        .line_for_side(side)
+        .or_else(|| single_source_line(content.source))
         .map(|line| format!("{line:>gutter_w$}"))
         .unwrap_or_else(|| format!("{:>gutter_w$}", content.gutter.as_ref()));
-    spans.push(Span::styled(" ".repeat(gutter_w), gutter_style));
-    spans.push(Span::styled(" ", gutter_style));
-    spans.push(Span::styled(gutter, gutter_style));
+    let blank = " ".repeat(gutter_w);
+    match side {
+        CommentAnchorSide::Base => {
+            spans.push(Span::styled(gutter, gutter_style));
+            spans.push(Span::styled(" ", gutter_style));
+            spans.push(Span::styled(blank, gutter_style));
+        }
+        CommentAnchorSide::Head => {
+            spans.push(Span::styled(blank, gutter_style));
+            spans.push(Span::styled(" ", gutter_style));
+            spans.push(Span::styled(gutter, gutter_style));
+        }
+    }
     spans.push(Span::styled(" ", gutter_style));
 }
 
 fn format_optional_line(line: Option<u32>, gutter_w: usize) -> String {
     line.map(|line| format!("{line:>gutter_w$}"))
         .unwrap_or_else(|| " ".repeat(gutter_w))
+}
+
+fn push_reserved_gutter_text(
+    text: &mut String,
+    source: SourceLocation,
+    gutter: &str,
+    gutter_w: usize,
+    side: CommentAnchorSide,
+) {
+    let gutter = source
+        .line_for_side(side)
+        .or_else(|| single_source_line(source))
+        .map(|line| format!("{line:>gutter_w$}"))
+        .unwrap_or_else(|| format!("{gutter:>gutter_w$}"));
+    let blank = " ".repeat(gutter_w);
+    match side {
+        CommentAnchorSide::Base => {
+            text.push_str(&gutter);
+            text.push(' ');
+            text.push_str(&blank);
+        }
+        CommentAnchorSide::Head => {
+            text.push_str(&blank);
+            text.push(' ');
+            text.push_str(&gutter);
+        }
+    }
+    text.push(' ');
 }
 
 fn render_spacer_line(marker: String, width: usize, styles: &StyleConfig) -> Line<'static> {
@@ -654,11 +731,18 @@ fn rendered_text(document: &DiffDocument, show_blame: bool) -> Vec<String> {
                 .map(|line| render_line_text(line, show_blame, GutterMode::Unified, gutter_w))
                 .collect()
         }
-        DiffDocument::Base(document) | DiffDocument::Head(document) => {
+        DiffDocument::Base(document) => {
             let gutter_w = single_gutter_width(document);
             (0..document.len())
                 .filter_map(|row| document.line(crate::app::document::RowIndex(row)))
-                .map(|line| render_line_text(line, show_blame, GutterMode::Single, gutter_w))
+                .map(|line| render_line_text(line, show_blame, GutterMode::ReservedBase, gutter_w))
+                .collect()
+        }
+        DiffDocument::Head(document) => {
+            let gutter_w = single_gutter_width(document);
+            (0..document.len())
+                .filter_map(|row| document.line(crate::app::document::RowIndex(row)))
+                .map(|line| render_line_text(line, show_blame, GutterMode::ReservedHead, gutter_w))
                 .collect()
         }
         DiffDocument::SideBySide(document) => {
@@ -728,14 +812,23 @@ fn render_line_text(
                     text.push_str(&gutter);
                     text.push(' ');
                 }
-                GutterMode::ReservedSingle => {
-                    text.push_str(&" ".repeat(gutter_w));
-                    text.push(' ');
-                    let gutter = single_source_line(content.source)
-                        .map(|line| format!("{line:>gutter_w$}"))
-                        .unwrap_or_else(|| format!("{:>gutter_w$}", content.gutter.as_ref()));
-                    text.push_str(&gutter);
-                    text.push(' ');
+                GutterMode::ReservedBase => {
+                    push_reserved_gutter_text(
+                        &mut text,
+                        content.source,
+                        content.gutter.as_ref(),
+                        gutter_w,
+                        CommentAnchorSide::Base,
+                    );
+                }
+                GutterMode::ReservedHead => {
+                    push_reserved_gutter_text(
+                        &mut text,
+                        content.source,
+                        content.gutter.as_ref(),
+                        gutter_w,
+                        CommentAnchorSide::Head,
+                    );
                 }
             }
             text.push_str(&marker_text(content.marker));
@@ -762,11 +855,9 @@ mod tests {
     use ratatui::style::{Color, Style};
     use ratatui::text::{Line, Span};
 
+    use super::*;
     use crate::app::document::{RenderContent, SourceLocation, TextRun};
     use crate::app::model::CommentMarker;
-    use crate::review_types::CommentAnchorSide;
-
-    use super::*;
 
     fn plain_content(
         source: SourceLocation,
@@ -816,7 +907,7 @@ mod tests {
     }
 
     #[test]
-    fn reserved_single_render_text_keeps_head_content_at_unified_start_column() {
+    fn reserved_head_render_text_keeps_head_number_in_head_column() {
         let line = plain_content(
             SourceLocation::single(CommentAnchorSide::Head, 423),
             "423",
@@ -824,14 +915,28 @@ mod tests {
             "head",
         );
 
-        let text = render_line_text(line, false, GutterMode::ReservedSingle, 3);
+        let text = render_line_text(line, false, GutterMode::ReservedHead, 3);
 
         assert_eq!(text, "    423     head");
     }
 
     #[test]
+    fn reserved_base_render_text_keeps_base_number_in_base_column() {
+        let line = plain_content(
+            SourceLocation::single(CommentAnchorSide::Base, 419),
+            "419",
+            LineKind::Context,
+            "base",
+        );
+
+        let text = render_line_text(line, false, GutterMode::ReservedBase, 3);
+
+        assert_eq!(text, "419         base");
+    }
+
+    #[test]
     fn base_and_head_layouts_reserve_unified_gutter_width() {
-        let document = Document::new(
+        let head_document = Document::new(
             vec![DocumentRow::Content(crate::app::document::ContentRow {
                 gutter: crate::app::document::Gutter {
                     text: "423".to_string(),
@@ -843,12 +948,31 @@ mod tests {
             })],
             Vec::new(),
         );
+        let base_document = Document::new(
+            vec![DocumentRow::Content(crate::app::document::ContentRow {
+                gutter: crate::app::document::Gutter {
+                    text: "419".to_string(),
+                },
+                kind: LineKind::Context,
+                text: "line".to_string(),
+                blame: None,
+                source: SourceLocation::single(CommentAnchorSide::Base, 419),
+            })],
+            Vec::new(),
+        );
 
-        let head_layout = DocumentLayout::new(&DiffDocument::Head(document.clone()), false, 80);
-        let unified_layout = DocumentLayout::new(&DiffDocument::Unified(document), false, 80);
+        let head_layout =
+            DocumentLayout::new(&DiffDocument::Head(head_document.clone()), false, 80);
+        let base_layout =
+            DocumentLayout::new(&DiffDocument::Base(base_document.clone()), false, 80);
+        let unified_layout = DocumentLayout::new(&DiffDocument::Unified(head_document), false, 80);
 
         assert_eq!(
             head_layout.content_start_col,
+            unified_layout.content_start_col
+        );
+        assert_eq!(
+            base_layout.content_start_col,
             unified_layout.content_start_col
         );
     }
