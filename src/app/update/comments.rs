@@ -1,13 +1,10 @@
 use super::cursor::clamp_cursor_and_scroll;
 use super::output::AppOutput;
 use super::viewport::AppViewport;
-use crate::app::diff_rows::{inline_diff_rows, side_by_side_diff_rows};
+use crate::app::model::CommentProjection;
 use crate::app::{AppState, FileListSectionFocus};
 use crate::core::CommentsPanelEffect;
-use crate::review_types::{
-    Comment, CommentAnchorSegment, CommentAnchorSide, ContentMode, LineKind, PaneFocus,
-    RenderVariant,
-};
+use crate::review_types::{Comment, PaneFocus};
 
 pub fn current_comment(state: &AppState) -> Option<&Comment> {
     if state.pane_focus == PaneFocus::Comments {
@@ -19,12 +16,12 @@ pub fn current_comment(state: &AppState) -> Option<&Comment> {
     }
 
     let path = selected_path(state)?;
-    let line = current_visible_line(state)?;
-    current_comment_for_line(
+    let line = CommentProjection::current_visible_line(state)?;
+    CommentProjection::current_comment_for_line(
         &state.comments,
         path,
         i64::from(line),
-        current_comment_side(state),
+        CommentProjection::current_comment_side(state),
         state.selected_comment_id,
     )
 }
@@ -129,7 +126,7 @@ fn navigate_adjacent_comment(state: &mut AppState, view: &impl AppViewport, dire
     if comments.is_empty() {
         return;
     }
-    let Some(cursor_line) = current_head_line_for_navigation(state) else {
+    let Some(cursor_line) = CommentProjection::current_head_line_for_navigation(state) else {
         return;
     };
     let cursor_line = i64::from(cursor_line);
@@ -158,7 +155,9 @@ fn select_adjacent(state: &mut AppState, direction: Direction) {
     let comments = current_file_comments(state);
     if comments.is_empty() {
         state.selected_comment_id = None;
-    } else if let Some(cursor_line) = current_head_line_for_navigation(state).map(i64::from) {
+    } else if let Some(cursor_line) =
+        CommentProjection::current_head_line_for_navigation(state).map(i64::from)
+    {
         let next_index = match direction {
             Direction::Next => comments
                 .iter()
@@ -226,7 +225,8 @@ fn navigate_to_comment(state: &mut AppState, view: &impl AppViewport, comment: &
     };
     state.select_file(file_index, focus, false);
     state.selected_comment_id = Some(comment.id);
-    let Some((start_row, end_row)) = display_rows_for_comment(state, comment) else {
+    let Some((start_row, end_row)) = CommentProjection::display_rows_for_comment(state, comment)
+    else {
         state.mark_model_changed();
         return false;
     };
@@ -237,87 +237,6 @@ fn navigate_to_comment(state: &mut AppState, view: &impl AppViewport, comment: &
     clamp_cursor_and_scroll(state, view);
     state.mark_model_changed();
     true
-}
-
-fn comment_line(line: i64) -> u32 {
-    u32::try_from(line.max(1)).unwrap_or(u32::MAX)
-}
-
-fn display_rows_for_comment(state: &AppState, comment: &Comment) -> Option<(usize, usize)> {
-    let rows = match state.content_mode {
-        ContentMode::FullFile => {
-            visible_comment_line_range(state, comment).map(|(line_start, line_end)| {
-                vec![
-                    display_row_for_visible_line(state, comment_line(line_start)),
-                    display_row_for_visible_line(state, comment_line(line_end)),
-                ]
-            })
-        }
-        ContentMode::Diff => Some(diff_display_rows_for_comment(state, comment)),
-    }?;
-    let start = rows.iter().copied().min()?;
-    let end = rows.iter().copied().max().unwrap_or(start);
-    Some((start, end.max(start)))
-}
-
-fn diff_display_rows_for_comment(state: &AppState, comment: &Comment) -> Vec<usize> {
-    let mut rows = Vec::new();
-    for segment in comment
-        .anchor()
-        .segments
-        .iter()
-        .filter(|segment| segment.file_path == comment.file_path())
-    {
-        rows.extend(diff_display_rows_for_segment(state, segment));
-    }
-
-    if rows.is_empty() {
-        return Vec::new();
-    }
-    rows
-}
-
-fn diff_display_rows_for_segment(state: &AppState, segment: &CommentAnchorSegment) -> Vec<usize> {
-    let Some(entry) = state.selected_file_entry() else {
-        return Vec::new();
-    };
-    let start = comment_line(segment.line_start);
-    let end = comment_line(segment.line_end).max(start);
-
-    match state.render_variant {
-        RenderVariant::SideBySide => {
-            let rows = side_by_side_diff_rows(
-                &entry.diff.hunks,
-                state.base_content.as_deref(),
-                state.head_content.as_deref(),
-            );
-            rows.rows
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, row)| {
-                    let line = match segment.side {
-                        CommentAnchorSide::Base => row.base.as_ref().map(|cell| cell.line_number),
-                        CommentAnchorSide::Head => row.head.as_ref().map(|cell| cell.line_number),
-                    }?;
-                    (line >= start && line <= end).then_some(idx)
-                })
-                .collect()
-        }
-        _ => {
-            let rows = inline_diff_rows(&entry.diff.hunks, state.head_content.as_deref());
-            rows.rows
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, row)| {
-                    let line = match segment.side {
-                        CommentAnchorSide::Base => row.old_lineno,
-                        CommentAnchorSide::Head => row.new_lineno,
-                    }?;
-                    (line >= start && line <= end).then_some(idx)
-                })
-                .collect()
-        }
-    }
 }
 
 fn scroll_to_comment(
@@ -357,94 +276,11 @@ fn selected_comment(state: &AppState) -> Option<&Comment> {
     state.comments.iter().find(|comment| comment.id == id)
 }
 
-fn current_comment_for_line<'a>(
-    comments: &'a [Comment],
-    path: &str,
-    line: i64,
-    side: Option<CommentAnchorSide>,
-    selected_comment_id: Option<i64>,
-) -> Option<&'a Comment> {
-    let candidates: Vec<&Comment> = comments
-        .iter()
-        .filter(|comment| {
-            comment.file_path() == path
-                && visible_comment_line_range_for_side(comment, side)
-                    .is_some_and(|(start, end)| start <= line && end >= line)
-        })
-        .collect();
-    if let Some(selected) = selected_comment_id
-        .and_then(|id| candidates.iter().copied().find(|comment| comment.id == id))
-    {
-        return Some(selected);
-    }
-    let max_start = candidates
-        .iter()
-        .filter_map(|comment| {
-            visible_comment_line_range_for_side(comment, side).map(|(start, _)| start)
-        })
-        .max()?;
-    candidates
-        .into_iter()
-        .filter(|comment| {
-            visible_comment_line_range_for_side(comment, side)
-                .is_some_and(|(start, _)| start == max_start)
-        })
-        .max_by_key(|comment| comment.id)
-}
-
-fn current_comment_side(state: &AppState) -> Option<CommentAnchorSide> {
-    match (state.content_mode, state.render_variant) {
-        (ContentMode::FullFile, RenderVariant::BaseVersion) => Some(CommentAnchorSide::Base),
-        (ContentMode::FullFile, RenderVariant::HeadVersion) => Some(CommentAnchorSide::Head),
-        _ => None,
-    }
-}
-
 fn visible_comment_line_range(state: &AppState, comment: &Comment) -> Option<(i64, i64)> {
-    visible_comment_line_range_for_side(comment, current_comment_side(state))
-}
-
-fn visible_comment_line_range_for_side(
-    comment: &Comment,
-    side: Option<CommentAnchorSide>,
-) -> Option<(i64, i64)> {
-    let Some(side) = side else {
-        return logical_comment_line_range(comment);
-    };
-    if side == CommentAnchorSide::Head && comment.anchor().segments.len() == 1 {
-        return Some((comment.line_start(), comment.line_end()));
-    }
-
-    let mut segments = comment
-        .anchor()
-        .segments
-        .iter()
-        .filter(|segment| segment.file_path == comment.file_path())
-        .filter(|segment| segment.side == side);
-    let first = segments.next()?;
-    let mut line_start = first.line_start;
-    let mut line_end = first.line_end;
-    for segment in segments {
-        line_start = line_start.min(segment.line_start);
-        line_end = line_end.max(segment.line_end);
-    }
-    Some((line_start, line_end))
-}
-
-fn logical_comment_line_range(comment: &Comment) -> Option<(i64, i64)> {
-    let mut segments = comment
-        .anchor()
-        .segments
-        .iter()
-        .filter(|segment| segment.file_path == comment.file_path());
-    let first = segments.next()?;
-    let mut line_start = first.line_start;
-    let mut line_end = first.line_end;
-    for segment in segments {
-        line_start = line_start.min(segment.line_start);
-        line_end = line_end.max(segment.line_end);
-    }
-    Some((line_start, line_end))
+    CommentProjection::visible_range_for_side(
+        comment,
+        CommentProjection::current_comment_side(state),
+    )
 }
 
 fn current_file_comments(state: &AppState) -> Vec<&Comment> {
@@ -470,302 +306,6 @@ fn selected_path(state: &AppState) -> Option<&str> {
     state
         .selected_file_entry()
         .map(|entry| entry.change.path.as_str())
-}
-
-fn current_visible_line(state: &AppState) -> Option<u32> {
-    match state.content_mode {
-        ContentMode::FullFile => match state.render_variant {
-            RenderVariant::HeadVersion | RenderVariant::BaseVersion => {
-                Some(state.diff_line_cursor.saturating_add(1) as u32)
-            }
-            _ => None,
-        },
-        ContentMode::Diff => diff_visible_line_at_row(state, state.diff_line_cursor),
-    }
-}
-
-fn diff_visible_line_at_row(state: &AppState, row: usize) -> Option<u32> {
-    if state.render_variant == RenderVariant::SideBySide {
-        return side_by_side_visible_line_at_row(state, row);
-    }
-    inline_visible_line_at_row(state, row)
-}
-
-fn inline_visible_line_at_row(state: &AppState, row: usize) -> Option<u32> {
-    let entry = state.selected_file_entry()?;
-    let rows = inline_diff_rows(&entry.diff.hunks, state.head_content.as_deref());
-    rows.rows
-        .get(row)
-        .and_then(|row| row.new_lineno.or(row.old_lineno))
-}
-
-fn side_by_side_visible_line_at_row(state: &AppState, row: usize) -> Option<u32> {
-    let entry = state.selected_file_entry()?;
-    let rows = side_by_side_diff_rows(
-        &entry.diff.hunks,
-        state.base_content.as_deref(),
-        state.head_content.as_deref(),
-    );
-    rows.rows.get(row).and_then(|row| {
-        row.head
-            .as_ref()
-            .map(|cell| cell.line_number)
-            .or_else(|| row.base.as_ref().map(|cell| cell.line_number))
-    })
-}
-
-pub fn current_head_line_for_navigation(state: &AppState) -> Option<u32> {
-    current_visible_line(state).or_else(|| match state.content_mode {
-        ContentMode::Diff => diff_insertion_head_line_before_row(state, state.diff_line_cursor),
-        ContentMode::FullFile => None,
-    })
-}
-
-fn display_row_for_visible_line(state: &AppState, target_line: u32) -> usize {
-    match state.content_mode {
-        ContentMode::FullFile => match state.render_variant {
-            RenderVariant::HeadVersion => target_line.saturating_sub(1) as usize,
-            RenderVariant::BaseVersion => target_line.saturating_sub(1) as usize,
-            _ => target_line.saturating_sub(1) as usize,
-        },
-        ContentMode::Diff => diff_row_for_new_line(state, target_line)
-            .unwrap_or_else(|| target_line.saturating_sub(1) as usize),
-    }
-}
-
-fn diff_row_for_new_line(state: &AppState, target_line: u32) -> Option<usize> {
-    if state.render_variant == RenderVariant::SideBySide {
-        return side_by_side_row_for_new_line(state, target_line);
-    }
-    inline_row_for_new_line(state, target_line)
-}
-
-fn inline_row_for_new_line(state: &AppState, target_line: u32) -> Option<usize> {
-    let entry = state.selected_file_entry()?;
-    let head_lines = state
-        .head_content
-        .as_deref()
-        .map(|content| content.lines().count())
-        .unwrap_or(0);
-    if entry.diff.hunks.is_empty() {
-        return ((target_line as usize) <= head_lines)
-            .then_some(target_line.saturating_sub(1) as usize);
-    }
-
-    let mut display_row = 0usize;
-    let mut new_cursor = 1u32;
-    for hunk in &entry.diff.hunks {
-        while new_cursor < hunk.new_start && (new_cursor as usize) <= head_lines {
-            if new_cursor == target_line {
-                return Some(display_row);
-            }
-            display_row = display_row.saturating_add(1);
-            new_cursor = new_cursor.saturating_add(1);
-        }
-
-        for line in &hunk.lines {
-            if line.new_lineno == Some(target_line) {
-                return Some(display_row);
-            }
-            display_row = display_row.saturating_add(1);
-            if line.new_lineno.is_some() {
-                new_cursor = new_cursor.saturating_add(1);
-            }
-        }
-    }
-
-    while (new_cursor as usize) <= head_lines {
-        if new_cursor == target_line {
-            return Some(display_row);
-        }
-        display_row = display_row.saturating_add(1);
-        new_cursor = new_cursor.saturating_add(1);
-    }
-    None
-}
-
-fn side_by_side_row_for_new_line(state: &AppState, target_line: u32) -> Option<usize> {
-    find_side_by_side_row(state, |diff_row| {
-        (diff_row.new_lineno == Some(target_line)).then_some(diff_row.display_row)
-    })
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SideBySideDiffRow {
-    display_row: usize,
-    new_lineno: Option<u32>,
-    insertion_head_line: Option<u32>,
-}
-
-fn find_side_by_side_row<T>(
-    state: &AppState,
-    mut f: impl FnMut(SideBySideDiffRow) -> Option<T>,
-) -> Option<T> {
-    let entry = state.selected_file_entry()?;
-    let head_lines = state
-        .head_content
-        .as_deref()
-        .map(|content| content.lines().count())
-        .unwrap_or(0);
-    if entry.diff.hunks.is_empty() {
-        for row in 0..head_lines {
-            let diff_row = SideBySideDiffRow {
-                display_row: row,
-                new_lineno: Some(row.saturating_add(1) as u32),
-                insertion_head_line: None,
-            };
-            if let Some(value) = f(diff_row) {
-                return Some(value);
-            }
-        }
-        return None;
-    }
-
-    let mut display_row = 0usize;
-    let mut new_cursor = 1u32;
-    for hunk in &entry.diff.hunks {
-        while new_cursor < hunk.new_start && (new_cursor as usize) <= head_lines {
-            let diff_row = SideBySideDiffRow {
-                display_row,
-                new_lineno: Some(new_cursor),
-                insertion_head_line: None,
-            };
-            if let Some(value) = f(diff_row) {
-                return Some(value);
-            }
-            display_row = display_row.saturating_add(1);
-            new_cursor = new_cursor.saturating_add(1);
-        }
-
-        let mut index = 0;
-        while index < hunk.lines.len() {
-            let line = &hunk.lines[index];
-            if line.kind == LineKind::Context {
-                let diff_row = SideBySideDiffRow {
-                    display_row,
-                    new_lineno: line.new_lineno,
-                    insertion_head_line: None,
-                };
-                if let Some(value) = f(diff_row) {
-                    return Some(value);
-                }
-                display_row = display_row.saturating_add(1);
-                new_cursor = new_cursor.saturating_add(1);
-                index += 1;
-                continue;
-            }
-
-            let block_start = index;
-            let mut del_end = index;
-            while del_end < hunk.lines.len() && hunk.lines[del_end].kind == LineKind::Deletion {
-                del_end += 1;
-            }
-            let mut add_end = del_end;
-            while add_end < hunk.lines.len() && hunk.lines[add_end].kind == LineKind::Addition {
-                add_end += 1;
-            }
-
-            let deletion_count = del_end.saturating_sub(block_start);
-            let additions = &hunk.lines[del_end..add_end];
-            let max_count = deletion_count.max(additions.len());
-            for offset in 0..max_count {
-                let new_lineno = additions.get(offset).and_then(|line| line.new_lineno);
-                let diff_row = SideBySideDiffRow {
-                    display_row,
-                    new_lineno,
-                    insertion_head_line: new_lineno
-                        .is_none()
-                        .then_some(new_cursor.saturating_sub(1)),
-                };
-                if let Some(value) = f(diff_row) {
-                    return Some(value);
-                }
-                display_row = display_row.saturating_add(1);
-                if new_lineno.is_some() {
-                    new_cursor = new_cursor.saturating_add(1);
-                }
-            }
-            index = add_end;
-        }
-    }
-
-    while (new_cursor as usize) <= head_lines {
-        let diff_row = SideBySideDiffRow {
-            display_row,
-            new_lineno: Some(new_cursor),
-            insertion_head_line: None,
-        };
-        if let Some(value) = f(diff_row) {
-            return Some(value);
-        }
-        display_row = display_row.saturating_add(1);
-        new_cursor = new_cursor.saturating_add(1);
-    }
-    None
-}
-
-fn diff_insertion_head_line_before_row(state: &AppState, row: usize) -> Option<u32> {
-    let entry = state.selected_file_entry()?;
-    let head_lines = state
-        .head_content
-        .as_deref()
-        .map(|content| content.lines().count())
-        .unwrap_or(0);
-    if entry.diff.hunks.is_empty() {
-        return None;
-    }
-    if state.render_variant == RenderVariant::SideBySide {
-        return find_side_by_side_row(state, |diff_row| {
-            (diff_row.display_row == row && diff_row.new_lineno.is_none())
-                .then_some(diff_row.insertion_head_line)
-        })
-        .flatten();
-    }
-
-    let mut display_row = 0usize;
-    let mut new_cursor = 1u32;
-    for hunk in &entry.diff.hunks {
-        while new_cursor < hunk.new_start && (new_cursor as usize) <= head_lines {
-            display_row = display_row.saturating_add(1);
-            new_cursor = new_cursor.saturating_add(1);
-        }
-
-        let mut index = 0;
-        while index < hunk.lines.len() {
-            let line = &hunk.lines[index];
-            if line.kind == LineKind::Context {
-                display_row = display_row.saturating_add(1);
-                new_cursor = new_cursor.saturating_add(1);
-                index += 1;
-                continue;
-            }
-
-            let block_start = index;
-            let mut del_end = index;
-            while del_end < hunk.lines.len() && hunk.lines[del_end].kind == LineKind::Deletion {
-                del_end += 1;
-            }
-            let mut add_end = del_end;
-            while add_end < hunk.lines.len() && hunk.lines[add_end].kind == LineKind::Addition {
-                add_end += 1;
-            }
-
-            let deletion_count = del_end.saturating_sub(block_start);
-            let additions = &hunk.lines[del_end..add_end];
-            for _ in 0..deletion_count {
-                if display_row == row {
-                    return Some(new_cursor.saturating_sub(1));
-                }
-                display_row = display_row.saturating_add(1);
-            }
-            for _ in additions {
-                display_row = display_row.saturating_add(1);
-                new_cursor = new_cursor.saturating_add(1);
-            }
-            index = add_end;
-        }
-    }
-    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

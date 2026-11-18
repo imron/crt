@@ -3,6 +3,7 @@ use super::cursor::clamp_cursor_and_scroll;
 use super::output::AppOutput;
 use super::viewport::AppViewport;
 use crate::app::diff_rows::{inline_diff_rows, side_by_side_diff_rows};
+use crate::app::model::CommentProjection;
 use crate::app::{AppState, FileListSectionFocus, JumpLocation};
 use crate::core::command::Command;
 use crate::core::navigation::{self as core_navigation, Direction, FileNavigationScope};
@@ -485,7 +486,7 @@ pub fn navigate_unresolved_comment_from_cursor(
         return false;
     }
 
-    let cursor_line = comments::current_head_line_for_navigation(state)
+    let cursor_line = CommentProjection::current_head_line_for_navigation(state)
         .map(i64::from)
         .or_else(|| {
             state
@@ -609,12 +610,12 @@ fn unresolved_comment_targets(state: &AppState) -> Vec<UnresolvedCommentTarget> 
             .filter(|comment| !comment.resolved && comment.file_path() == entry.change.path)
             .collect();
         comments.sort_by_key(|comment| {
-            let (start, end) = logical_comment_line_range(comment)
+            let (start, end) = CommentProjection::logical_range(comment)
                 .unwrap_or((comment.line_start(), comment.line_end()));
             (start, end, comment.id)
         });
         targets.extend(comments.into_iter().map(|comment| {
-            let (line_start, line_end) = logical_comment_line_range(comment)
+            let (line_start, line_end) = CommentProjection::logical_range(comment)
                 .unwrap_or((comment.line_start(), comment.line_end()));
             UnresolvedCommentTarget {
                 file_index: Some(file_index),
@@ -641,12 +642,12 @@ fn unresolved_comment_targets(state: &AppState) -> Vec<UnresolvedCommentTarget> 
             .filter(|comment| !comment.resolved && comment.file_path() == path)
             .collect();
         comments.sort_by_key(|comment| {
-            let (start, end) = logical_comment_line_range(comment)
+            let (start, end) = CommentProjection::logical_range(comment)
                 .unwrap_or((comment.line_start(), comment.line_end()));
             (start, end, comment.id)
         });
         targets.extend(comments.into_iter().map(|comment| {
-            let (line_start, line_end) = logical_comment_line_range(comment)
+            let (line_start, line_end) = CommentProjection::logical_range(comment)
                 .unwrap_or((comment.line_start(), comment.line_end()));
             UnresolvedCommentTarget {
                 file_index: None,
@@ -658,22 +659,6 @@ fn unresolved_comment_targets(state: &AppState) -> Vec<UnresolvedCommentTarget> 
         }));
     }
     targets
-}
-
-fn logical_comment_line_range(comment: &crate::review_types::Comment) -> Option<(i64, i64)> {
-    let mut segments = comment
-        .anchor()
-        .segments
-        .iter()
-        .filter(|segment| segment.file_path == comment.file_path());
-    let first = segments.next()?;
-    let mut line_start = first.line_start;
-    let mut line_end = first.line_end;
-    for segment in segments {
-        line_start = line_start.min(segment.line_start);
-        line_end = line_end.max(segment.line_end);
-    }
-    Some((line_start, line_end))
 }
 
 pub fn navigate_file_section(state: &mut AppState, dir: Direction) {

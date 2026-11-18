@@ -198,7 +198,7 @@ pub struct CommentAttachmentRange {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CommentMarkerSet {
+pub struct CommentProjection {
     markers_by_line: BTreeMap<u32, MarkerCandidate>,
     base_markers_by_line: BTreeMap<u32, MarkerCandidate>,
     head_markers_by_line: BTreeMap<u32, MarkerCandidate>,
@@ -208,6 +208,8 @@ pub struct CommentMarkerSet {
     head_current_comment: Option<CurrentComment>,
     inline_current_comment: Option<CurrentComment>,
 }
+
+pub type CommentMarkerSet = CommentProjection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CommentMarker {
@@ -238,7 +240,7 @@ impl CommentMarker {
     }
 }
 
-impl CommentMarkerSet {
+impl CommentProjection {
     pub fn new(comments: &[CommentAttachment], current_line: Option<u32>) -> Self {
         Self::new_with_current_comment(comments, current_line, None)
     }
@@ -450,6 +452,57 @@ impl CommentMarkerSet {
                 resolved: false,
                 current: false,
             })
+    }
+
+    pub fn logical_range(comment: &review_types::Comment) -> Option<(i64, i64)> {
+        logical_comment_line_range(comment)
+    }
+
+    pub fn visible_range_for_side(
+        comment: &review_types::Comment,
+        side: Option<review_types::CommentAnchorSide>,
+    ) -> Option<(i64, i64)> {
+        visible_comment_line_range_for_side(comment, side)
+    }
+
+    pub fn current_comment_id_for_line(
+        comments: &[review_types::Comment],
+        path: &str,
+        line: i64,
+        side: Option<review_types::CommentAnchorSide>,
+        selected_comment_id: Option<i64>,
+    ) -> Option<i64> {
+        current_comment_for_line(comments, path, line, side, selected_comment_id)
+            .map(|comment| comment.id)
+    }
+
+    pub fn current_comment_for_line<'a>(
+        comments: &'a [review_types::Comment],
+        path: &str,
+        line: i64,
+        side: Option<review_types::CommentAnchorSide>,
+        selected_comment_id: Option<i64>,
+    ) -> Option<&'a review_types::Comment> {
+        current_comment_for_line(comments, path, line, side, selected_comment_id)
+    }
+
+    pub fn current_visible_line(state: &AppState) -> Option<u32> {
+        current_visible_line(state)
+    }
+
+    pub fn current_head_line_for_navigation(state: &AppState) -> Option<u32> {
+        current_head_line_for_navigation(state)
+    }
+
+    pub fn current_comment_side(state: &AppState) -> Option<review_types::CommentAnchorSide> {
+        current_comment_side(state)
+    }
+
+    pub fn display_rows_for_comment(
+        state: &AppState,
+        comment: &review_types::Comment,
+    ) -> Option<(usize, usize)> {
+        display_rows_for_comment(state, comment)
     }
 
     fn inactive_marker_for_line(&self, line: u32) -> CommentMarker {
@@ -1518,30 +1571,13 @@ fn current_comment_id_for_line(
     line: i64,
     selected_comment_id: Option<i64>,
 ) -> Option<i64> {
-    let candidates: Vec<&review_types::Comment> = comments
-        .iter()
-        .filter(|comment| {
-            comment.file_path() == path
-                && logical_comment_line_range(comment)
-                    .is_some_and(|(start, end)| start <= line && end >= line)
-        })
-        .collect();
-    if let Some(selected) = selected_comment_id
-        .and_then(|id| candidates.iter().copied().find(|comment| comment.id == id))
-    {
-        return Some(selected.id);
-    }
-    let max_start = candidates
-        .iter()
-        .filter_map(|comment| logical_comment_line_range(comment).map(|(start, _)| start))
-        .max()?;
-    candidates
-        .into_iter()
-        .filter(|comment| {
-            logical_comment_line_range(comment).is_some_and(|(start, _)| start == max_start)
-        })
-        .max_by_key(|comment| comment.id)
-        .map(|comment| comment.id)
+    CommentProjection::current_comment_id_for_line(
+        comments,
+        path,
+        line,
+        None,
+        selected_comment_id,
+    )
 }
 
 fn logical_comment_line_range(comment: &review_types::Comment) -> Option<(i64, i64)> {
@@ -1558,6 +1594,68 @@ fn logical_comment_line_range(comment: &review_types::Comment) -> Option<(i64, i
         line_end = line_end.max(segment.line_end);
     }
     Some((line_start, line_end))
+}
+
+fn visible_comment_line_range_for_side(
+    comment: &review_types::Comment,
+    side: Option<review_types::CommentAnchorSide>,
+) -> Option<(i64, i64)> {
+    let Some(side) = side else {
+        return logical_comment_line_range(comment);
+    };
+    if side == review_types::CommentAnchorSide::Head && comment.anchor().segments.len() == 1 {
+        return Some((comment.line_start(), comment.line_end()));
+    }
+
+    let mut segments = comment
+        .anchor()
+        .segments
+        .iter()
+        .filter(|segment| segment.file_path == comment.file_path())
+        .filter(|segment| segment.side == side);
+    let first = segments.next()?;
+    let mut line_start = first.line_start;
+    let mut line_end = first.line_end;
+    for segment in segments {
+        line_start = line_start.min(segment.line_start);
+        line_end = line_end.max(segment.line_end);
+    }
+    Some((line_start, line_end))
+}
+
+fn current_comment_for_line<'a>(
+    comments: &'a [review_types::Comment],
+    path: &str,
+    line: i64,
+    side: Option<review_types::CommentAnchorSide>,
+    selected_comment_id: Option<i64>,
+) -> Option<&'a review_types::Comment> {
+    let candidates: Vec<&review_types::Comment> = comments
+        .iter()
+        .filter(|comment| {
+            comment.file_path() == path
+                && visible_comment_line_range_for_side(comment, side)
+                    .is_some_and(|(start, end)| start <= line && end >= line)
+        })
+        .collect();
+    if let Some(selected) = selected_comment_id
+        .and_then(|id| candidates.iter().copied().find(|comment| comment.id == id))
+    {
+        return Some(selected);
+    }
+    let max_start = candidates
+        .iter()
+        .filter_map(|comment| {
+            visible_comment_line_range_for_side(comment, side).map(|(start, _)| start)
+        })
+        .max()?;
+    candidates
+        .into_iter()
+        .filter(|comment| {
+            visible_comment_line_range_for_side(comment, side)
+                .is_some_and(|(start, _)| start == max_start)
+        })
+        .max_by_key(|comment| comment.id)
 }
 
 fn comment_preview(body: &str) -> String {
@@ -1610,6 +1708,144 @@ fn side_by_side_visible_line_at_row(state: &AppState, row: usize) -> Option<u32>
             .map(|cell| cell.line_number)
             .or_else(|| row.base.as_ref().map(|cell| cell.line_number))
     })
+}
+
+fn current_comment_side(state: &AppState) -> Option<review_types::CommentAnchorSide> {
+    match (state.content_mode, state.render_variant) {
+        (ContentMode::FullFile, RenderVariant::BaseVersion) => {
+            Some(review_types::CommentAnchorSide::Base)
+        }
+        (ContentMode::FullFile, RenderVariant::HeadVersion) => {
+            Some(review_types::CommentAnchorSide::Head)
+        }
+        _ => None,
+    }
+}
+
+fn current_head_line_for_navigation(state: &AppState) -> Option<u32> {
+    current_visible_line(state).or_else(|| match state.content_mode {
+        ContentMode::Diff => diff_insertion_head_line_before_row(state, state.diff_line_cursor),
+        ContentMode::FullFile => None,
+    })
+}
+
+fn diff_insertion_head_line_before_row(state: &AppState, row: usize) -> Option<u32> {
+    let entry = state.selected_file_entry()?;
+    match state.render_variant {
+        RenderVariant::SideBySide => {
+            let rows = side_by_side_diff_rows(
+                &entry.diff.hunks,
+                state.base_content.as_deref(),
+                state.head_content.as_deref(),
+            );
+            rows.rows
+                .get(..=row)
+                .into_iter()
+                .flatten()
+                .rev()
+                .find_map(|row| row.head.as_ref().map(|cell| cell.line_number))
+        }
+        _ => {
+            let rows = inline_diff_rows(&entry.diff.hunks, state.head_content.as_deref());
+            rows.rows
+                .get(..=row)
+                .into_iter()
+                .flatten()
+                .rev()
+                .find_map(|row| row.new_lineno)
+        }
+    }
+}
+
+fn comment_line(line: i64) -> u32 {
+    u32::try_from(line.max(1)).unwrap_or(u32::MAX)
+}
+
+fn display_rows_for_comment(
+    state: &AppState,
+    comment: &review_types::Comment,
+) -> Option<(usize, usize)> {
+    let rows = match state.content_mode {
+        ContentMode::FullFile => {
+            let side = current_comment_side(state);
+            visible_comment_line_range_for_side(comment, side).map(|(line_start, line_end)| {
+                vec![
+                    comment_line(line_start).saturating_sub(1) as usize,
+                    comment_line(line_end).saturating_sub(1) as usize,
+                ]
+            })
+        }
+        ContentMode::Diff => Some(diff_display_rows_for_comment(state, comment)),
+    }?;
+    let start = rows.iter().copied().min()?;
+    let end = rows.iter().copied().max().unwrap_or(start);
+    Some((start, end.max(start)))
+}
+
+fn diff_display_rows_for_comment(
+    state: &AppState,
+    comment: &review_types::Comment,
+) -> Vec<usize> {
+    let mut rows = Vec::new();
+    for segment in comment
+        .anchor()
+        .segments
+        .iter()
+        .filter(|segment| segment.file_path == comment.file_path())
+    {
+        rows.extend(diff_display_rows_for_segment(state, segment));
+    }
+    rows
+}
+
+fn diff_display_rows_for_segment(
+    state: &AppState,
+    segment: &review_types::CommentAnchorSegment,
+) -> Vec<usize> {
+    let Some(entry) = state.selected_file_entry() else {
+        return Vec::new();
+    };
+    let start = comment_line(segment.line_start);
+    let end = comment_line(segment.line_end).max(start);
+
+    match state.render_variant {
+        RenderVariant::SideBySide => {
+            let rows = side_by_side_diff_rows(
+                &entry.diff.hunks,
+                state.base_content.as_deref(),
+                state.head_content.as_deref(),
+            );
+            rows.rows
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, row)| {
+                    let line = match segment.side {
+                        review_types::CommentAnchorSide::Base => {
+                            row.base.as_ref().map(|cell| cell.line_number)
+                        }
+                        review_types::CommentAnchorSide::Head => {
+                            row.head.as_ref().map(|cell| cell.line_number)
+                        }
+                    }?;
+                    (line >= start && line <= end).then_some(idx)
+                })
+                .collect()
+        }
+        _ => {
+            let rows = inline_diff_rows(&entry.diff.hunks, state.head_content.as_deref());
+            rows.rows
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, row)| {
+                    let line = match segment.side {
+                        review_types::CommentAnchorSide::Base => row.old_lineno,
+                        review_types::CommentAnchorSide::Head => row.new_lineno,
+                    }?;
+                    (line >= start && line <= end).then_some(idx)
+                })
+                .collect()
+        }
+    }
 }
 
 impl From<&review_types::ReviewStatus> for ReviewStatus {
