@@ -28,7 +28,7 @@ changes are shown.
 - Update `store_review()` to accept and persist the reviewed commit hash.
 - Update `load_reviews()` to read the new column.
 
-### 2. Model Updates (`src/model.rs`)
+### 2. Review Type Updates (`src/review_types.rs`)
 - Add `reviewed_commit: Option<String>` to `ReviewStatus::Reviewed` and
   `ReviewStatus::Changed` variants.
 

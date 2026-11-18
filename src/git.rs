@@ -2,7 +2,7 @@
 //!
 //! This module exposes a clean public API that hides git2 types from callers.
 //! Core data types (`FileChange`, `DiffContent`, etc.) are defined in
-//! [`crate::model`] and re-exported here for convenience.
+//! [`crate::review_types`] and re-exported here for convenience.
 
 use std::path::{Path, PathBuf};
 
@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 
 // Re-export model types so existing callers (e.g. `git::ChangeKind`) still work.
-pub use crate::model::{
+pub use crate::review_types::{
     ChangeKind, DiffContent, DiffHunk, DiffLine, FileChange, FileVersion, LineKind,
 };
 

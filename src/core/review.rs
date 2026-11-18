@@ -4,7 +4,7 @@
 //! provide transport and rendering; these helpers decide how review state
 //! changes affect the canonical file list.
 
-use crate::model::{FileEntry, ReviewActionResult, ReviewStatus};
+use crate::review_types::{FileEntry, ReviewActionResult, ReviewStatus};
 
 pub fn is_reviewed(status: &ReviewStatus) -> bool {
     matches!(status, ReviewStatus::Reviewed { .. })
@@ -88,7 +88,7 @@ pub fn apply_review_result(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ChangeKind, DiffContent, FileChange};
+    use crate::review_types::{ChangeKind, DiffContent, FileChange};
 
     fn entry(path: &str, status: ReviewStatus) -> FileEntry {
         FileEntry {

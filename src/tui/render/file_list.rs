@@ -10,7 +10,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use super::super::state::TuiState;
 use crate::app::model::{AppModel, FileListRow, FileListSectionKind, ReviewStatus};
 use crate::config::{FilesStyle, StyleConfig};
-use crate::model::{ChangeKind, PaneFocus};
+use crate::review_types::{ChangeKind, PaneFocus};
 
 /// Draw the file list pane with split unreviewed/reviewed sections.
 pub fn draw(

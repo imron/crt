@@ -4,7 +4,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::model;
+use crate::review_types;
 
 #[derive(Debug, Clone)]
 pub struct SessionInitRequest {
@@ -14,7 +14,7 @@ pub struct SessionInitRequest {
 
 #[derive(Debug, Clone)]
 pub struct SessionInitResult {
-    pub context: model::ConnectionContext,
+    pub context: review_types::ConnectionContext,
 }
 
 pub trait SessionService {
@@ -22,37 +22,41 @@ pub trait SessionService {
 }
 
 pub trait ReviewService {
-    fn list_changed_files(&self) -> Result<model::ListChangedFilesResult>;
-    fn mark_reviewed(&self, file_path: &str) -> Result<model::ReviewActionResult>;
-    fn unmark_reviewed(&self, file_path: &str) -> Result<model::ReviewActionResult>;
-    fn reset_reviews(&self) -> Result<model::ResetReviewsResult>;
+    fn list_changed_files(&self) -> Result<review_types::ListChangedFilesResult>;
+    fn mark_reviewed(&self, file_path: &str) -> Result<review_types::ReviewActionResult>;
+    fn unmark_reviewed(&self, file_path: &str) -> Result<review_types::ReviewActionResult>;
+    fn reset_reviews(&self) -> Result<review_types::ResetReviewsResult>;
 }
 
 pub trait DiffService {
-    fn get_file_diff(&self, file_path: &str) -> Result<model::GetFileDiffResult>;
+    fn get_file_diff(&self, file_path: &str) -> Result<review_types::GetFileDiffResult>;
     fn get_file_content(
         &self,
         file_path: &str,
-        version: model::FileVersion,
-    ) -> Result<model::GetFileContentResult>;
+        version: review_types::FileVersion,
+    ) -> Result<review_types::GetFileContentResult>;
     fn load_blame(&self, file_path: &str, rev: &str) -> Result<Vec<crate::git::BlameLine>>;
 }
 
 pub trait SearchService {
-    fn search_codebase(&self, pattern: &str, scope: &str) -> Result<model::SearchCodebaseResult>;
+    fn search_codebase(
+        &self,
+        pattern: &str,
+        scope: &str,
+    ) -> Result<review_types::SearchCodebaseResult>;
     fn find_definition(
         &self,
         symbol: &str,
         context_file: Option<&str>,
-    ) -> Result<model::FindDefinitionResult>;
+    ) -> Result<review_types::FindDefinitionResult>;
 }
 
 pub trait NavigationService {
-    fn map_new_to_old_line(&self, entry: &model::FileEntry, new_line: usize) -> usize;
-    fn map_old_to_new_line(&self, entry: &model::FileEntry, old_line: usize) -> usize;
+    fn map_new_to_old_line(&self, entry: &review_types::FileEntry, new_line: usize) -> usize;
+    fn map_old_to_new_line(&self, entry: &review_types::FileEntry, old_line: usize) -> usize;
     fn estimate_line_from_display_row(
         &self,
-        entry: &model::FileEntry,
+        entry: &review_types::FileEntry,
         display_row: usize,
         hunk_starts: &[usize],
         hunk_ends: &[usize],

@@ -30,8 +30,8 @@ That coupling blocks clean layering and makes future interfaces harder to add.
 
 ## Requirements
 
-1. Move shared protocol types to a neutral module (e.g. `protocol` or
-   `model::protocol`) consumed by both client and server.
+1. Move shared protocol types to the neutral `protocol` module consumed by
+   both client and server.
 
 2. Remove `client -> server::*` imports for type aliases and message models.
 

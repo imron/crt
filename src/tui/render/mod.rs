@@ -116,8 +116,8 @@ fn draw_selection_highlight(
     };
 
     let area = match sel.pane {
-        crate::model::PaneFocus::FileList => tui_state.file_list_area,
-        crate::model::PaneFocus::Diff => tui_state.diff_area,
+        crate::review_types::PaneFocus::FileList => tui_state.file_list_area,
+        crate::review_types::PaneFocus::Diff => tui_state.diff_area,
     };
     // Inner area excludes borders.
     let inner = Rect {
@@ -128,8 +128,10 @@ fn draw_selection_highlight(
     };
 
     let (scroll, base_col) = match sel.pane {
-        crate::model::PaneFocus::FileList => (model.file_list.scroll, 0usize),
-        crate::model::PaneFocus::Diff => (model.diff.scroll, tui_state.diff_content_start_col()),
+        crate::review_types::PaneFocus::FileList => (model.file_list.scroll, 0usize),
+        crate::review_types::PaneFocus::Diff => {
+            (model.diff.scroll, tui_state.diff_content_start_col())
+        }
     };
 
     let visible_start_line = scroll;

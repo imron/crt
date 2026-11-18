@@ -11,7 +11,7 @@ use crate::core::search as core_search;
 use crate::core::{
     CoreEffect, DiffCursorEffect, DiffSearchEffect, InteractionContext, PaneEffect, PaneId,
 };
-use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
+use crate::review_types::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
 pub trait AppViewport {
     fn hunk_start_rows(&self) -> &[usize];
@@ -511,7 +511,7 @@ fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
 pub(super) fn navigate_to_search_match(
     state: &mut AppState,
     view: &impl AppViewport,
-    m: &crate::model::SearchMatch,
+    m: &crate::review_types::SearchMatch,
 ) -> AppOutput {
     let mut update = AppOutput::handled();
     let target = core_search::resolve_search_target(&state.files, m);
@@ -522,7 +522,7 @@ pub(super) fn navigate_to_search_match(
 pub(super) fn navigate_to_definition(
     state: &mut AppState,
     view: &impl AppViewport,
-    def: &crate::model::DefinitionLocation,
+    def: &crate::review_types::DefinitionLocation,
 ) -> AppOutput {
     let mut update = AppOutput::handled();
     let target = core_search::resolve_definition_target(&state.files, def);
@@ -843,7 +843,9 @@ fn estimate_current_line(state: &AppState, view: &impl AppViewport) -> usize {
                         if start + j > hunk_scroll_end {
                             break;
                         }
-                        if line.kind == crate::model::LineKind::Deletion && start + j <= scroll {
+                        if line.kind == crate::review_types::LineKind::Deletion
+                            && start + j <= scroll
+                        {
                             deletions_above += 1;
                         }
                     }

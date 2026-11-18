@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 
 use crate::client::Client;
-use crate::model::ConnectionContext;
+use crate::review_types::ConnectionContext;
 
 mod effects;
 mod input;

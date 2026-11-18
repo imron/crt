@@ -60,6 +60,6 @@ app-domain input handling and app-owned reducer logic.
 - Removing `app_update` happens after the AppModel and semantic input
   boundary are stable.
 - The returned app output type must not be treated as a render model.
-- Revisit the top-level `src/model.rs` name after the AppModel migration is
-  complete. It remains as shared DTO/domain vocabulary for now to avoid mixing
-  a broad rename into the app/UI boundary work.
+- The old top-level `src/model.rs` name was revisited after the AppModel
+  migration and renamed to `src/review_types.rs`, leaving `app::model` as the
+  app-owned UI model.

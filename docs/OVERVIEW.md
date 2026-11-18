@@ -499,7 +499,7 @@ src/
     search.rs       -- Search/definition result shaping
   git.rs            -- Git operations via git2 (diffs, blobs, worktree resolution)
   db.rs             -- SQLite operations (reviews, comments, anchoring)
-  model.rs          -- Core data types
+  review_types.rs   -- Shared review/session data types
   search.rs         -- Codebase search (:gr) and go-to-definition (Ctrl-])
   mcp.rs            -- MCP adapter (stdio ↔ server JSON-RPC bridge)
   markers.rs        -- Apply/clear review markers in worktree files

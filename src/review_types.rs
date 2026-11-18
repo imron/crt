@@ -1,4 +1,4 @@
-//! Core data types shared across modules.
+//! Review data types shared across modules.
 //!
 //! These types form the shared vocabulary between the git module, database
 //! module, server, client, and UI. Each module can produce or consume these

@@ -297,7 +297,7 @@ mod tests {
         MouseButton as CoreMouseButton, MouseEvent as CoreMouseEvent,
         MouseEventKind as CoreMouseEventKind, PaneId, PointerSemanticHit, TextAnchor,
     };
-    use crate::model::{
+    use crate::review_types::{
         ChangeKind, ConnectionContext, DiffContent, FileChange, FileEntry, ReviewStatus,
     };
     use crossterm::event::KeyEvent as CrosstermKeyEvent;
