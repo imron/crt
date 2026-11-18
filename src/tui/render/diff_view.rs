@@ -17,9 +17,8 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use self::cache::build_key;
 use self::content::{build_content, build_title};
-use self::highlight::{
-    apply_col_cursor, apply_search_highlights, apply_visual_selection_highlights,
-};
+pub(crate) use self::highlight::apply_col_cursor;
+use self::highlight::{apply_search_highlights, apply_visual_selection_highlights};
 use self::line::BLAME_COL_WIDTH;
 use super::super::state::TuiState;
 use crate::app::VisualSelectionMode;
