@@ -89,6 +89,7 @@ pub fn apply_core_effects(
             }
             CoreEffect::Comment(CommentEffect::Cancel) => {
                 state.pending_comment_anchor = None;
+                state.visual_selection = None;
                 state.mark_model_changed();
                 update.set_status("Comment canceled");
             }

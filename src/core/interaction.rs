@@ -89,7 +89,6 @@ pub enum DiffCursorEffect {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisualSelectionEffect {
     StartLine,
-    StartCharacter,
     Move(DiffCursorEffect),
     Cancel,
     Commit,
@@ -680,7 +679,7 @@ fn visual_selection_key_effect(
                 Some(VisualSelectionEffect::StartLine)
             }
             Key::Char('v') if key_has_no_modifier(key.modifiers) => {
-                Some(VisualSelectionEffect::StartCharacter)
+                Some(VisualSelectionEffect::StartLine)
             }
             _ => None,
         }
@@ -1315,7 +1314,7 @@ mod tests {
         let line = engine.handle_input(key_event(Key::Char('V'), shifted), &visible_context);
         let line_lowercase_shift =
             engine.handle_input(key_event(Key::Char('v'), shifted), &visible_context);
-        let character = engine.handle_input(
+        let lowercase_line = engine.handle_input(
             key_event(Key::Char('v'), InputModifiers::default()),
             &visible_context,
         );
@@ -1337,9 +1336,9 @@ mod tests {
             )]
         );
         assert_eq!(
-            character,
+            lowercase_line,
             vec![CoreEffect::VisualSelection(
-                VisualSelectionEffect::StartCharacter
+                VisualSelectionEffect::StartLine
             )]
         );
         assert!(ignored.is_empty());

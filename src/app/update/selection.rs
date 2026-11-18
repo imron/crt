@@ -35,21 +35,6 @@ pub fn apply_visual_selection_effect(
             update.set_status("Line selection started");
             state.mark_model_changed();
         }
-        VisualSelectionEffect::StartCharacter => {
-            state.pane_focus = PaneFocus::Diff;
-            let anchor = TextAnchor {
-                line: state.diff_line_cursor,
-                column: state.diff_col_cursor,
-            };
-            state.visual_selection = Some(VisualSelection {
-                mode: VisualSelectionMode::Character,
-                start: anchor,
-                end: anchor,
-            });
-            state.pending_comment_anchor = None;
-            update.set_status("Character selection started");
-            state.mark_model_changed();
-        }
         VisualSelectionEffect::Move(cursor_effect) => {
             cursor::apply_diff_cursor_effect(state, view, cursor_effect);
             if let Some(selection) = state.visual_selection.as_mut() {
@@ -70,7 +55,6 @@ pub fn apply_visual_selection_effect(
             match capture_visual_selection(state, view) {
                 Some(capture) => {
                     state.pending_comment_anchor = Some(capture);
-                    state.visual_selection = None;
                     update.set_status("Comment anchor captured");
                 }
                 None => {
@@ -118,38 +102,16 @@ fn capture_visual_selection(
         return None;
     }
 
-    let (char_start, char_end, anchor_text) = match selection.mode {
-        VisualSelectionMode::Line => {
-            let s = (line_start as usize)
-                .saturating_sub(1)
-                .min(head_lines.len().saturating_sub(1));
-            let e = (line_end as usize)
-                .saturating_sub(1)
-                .min(head_lines.len().saturating_sub(1));
-            (
-                None,
-                None,
-                if s <= e {
-                    head_lines[s..=e].join("\n")
-                } else {
-                    String::new()
-                },
-            )
-        }
-        VisualSelectionMode::Character => {
-            let char_start = start_anchor.column as i64;
-            let char_end = end_anchor.column.saturating_add(1) as i64;
-            (
-                Some(char_start),
-                Some(char_end),
-                character_anchor_text_head(
-                    selected_lines,
-                    &head_lines,
-                    start_anchor.column,
-                    end_anchor.column,
-                ),
-            )
-        }
+    let s = (line_start as usize)
+        .saturating_sub(1)
+        .min(head_lines.len().saturating_sub(1));
+    let e = (line_end as usize)
+        .saturating_sub(1)
+        .min(head_lines.len().saturating_sub(1));
+    let anchor_text = if s <= e {
+        head_lines[s..=e].join("\n")
+    } else {
+        String::new()
     };
 
     let context_before = {
@@ -172,8 +134,8 @@ fn capture_visual_selection(
         file_path,
         line_start,
         line_end,
-        char_start,
-        char_end,
+        char_start: None,
+        char_end: None,
         anchor_text,
         context_before,
         context_after,
@@ -312,39 +274,5 @@ fn fallback_source_lines(view: &impl AppViewport) -> Vec<SourceLine> {
                 content,
             }
         })
-        .collect()
-}
-
-fn character_anchor_text_head(
-    selected_lines: &[SourceLine],
-    head_lines: &[&str],
-    start_col: usize,
-    end_col: usize,
-) -> String {
-    selected_lines
-        .iter()
-        .enumerate()
-        .map(|(idx, sl)| {
-            let hl_idx = (sl.line_number as usize).saturating_sub(1);
-            let text = head_lines
-                .get(hl_idx)
-                .copied()
-                .unwrap_or(sl.content.as_str());
-            let start = if idx == 0 { start_col } else { 0 };
-            let end = if idx + 1 == selected_lines.len() {
-                end_col.saturating_add(1)
-            } else {
-                text.chars().count()
-            };
-            slice_chars(text, start, end)
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn slice_chars(text: &str, start: usize, end: usize) -> String {
-    text.chars()
-        .skip(start)
-        .take(end.saturating_sub(start))
         .collect()
 }

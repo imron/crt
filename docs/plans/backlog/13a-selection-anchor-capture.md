@@ -13,34 +13,33 @@
 
 ## Goal
 
-Add support for visual selection modes in the diff pane (V for line ranges,
-v for character ranges) and the ability to capture the selection details
-(file, line/character range, anchor text, surrounding context) so that it
-can be used as the attachment point for a new review comment.
+Add support for visual line selection in the diff pane and the ability to
+capture the selection details (file, line range, anchor text, surrounding
+context) so that it can be used as the attachment point for a new review
+comment.
 
 ## Why
 
-The stage 13 spec requires users to be able to select a precise location in
-a diff (lines or characters) before creating a comment. This slice provides
-the input mechanism and the capture of the data needed for comment creation
-(anchor_text, context_before, context_after, line/char ranges) without yet
-building the composer or persistence flow.
+The stage 13 spec requires users to be able to select a location in a diff
+before creating a comment. This slice provides the input mechanism and the
+capture of the data needed for comment creation (anchor_text,
+context_before, context_after, and line ranges) without yet building the
+composer or persistence flow.
 
 This is the foundation for "Selection and Comment Creation" requirements in
 the parent plan.
 
 ## Requirements
 
-1. Introduce visual selection state (start and end anchors + mode: line or
-   character) that is active only in the diff pane.
+1. Introduce visual line selection state (start and end anchors) that is
+   active only in the diff pane.
 
 2. Add key handling so that:
-   - `V` (no modifiers) enters line-based visual selection mode from the
+   - `v` (no modifiers) enters line-based visual selection mode from the
      current cursor position.
-   - `v` (no modifiers) enters character-based visual selection mode from
-     the current cursor position.
-   - In either mode, movement keys (j/k, arrows, h/l when applicable)
-     extend the selection end point.
+   - `V` (shifted `v`) is accepted as the same line selection mode.
+   - Movement keys (j/k, arrows, h/l when applicable) extend the selection
+     end point by line.
    - The selection is visually highlighted in the diff view (distinct style
      for the range).
 
@@ -50,9 +49,8 @@ the parent plan.
 4. When Enter is pressed while a visual selection is active, capture the
    selection details for later use as a comment attachment point:
    - Current file path.
-   - Line start / line end (for V or v).
-   - Character start / character end within the lines (for v mode; None
-     for V).
+   - Line start / line end.
+   - Character start / character end set to None.
    - The exact anchor_text spanned by the selection.
    - Context before (3-5 lines) and context after (3-5 lines) from the
      diff content.
@@ -69,14 +67,13 @@ the parent plan.
 
 ## Acceptance Criteria
 
-- [x] `V` enters line selection; `j`/`k` extend the highlighted range.
-- [x] `v` enters character selection; appropriate movement extends the
-      character range.
+- [x] `v` enters line selection; `j`/`k` extend the highlighted range.
+- [x] `V` enters the same line selection mode.
 - [x] `Escape` in visual mode clears the selection and returns to normal
       input without side effects.
 - [x] Enter with an active selection produces a complete capture of file,
       ranges, anchor_text, and context strings.
-- [x] Capture works for both line ranges and sub-line character ranges.
+- [x] Capture works for line ranges and stores character fields as None.
 - [x] No changes to comment persistence or UI creation flow (deferred to
       later slices).
 - [x] Existing cursor, search, and review navigation behavior is unaffected
@@ -97,11 +94,10 @@ the parent plan.
 
 ## Progress
 
-- Added core visual-selection effects for line and character modes, with
-  active-mode routing for movement, Escape, and Enter.
+- Added core visual-selection effects for line mode, with active-mode
+  routing for movement, Escape, and Enter.
 - Added app-owned visual-selection state plus a committed comment-anchor
   capture shaped for later `CreateCommentParams` use.
 - Added diff-pane highlighting for active visual selections using the
   existing selection style configuration.
-- Added unit coverage for key routing, cancellation, line capture, and
-  sub-line character capture.
+- Added unit coverage for key routing, cancellation, and line capture.
