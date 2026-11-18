@@ -23,7 +23,7 @@ Users and agents need to see all outstanding (and historical) feedback, move bet
 
 1. `Shift-C` toggles a comments panel at the bottom of the diff view.
 
-2. When the panel is open, inline comment blocks are hidden (gutter markers remain visible).
+2. Gutter markers remain visible whether the panel is open or closed.
 
 3. Unresolved comments are shown fully; resolved comments are shown collapsed (header + preview). Enter on a collapsed one expands it.
 
