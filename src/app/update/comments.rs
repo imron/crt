@@ -1,10 +1,12 @@
 use super::cursor::clamp_cursor_and_scroll;
 use super::output::AppOutput;
 use super::viewport::AppViewport;
+use crate::app::diff_rows::{inline_diff_rows, side_by_side_diff_rows};
 use crate::app::{AppState, FileListSectionFocus};
 use crate::core::CommentsPanelEffect;
 use crate::review_types::{
-    Comment, CommentAnchorSide, ContentMode, LineKind, PaneFocus, RenderVariant,
+    Comment, CommentAnchorSegment, CommentAnchorSide, ContentMode, LineKind, PaneFocus,
+    RenderVariant,
 };
 
 pub fn current_comment(state: &AppState) -> Option<&Comment> {
@@ -224,13 +226,11 @@ fn navigate_to_comment(state: &mut AppState, view: &impl AppViewport, comment: &
     };
     state.select_file(file_index, focus, false);
     state.selected_comment_id = Some(comment.id);
-    let Some((line_start, line_end)) = visible_comment_line_range(state, comment) else {
+    let Some((start_row, end_row)) = display_rows_for_comment(state, comment) else {
         state.mark_model_changed();
         return false;
     };
     state.pane_focus = PaneFocus::Diff;
-    let start_row = display_row_for_visible_line(state, comment_line(line_start));
-    let end_row = display_row_for_visible_line(state, comment_line(line_end)).max(start_row);
     state.diff_line_cursor = start_row;
     state.diff_col_cursor = 0;
     scroll_to_comment(state, view, start_row, end_row);
@@ -241,6 +241,97 @@ fn navigate_to_comment(state: &mut AppState, view: &impl AppViewport, comment: &
 
 fn comment_line(line: i64) -> u32 {
     u32::try_from(line.max(1)).unwrap_or(u32::MAX)
+}
+
+fn display_rows_for_comment(state: &AppState, comment: &Comment) -> Option<(usize, usize)> {
+    let rows = match state.content_mode {
+        ContentMode::FullFile => {
+            visible_comment_line_range(state, comment).map(|(line_start, line_end)| {
+                vec![
+                    display_row_for_visible_line(state, comment_line(line_start)),
+                    display_row_for_visible_line(state, comment_line(line_end)),
+                ]
+            })
+        }
+        ContentMode::Diff => Some(diff_display_rows_for_comment(state, comment)),
+    }?;
+    let start = rows.iter().copied().min()?;
+    let end = rows.iter().copied().max().unwrap_or(start);
+    Some((start, end.max(start)))
+}
+
+fn diff_display_rows_for_comment(state: &AppState, comment: &Comment) -> Vec<usize> {
+    if comment.anchor.segments.len() <= 1 {
+        return fallback_display_rows_for_comment(state, comment);
+    }
+
+    let mut rows = Vec::new();
+    for segment in comment
+        .anchor
+        .segments
+        .iter()
+        .filter(|segment| segment.file_path == comment.file_path)
+    {
+        rows.extend(diff_display_rows_for_segment(state, segment));
+    }
+
+    if rows.is_empty() {
+        rows.extend(fallback_display_rows_for_comment(state, comment));
+    }
+    rows
+}
+
+fn fallback_display_rows_for_comment(state: &AppState, comment: &Comment) -> Vec<usize> {
+    let Some((line_start, line_end)) = visible_comment_line_range(state, comment) else {
+        return Vec::new();
+    };
+    vec![
+        display_row_for_visible_line(state, comment_line(line_start)),
+        display_row_for_visible_line(state, comment_line(line_end)),
+    ]
+}
+
+fn diff_display_rows_for_segment(state: &AppState, segment: &CommentAnchorSegment) -> Vec<usize> {
+    let Some(entry) = state.selected_file_entry() else {
+        return Vec::new();
+    };
+    let start = comment_line(segment.line_start);
+    let end = comment_line(segment.line_end).max(start);
+
+    match state.render_variant {
+        RenderVariant::SideBySide => {
+            let rows = side_by_side_diff_rows(
+                &entry.diff.hunks,
+                state.base_content.as_deref(),
+                state.head_content.as_deref(),
+            );
+            rows.rows
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, row)| {
+                    let line = match segment.side {
+                        CommentAnchorSide::Base => row.base.as_ref().map(|cell| cell.line_number),
+                        CommentAnchorSide::Head => row.head.as_ref().map(|cell| cell.line_number),
+                    }?;
+                    (line >= start && line <= end).then_some(idx)
+                })
+                .collect()
+        }
+        _ => {
+            let rows = inline_diff_rows(&entry.diff.hunks, state.head_content.as_deref());
+            rows.rows
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, row)| {
+                    let line = match segment.side {
+                        CommentAnchorSide::Base => row.old_lineno,
+                        CommentAnchorSide::Head => row.new_lineno,
+                    }?;
+                    (line >= start && line <= end).then_some(idx)
+                })
+                .collect()
+        }
+    }
 }
 
 fn scroll_to_comment(

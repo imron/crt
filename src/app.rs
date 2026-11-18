@@ -3967,6 +3967,70 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_navigation_to_inline_replacement_uses_start_marker_row() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_offset_multiline_replacement_hunk(
+                "src/main.rs",
+            )],
+        );
+        let mut comment = stored_comment(7, "src/main.rs");
+        comment.line_start = 26;
+        comment.line_end = 28;
+        comment.anchor = crate::review_types::CommentAnchor {
+            segments: vec![
+                CommentAnchorSegment {
+                    side: CommentAnchorSide::Base,
+                    file_path: "src/main.rs".to_string(),
+                    line_start: 26,
+                    line_end: 26,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "old".to_string(),
+                    context_before: String::new(),
+                    context_after: String::new(),
+                    placement_status: AnchorPlacementStatus::Anchored,
+                    match_method: AnchorMatchMethod::ExactAtLine,
+                },
+                CommentAnchorSegment {
+                    side: CommentAnchorSide::Head,
+                    file_path: "src/main.rs".to_string(),
+                    line_start: 27,
+                    line_end: 28,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "new".to_string(),
+                    context_before: String::new(),
+                    context_after: String::new(),
+                    placement_status: AnchorPlacementStatus::Anchored,
+                    match_method: AnchorMatchMethod::ExactAtLine,
+                },
+            ],
+            aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
+        };
+        app.state.comments = vec![comment];
+        app.state.head_content = Some(
+            (1..=34)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
+        app.state.diff_line_cursor = 24;
+        let lines: Vec<String> = (1..=34).map(|n| n.to_string()).collect();
+        let view = RenderedViewport { lines };
+
+        app.apply_core_effects(
+            &view,
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+
+        assert_eq!(app.state.selected_comment_id, Some(7));
+        assert_eq!(app.state.diff_line_cursor, 26);
+    }
+
+    #[test]
     fn side_by_side_comment_navigation_uses_paired_rows() {
         let mut app = App::new(
             Config::default(),
