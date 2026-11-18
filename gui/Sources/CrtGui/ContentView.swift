@@ -105,7 +105,7 @@ struct FileTreeItem: View {
                     .foregroundStyle(.white)
                     .overlay {
                         Image(systemName: "doc")
-                            .foregroundStyle(.black)
+                            .foregroundStyle(Color(nsColor: .darkGray))
                     }
             }
             .tag(file.path)
