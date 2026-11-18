@@ -118,6 +118,10 @@ impl UnixClientConnection {
 impl HttpClientConnection {
     async fn connect(host: &str, port: u16) -> Result<Self> {
         let addr = format!("{host}:{port}");
+        Self::connect_addr(&addr).await
+    }
+
+    async fn connect_addr(addr: &str) -> Result<Self> {
         let stream = TcpStream::connect(&addr)
             .await
             .with_context(|| format!("Could not connect to crt HTTP server at {addr}"))?;
@@ -130,7 +134,7 @@ impl HttpClientConnection {
         });
 
         Ok(Self {
-            host: addr,
+            host: addr.to_string(),
             sender,
             _connection_task: connection_task,
         })
@@ -676,7 +680,15 @@ impl Client {
             ClientConnection::Unix(connection) => {
                 unix_call(connection, id, line.as_bytes()).await?
             }
-            ClientConnection::Http(connection) => http_call(connection, &request).await?,
+            ClientConnection::Http(connection) => match http_call(connection, &request).await {
+                Ok(response) => response,
+                Err(error) if is_transport_loss(&error) => {
+                    let host = connection.host.clone();
+                    *connection = HttpClientConnection::connect_addr(&host).await?;
+                    http_call(connection, &request).await?
+                }
+                Err(error) => return Err(error),
+            },
         };
 
         // Check for error
@@ -874,6 +886,13 @@ fn is_transport_loss(error: &anyhow::Error) -> bool {
     }
 
     error.chain().any(|cause| {
+        if cause
+            .downcast_ref::<hyper::Error>()
+            .is_some_and(|hyper_error| hyper_error.is_canceled() || hyper_error.is_closed())
+        {
+            return true;
+        }
+
         cause.downcast_ref::<io::Error>().is_some_and(|io_error| {
             matches!(
                 io_error.kind(),
