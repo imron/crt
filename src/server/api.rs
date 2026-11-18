@@ -95,6 +95,7 @@ pub async fn handle_init(
     let ctx = ConnectionContext {
         repo_root: git_ctx.repo_root.clone(),
         worktree: worktree_path.clone(),
+        base_ref: base_ref.clone(),
         review_base,
         merge_base: merge_base.clone(),
         head: git_ctx.head.clone(),
@@ -109,6 +110,10 @@ pub async fn handle_init(
         base_ref: base_ref.clone(),
     };
 
+    if let Some(old_ctx) = conn_ctx.as_ref() {
+        state.unregister_session(old_ctx).await;
+    }
+    state.register_session(&ctx).await;
     *conn_ctx = Some(ctx);
     *conn_db = Some(db_handle);
 
@@ -118,6 +123,33 @@ pub async fn handle_init(
             id.clone(),
             ERR_INTERNAL,
             format!("Failed to serialize init result: {e}"),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// list_repos
+// ---------------------------------------------------------------------------
+
+pub async fn handle_list_repos(
+    id: &serde_json::Value,
+    state: &Arc<ServerState>,
+) -> JsonRpcResponse {
+    let sessions = state.list_sessions().await;
+    let repos = sessions
+        .iter()
+        .map(|session| session.repo_root.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let result = review_types::ListReposResult { repos, sessions };
+
+    match serde_json::to_value(result) {
+        Ok(v) => JsonRpcResponse::success(id.clone(), v),
+        Err(e) => JsonRpcResponse::error(
+            id.clone(),
+            ERR_INTERNAL,
+            format!("Failed to serialize repo list: {e}"),
         ),
     }
 }

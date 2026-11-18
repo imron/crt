@@ -403,6 +403,47 @@ async fn test_migrated_changed_review_stays_changed() {
 }
 
 #[tokio::test]
+async fn test_list_repos_reports_active_initialized_sessions() {
+    let server = TestServer::start().await;
+    let mut discovery = server.connect().await;
+
+    let resp = discovery.request("list_repos", serde_json::json!({})).await;
+    assert!(
+        resp["error"].is_null(),
+        "list_repos before init failed: {resp}"
+    );
+    assert_eq!(resp["result"]["sessions"].as_array().unwrap().len(), 0);
+
+    let initialized = server.connect_and_init().await;
+
+    let resp = discovery.request("list_repos", serde_json::json!({})).await;
+    assert!(
+        resp["error"].is_null(),
+        "list_repos after init failed: {resp}"
+    );
+    let sessions = resp["result"]["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(
+        sessions[0]["worktree"].as_str(),
+        Some(server.repo_dir.to_string_lossy().as_ref())
+    );
+    assert_eq!(sessions[0]["base_ref"], "HEAD");
+    assert_eq!(sessions[0]["client_count"], 1);
+
+    drop(initialized);
+    for _ in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let resp = discovery.request("list_repos", serde_json::json!({})).await;
+        let sessions = resp["result"]["sessions"].as_array().unwrap();
+        if sessions.is_empty() {
+            return;
+        }
+    }
+
+    panic!("initialized session was not unregistered after disconnect");
+}
+
+#[tokio::test]
 async fn test_stale_socket_cleanup() {
     let dir = tempfile::tempdir().unwrap();
     let socket_path = dir.path().join("test.sock");

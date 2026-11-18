@@ -584,27 +584,34 @@ share state (same merge-base).
 crt <base>                    TUI — review base..HEAD (connects to server or starts embedded)
 crt <base> --reset            Clear all review state for (base, current branch)
 crt server                    Start persistent server (~/.crt/server.sock)
-crt mcp-server --base <base>  Start MCP adapter (stdio, connects to server)
+crt mcp-server                Start MCP adapter (stdio, connects to server)
 crt apply-comments <base>     Write review markers into worktree files
 crt clear-comments <base>     Remove review markers from worktree files
 ```
 
 ## MCP Server
 
-The `crt mcp-server --base <base>` subcommand starts an MCP adapter that
-bridges the MCP stdio protocol to the crt server's JSON-RPC API. It connects
-to a running server (or starts an embedded one) using the same lifecycle and
-reconnect supervisor path as the TUI.
+The `crt mcp-server` subcommand starts an MCP adapter that bridges the MCP
+stdio protocol to the crt server's JSON-RPC API. It connects to a running
+server (or starts an embedded one) using the same lifecycle and reconnect
+supervisor path as the TUI.
+
+MCP starts unscoped. Use `list_review_sessions` to discover active review
+sessions registered by connected crt clients, then `select_review_session` to
+choose the session for scoped tools. Passing `--base <base>` is still accepted
+as a convenience for starting already scoped to the current working tree.
 
 ### Tools
 
 | Tool                  | Description                                      |
 | --------------------- | ------------------------------------------------ |
-| `list_changed_files`  | Files changed in the current review scope, including review status and diff metadata. |
-| `get_file_diff`       | Diff content for a specific file (base..HEAD).   |
-| `search_codebase`     | Regex search across the worktree or changed files. |
-| `find_definition`     | Best-effort symbol definition lookup.            |
-| `list_review_summary` | High-level overview: files changed and review progress. |
+| `list_review_sessions`  | Active review sessions registered by connected crt clients. |
+| `select_review_session` | Select an active session for scoped review tools. |
+| `list_changed_files`    | Files changed in the selected review scope, including review status and diff metadata. |
+| `get_file_diff`         | Diff content for a specific file (base..HEAD).   |
+| `search_codebase`       | Regex search across the worktree or changed files. |
+| `find_definition`       | Best-effort symbol definition lookup.            |
+| `list_review_summary`   | High-level overview: files changed and review progress. |
 
 Comment tools (`list_review_comments`, `get_comment_detail`,
 `resolve_comment`, `unresolve_comment`) remain part of the MCP roadmap and

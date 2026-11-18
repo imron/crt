@@ -86,11 +86,13 @@ clear lifecycle model.
 - Kept lifecycle ownership in the shared reconnecting `Client` path introduced
   by Stage 24, and documented that both TUI and MCP startup use that same
   connect-or-start behavior.
-- Wired `crt mcp-server --base <base>` through the same socket path,
-  connect-or-start, init, and shutdown lifecycle as review mode.
+- Wired `crt mcp-server` through the same socket path, connect-or-start, and
+  shutdown lifecycle as review mode. It can start unscoped, discover active
+  review sessions, and select one before running scoped tools.
 - Implemented the MCP stdio adapter for currently server-backed tools:
-  `list_changed_files`, `get_file_diff`, `search_codebase`,
-  `find_definition`, and `list_review_summary`.
+  `list_review_sessions`, `select_review_session`, `list_changed_files`,
+  `get_file_diff`, `search_codebase`, `find_definition`, and
+  `list_review_summary`.
 - Left comment-oriented MCP tools for the existing Stage 14 backlog because
   the corresponding server comment methods still return not implemented.
 - Documented embedded lifecycle semantics in `docs/OVERVIEW.md`: embedded

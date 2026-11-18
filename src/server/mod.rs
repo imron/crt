@@ -22,6 +22,7 @@ use crate::protocol::{
     ERR_METHOD_NOT_FOUND, ERR_NOT_IMPLEMENTED, ERR_NOT_INITIALIZED, ERR_PARSE, JsonRpcRequest,
     JsonRpcResponse, Notification,
 };
+use crate::review_types::ActiveReviewSession;
 
 // ---------------------------------------------------------------------------
 // Connection state
@@ -32,6 +33,7 @@ use crate::protocol::{
 pub struct ConnectionContext {
     pub repo_root: PathBuf,
     pub worktree: PathBuf,
+    pub base_ref: String,
     pub review_base: ReviewBase,
     /// The merge-base commit hash (stable scope key).
     pub merge_base: CommitId,
@@ -53,8 +55,15 @@ impl ConnectionContext {
 pub struct ServerState {
     /// Open databases keyed by repo root path.
     databases: Mutex<HashMap<PathBuf, Arc<Mutex<Database>>>>,
+    active_sessions: Mutex<HashMap<String, ActiveSessionEntry>>,
     /// Broadcast channel for notifications.
     pub notify_tx: broadcast::Sender<Notification>,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveSessionEntry {
+    session: ActiveReviewSession,
+    client_count: usize,
 }
 
 impl Default for ServerState {
@@ -69,6 +78,7 @@ impl ServerState {
         let (notify_tx, _) = broadcast::channel(NOTIFY_CHANNEL_CAPACITY);
         Self {
             databases: Mutex::new(HashMap::new()),
+            active_sessions: Mutex::new(HashMap::new()),
             notify_tx,
         }
     }
@@ -87,6 +97,64 @@ impl ServerState {
         dbs.insert(db_path.to_path_buf(), Arc::clone(&db));
         Ok(db)
     }
+
+    pub async fn register_session(&self, ctx: &ConnectionContext) {
+        let mut sessions = self.active_sessions.lock().await;
+        let key = session_key(ctx);
+        let entry = sessions.entry(key).or_insert_with(|| ActiveSessionEntry {
+            session: ActiveReviewSession {
+                repo_root: ctx.repo_root.to_string_lossy().into_owned(),
+                worktree: ctx.worktree.to_string_lossy().into_owned(),
+                base_ref: ctx.base_ref.clone(),
+                head_ref: ctx.head_scope_key(),
+                merge_base: ctx.merge_base.to_string(),
+                client_count: 0,
+            },
+            client_count: 0,
+        });
+        entry.client_count += 1;
+        entry.session.client_count = entry.client_count;
+    }
+
+    pub async fn unregister_session(&self, ctx: &ConnectionContext) {
+        let mut sessions = self.active_sessions.lock().await;
+        let key = session_key(ctx);
+        let Some(entry) = sessions.get_mut(&key) else {
+            return;
+        };
+        entry.client_count = entry.client_count.saturating_sub(1);
+        if entry.client_count == 0 {
+            sessions.remove(&key);
+        } else {
+            entry.session.client_count = entry.client_count;
+        }
+    }
+
+    pub async fn list_sessions(&self) -> Vec<ActiveReviewSession> {
+        let sessions = self.active_sessions.lock().await;
+        let mut out = sessions
+            .values()
+            .map(|entry| entry.session.clone())
+            .collect::<Vec<_>>();
+        out.sort_by(|a, b| {
+            a.repo_root
+                .cmp(&b.repo_root)
+                .then_with(|| a.worktree.cmp(&b.worktree))
+                .then_with(|| a.base_ref.cmp(&b.base_ref))
+                .then_with(|| a.head_ref.cmp(&b.head_ref))
+        });
+        out
+    }
+}
+
+fn session_key(ctx: &ConnectionContext) -> String {
+    format!(
+        "{}\0{}\0{}\0{}",
+        ctx.repo_root.display(),
+        ctx.worktree.display(),
+        ctx.merge_base,
+        ctx.head_scope_key()
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +378,10 @@ async fn handle_connection(stream: UnixStream, state: Arc<ServerState>) -> Resul
         send_response(&writer, &response).await?;
     }
 
+    if let Some(ctx) = conn_ctx.as_ref() {
+        state.unregister_session(ctx).await;
+    }
+
     // Stop the notification forwarder.
     notify_cancel.cancel();
     let _ = notify_handle.await;
@@ -408,9 +480,11 @@ async fn dispatch(
     };
 
     // Dispatch — the compiler ensures every variant is handled.
-    // `init` is the only method that doesn't require prior initialization.
+    // `init` and server-level session discovery do not require prior
+    // connection initialization.
     match method {
         Method::Init => api::handle_init(&request.params, id, state, conn_ctx, conn_db).await,
+        Method::ListRepos => api::handle_list_repos(id, state).await,
         _ if conn_ctx.is_none() || conn_db.is_none() => JsonRpcResponse::error(
             id.clone(),
             ERR_NOT_INITIALIZED,
@@ -450,8 +524,7 @@ async fn dispatch(
         | Method::DeleteComment
         | Method::ApplyComments
         | Method::ClearComments
-        | Method::TrackRepo
-        | Method::ListRepos => JsonRpcResponse::error(
+        | Method::TrackRepo => JsonRpcResponse::error(
             id.clone(),
             ERR_NOT_IMPLEMENTED,
             format!("Method '{}' is not yet implemented", request.method),

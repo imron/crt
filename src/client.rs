@@ -311,6 +311,10 @@ impl Client {
             .await
     }
 
+    pub async fn list_repos(&self) -> Result<crate::review_types::ListReposResult> {
+        self.call("list_repos", serde_json::json!({})).await
+    }
+
     // -----------------------------------------------------------------------
     // Search
     // -----------------------------------------------------------------------
