@@ -77,6 +77,7 @@ clean reuse in GUI and increases coupling to TUI-only state.
 - Added focused tests for core prompt requests and TUI key normalization.
 - Routed command and diff-search prompt submit/cancel through core
   `PromptSubmit`/`PromptCancel` events, with typed effects applied by the TUI.
+- Routed the `r` review-toggle key through core input as a typed review effect.
 
 ## Acceptance Criteria
 

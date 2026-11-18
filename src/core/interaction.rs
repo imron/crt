@@ -15,6 +15,7 @@ pub enum CoreEffect {
     ClearPrompt { id: PromptId },
     Command(CommandParse),
     DiffSearch(DiffSearchEffect),
+    ReviewToggle,
     Render(RenderUpdate),
     Status(StatusMessage),
     ConnectionState(ConnectionState),
@@ -99,6 +100,13 @@ impl CoreInteractionEngine {
                     placeholder: Some("Type a regex".to_string()),
                     initial_value: String::new(),
                 })]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_no_command_modifier(key.modifiers)
+                    && key.key == Key::Char('r') =>
+            {
+                vec![CoreEffect::ReviewToggle]
             }
             InputEvent::PromptSubmit { id, value } => {
                 let Some(active) = self.take_active_prompt(id) else {
@@ -239,6 +247,36 @@ mod tests {
         let effects = engine.handle_input(
             key_event(
                 Key::Char(':'),
+                InputModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn r_requests_review_toggle() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(Key::Char('r'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(effects, vec![CoreEffect::ReviewToggle]);
+    }
+
+    #[test]
+    fn control_r_does_not_request_review_toggle() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(
+                Key::Char('r'),
                 InputModifiers {
                     ctrl: true,
                     ..Default::default()
