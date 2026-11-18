@@ -1,6 +1,6 @@
 # Stage 14: MCP Review Comment Tools
 
-## Status: Backlog
+## Status: Completed
 
 ## Goal
 
@@ -18,7 +18,7 @@ selection is handled through `list_review_sessions` /
 `select_review_session`. This plan keeps only the missing comment and review
 tool surface.
 
-## Current State
+## Starting State
 
 - `crt mcp-server` starts and completes MCP handshake through `rmcp`.
 - The MCP adapter can discover and select active review sessions.
@@ -128,20 +128,20 @@ tool surface.
 
 ## Acceptance Criteria
 
-- [ ] `list_comments` returns scoped comments from the server.
-- [ ] `list_comments` respects `file_path`.
-- [ ] `list_comments` respects `include_resolved`.
-- [ ] `get_comment` returns full context and anchor status.
-- [ ] `resolve_comment` marks a comment resolved.
-- [ ] `unresolve_comment` marks a comment unresolved.
-- [ ] Typed client comment methods parse server responses correctly.
-- [ ] MCP `list_review_comments` returns correct data.
-- [ ] MCP `get_comment_detail` returns full comment context.
-- [ ] MCP `resolve_comment` and `unresolve_comment` update state.
-- [ ] MCP `mark_file_reviewed` and `unmark_file_reviewed` update file review
+- [x] `list_comments` returns scoped comments from the server.
+- [x] `list_comments` respects `file_path`.
+- [x] `list_comments` respects `include_resolved`.
+- [x] `get_comment` returns full context and anchor status.
+- [x] `resolve_comment` marks a comment resolved.
+- [x] `unresolve_comment` marks a comment unresolved.
+- [x] Typed client comment methods parse server responses correctly.
+- [x] MCP `list_review_comments` returns correct data.
+- [x] MCP `get_comment_detail` returns full comment context.
+- [x] MCP `resolve_comment` and `unresolve_comment` update state.
+- [x] MCP `mark_file_reviewed` and `unmark_file_reviewed` update file review
       state.
-- [ ] `list_review_summary` includes accurate comment counts.
-- [ ] Tool descriptions are detailed enough for an LLM agent to use without
+- [x] `list_review_summary` includes accurate comment counts.
+- [x] Tool descriptions are detailed enough for an LLM agent to use without
       extra documentation.
 
 ## Resolved Decisions
@@ -151,3 +151,23 @@ tool surface.
 - MCP startup can be unscoped; agents choose an active review session through
   MCP tools.
 - Agent-created comments remain out of MCP scope for now.
+
+## Completed Notes
+
+- Implemented server comment RPC handlers for create, list, detail, update,
+  resolve, unresolve, and delete operations.
+- Kept MCP agent-created comments out of scope while still implementing the
+  underlying server RPCs for existing app workflows.
+- Typed the client comment wrappers around `CommentResult`,
+  `ListCommentsResult`, and `DeleteCommentResult`.
+- Added MCP tools for:
+  - `list_review_comments`,
+  - `get_comment_detail`,
+  - `resolve_comment`,
+  - `unresolve_comment`,
+  - `mark_file_reviewed`,
+  - `unmark_file_reviewed`.
+- Updated `list_review_summary` to include total, resolved, unresolved, and
+  per-file comment counts.
+- Added server integration coverage for the full comment lifecycle and MCP
+  tool discovery coverage.
