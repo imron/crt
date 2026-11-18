@@ -363,6 +363,12 @@ fn clear_diff_search(state: &mut AppState) {
 
 fn apply_diff_cursor_effect(state: &mut AppState, effect: DiffCursorEffect) {
     match effect {
+        DiffCursorEffect::MoveTo { line, column } => {
+            state.diff_line_cursor = line;
+            state.diff_col_cursor = column;
+            state.clamp_cursor_and_scroll();
+            state.clamp_col_cursor();
+        }
         DiffCursorEffect::LineDown => {
             state.diff_line_cursor = state.diff_line_cursor.saturating_add(1);
             state.diff_col_cursor = 0;
@@ -590,6 +596,14 @@ fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
                 {
                     state.reviewed_diff_expanded = true;
                     state.diff_scroll = 0;
+                }
+            }
+        }
+        PaneEffect::SelectFileAt { row } => {
+            if let Some(&Some(file_idx)) = state.file_list_row_to_file.get(row) {
+                if file_idx < state.files.len() && file_idx != state.selected_file {
+                    state.selected_file = file_idx;
+                    state.on_file_changed();
                 }
             }
         }

@@ -1,7 +1,7 @@
 //! Core interaction entrypoint scaffold.
 
 use super::command::{self, CommandParse};
-use super::input::{InputEvent, Key, KeyEventKind, MouseEventKind};
+use super::input::{InputEvent, Key, KeyEventKind, MouseButton, MouseEventKind};
 use super::navigation::Direction;
 use super::prompt::{PromptId, PromptKind, PromptRequest};
 use super::render::PaneId;
@@ -52,6 +52,7 @@ pub enum DiffSearchEffect {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffCursorEffect {
+    MoveTo { line: usize, column: usize },
     LineDown,
     LineUp,
     PageDown,
@@ -99,6 +100,7 @@ pub enum DefinitionResultsEffect {
 pub enum PaneEffect {
     ActivateFileListSelection,
     ActivateDiffSelection,
+    SelectFileAt { row: usize },
 }
 
 /// Connection lifecycle states for UI adapters.
@@ -157,6 +159,9 @@ impl CoreInteractionEngine {
     /// Single core input entrypoint for UI adapters.
     pub fn handle_input(&mut self, event: InputEvent, context: &InteractionContext) -> CoreEffects {
         if let InputEvent::Mouse(mouse) = &event {
+            if let Some(effect) = mouse_click_effect(mouse) {
+                return vec![effect];
+            }
             if let Some(effect) = mouse_diff_cursor_effect(mouse) {
                 return vec![CoreEffect::DiffCursor(effect)];
             }
@@ -579,6 +584,25 @@ fn mouse_diff_cursor_effect(mouse: &super::input::MouseEvent) -> Option<DiffCurs
     match mouse.kind {
         MouseEventKind::ScrollDown => Some(DiffCursorEffect::WheelDown),
         MouseEventKind::ScrollUp => Some(DiffCursorEffect::WheelUp),
+        _ => None,
+    }
+}
+
+fn mouse_click_effect(mouse: &super::input::MouseEvent) -> Option<CoreEffect> {
+    if mouse.kind != MouseEventKind::Down || mouse.button != Some(MouseButton::Left) {
+        return None;
+    }
+
+    let hit = mouse.semantic_hit.as_ref()?;
+    let anchor = hit.text_anchor?;
+    match hit.pane_id {
+        PaneId::FileList => Some(CoreEffect::Pane(PaneEffect::SelectFileAt {
+            row: anchor.line,
+        })),
+        PaneId::Diff => Some(CoreEffect::DiffCursor(DiffCursorEffect::MoveTo {
+            line: anchor.line,
+            column: anchor.column,
+        })),
         _ => None,
     }
 }
@@ -1236,6 +1260,65 @@ mod tests {
         );
 
         assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn semantic_file_list_mouse_down_requests_file_selection() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            InputEvent::Mouse(super::super::input::MouseEvent {
+                kind: MouseEventKind::Down,
+                button: Some(MouseButton::Left),
+                local_pos: Some((4, 3)),
+                semantic_hit: Some(super::super::input::PointerSemanticHit {
+                    pane_id: PaneId::FileList,
+                    region_id: Some("file:src/lib.rs".to_string()),
+                    text_anchor: Some(super::super::input::TextAnchor {
+                        line: 12,
+                        column: 3,
+                    }),
+                }),
+                modifiers: InputModifiers::default(),
+            }),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(
+            effects,
+            vec![CoreEffect::Pane(PaneEffect::SelectFileAt { row: 12 })]
+        );
+    }
+
+    #[test]
+    fn semantic_diff_mouse_down_requests_cursor_move() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            InputEvent::Mouse(super::super::input::MouseEvent {
+                kind: MouseEventKind::Down,
+                button: Some(MouseButton::Left),
+                local_pos: Some((9, 5)),
+                semantic_hit: Some(super::super::input::PointerSemanticHit {
+                    pane_id: PaneId::Diff,
+                    region_id: Some("diff-line:18".to_string()),
+                    text_anchor: Some(super::super::input::TextAnchor {
+                        line: 18,
+                        column: 5,
+                    }),
+                }),
+                modifiers: InputModifiers::default(),
+            }),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(
+            effects,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::MoveTo {
+                line: 18,
+                column: 5,
+            })]
+        );
     }
 
     #[test]
