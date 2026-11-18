@@ -125,7 +125,7 @@ pub fn apply_core_effects(
                 overlays::apply_definition_results_effect(state, view, &mut update, effect);
             }
             CoreEffect::Pane(effect) => {
-                panes::apply_pane_effect(state, effect);
+                panes::apply_pane_effect(state, view, effect);
             }
             CoreEffect::CommentsPanel(effect) => {
                 comments::apply_comments_panel_effect(state, view, &mut update, effect);
@@ -142,7 +142,15 @@ pub fn apply_core_effects(
                 update.clear_status();
             }
             CoreEffect::NavigateFile(direction) => {
-                navigation::navigate_file(state, direction);
+                navigation::navigate_file(state, view, direction);
+                update.clear_status();
+            }
+            CoreEffect::NavigateFileSection(direction) => {
+                navigation::navigate_file_section(state, direction);
+                update.clear_status();
+            }
+            CoreEffect::NavigateUnresolvedComment(direction) => {
+                navigation::navigate_unresolved_comment_from_cursor(state, view, direction);
                 update.clear_status();
             }
             CoreEffect::JumpHunk(Direction::Next) => {

@@ -1,7 +1,8 @@
+use super::comments;
 use super::cursor::clamp_cursor_and_scroll;
 use super::output::AppOutput;
 use super::viewport::AppViewport;
-use crate::app::{AppState, JumpLocation};
+use crate::app::{AppState, FileListSectionFocus, JumpLocation};
 use crate::core::command::Command;
 use crate::core::navigation::{self as core_navigation, Direction, FileNavigationScope};
 use crate::core::search as core_search;
@@ -42,8 +43,8 @@ pub fn navigate_to_location_target(
             line_number,
         } => {
             push_jump_stack(state);
-            state.selected_file = file_index;
-            on_file_changed(state);
+            let focus = state.focus_for_file(file_index);
+            state.select_file(file_index, focus, false);
             state.diff_line_cursor = (line_number as usize).saturating_sub(1);
             clamp_cursor_and_scroll(state, view);
             state.mark_model_changed();
@@ -148,8 +149,8 @@ pub fn toggle_diff_base(state: &mut AppState, update: &mut AppOutput) {
 pub fn pop_jump_stack(state: &mut AppState, view: &impl AppViewport, update: &mut AppOutput) {
     if let Some(loc) = state.jump_stack.pop() {
         if loc.file_index != state.selected_file && loc.file_index < state.files.len() {
-            state.selected_file = loc.file_index;
-            on_file_changed(state);
+            let focus = state.focus_for_file(loc.file_index);
+            state.select_file(loc.file_index, focus, false);
         }
         state.diff_scroll = loc.diff_scroll;
         state.diff_line_cursor = loc.diff_line_cursor;
@@ -218,10 +219,6 @@ fn word_at_char_offset(content: &str, column: usize) -> Option<String> {
 
 fn is_identifier_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
-}
-
-fn on_file_changed(state: &mut AppState) {
-    state.on_file_changed();
 }
 
 pub fn cycle_view_mode(state: &mut AppState, view: &impl AppViewport) {
@@ -333,7 +330,12 @@ pub fn jump_to_prev_hunk(state: &mut AppState, view: &impl AppViewport) {
     }
 }
 
-pub fn navigate_file(state: &mut AppState, dir: Direction) {
+pub fn navigate_file(state: &mut AppState, view: &impl AppViewport, dir: Direction) {
+    if state.file_list_section_focus == FileListSectionFocus::UnresolvedComments {
+        navigate_unresolved_comment(state, view, dir);
+        return;
+    }
+
     let scope = if state.pane_focus == PaneFocus::Diff {
         FileNavigationScope::DiffPane
     } else {
@@ -347,9 +349,179 @@ pub fn navigate_file(state: &mut AppState, dir: Direction) {
         scope,
         dir,
     ) {
-        state.selected_file = new_idx;
-        on_file_changed(state);
+        let focus = state.focus_for_file(new_idx);
+        state.select_file(new_idx, focus, true);
     }
+}
+
+fn navigate_unresolved_comment(state: &mut AppState, view: &impl AppViewport, dir: Direction) {
+    let targets = unresolved_comment_targets(state);
+    if targets.is_empty() {
+        state.selected_comment_id = None;
+        state.mark_model_changed();
+        return;
+    }
+
+    let current = state
+        .selected_comment_id
+        .and_then(|id| targets.iter().position(|target| target.comment_id == id))
+        .or_else(|| {
+            targets
+                .iter()
+                .position(|target| target.file_index == state.selected_file)
+        })
+        .unwrap_or(0);
+    let next = match dir {
+        Direction::Next => (current + 1) % targets.len(),
+        Direction::Prev => {
+            if current == 0 {
+                targets.len() - 1
+            } else {
+                current - 1
+            }
+        }
+    };
+    activate_unresolved_comment(state, view, targets[next].comment_id);
+}
+
+pub fn navigate_unresolved_comment_from_cursor(
+    state: &mut AppState,
+    view: &impl AppViewport,
+    dir: Direction,
+) {
+    let targets = unresolved_comment_targets(state);
+    if targets.is_empty() {
+        state.selected_comment_id = None;
+        state.mark_model_changed();
+        return;
+    }
+
+    let cursor_line = comments::current_head_line_for_navigation(state)
+        .map(i64::from)
+        .or_else(|| {
+            state
+                .selected_comment_id
+                .and_then(|id| targets.iter().find(|target| target.comment_id == id))
+                .map(|target| target.line_start)
+        })
+        .unwrap_or(0);
+
+    let target = match dir {
+        Direction::Next => targets
+            .iter()
+            .find(|target| {
+                target.file_index > state.selected_file
+                    || (target.file_index == state.selected_file && target.line_start > cursor_line)
+            })
+            .or_else(|| targets.first()),
+        Direction::Prev => targets
+            .iter()
+            .rev()
+            .find(|target| {
+                target.file_index < state.selected_file
+                    || (target.file_index == state.selected_file && target.line_start < cursor_line)
+            })
+            .or_else(|| targets.last()),
+    };
+
+    if let Some(target) = target {
+        activate_unresolved_comment(state, view, target.comment_id);
+    }
+}
+
+fn activate_unresolved_comment(state: &mut AppState, view: &impl AppViewport, comment_id: i64) {
+    state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
+    state.show_comments_panel = true;
+    state.pending_delete_comment_id = None;
+    comments::navigate_to_comment_id(state, view, comment_id);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UnresolvedCommentTarget {
+    file_index: usize,
+    comment_id: i64,
+    line_start: i64,
+}
+
+fn unresolved_comment_targets(state: &AppState) -> Vec<UnresolvedCommentTarget> {
+    let mut targets = Vec::new();
+    for (file_index, entry) in state.files.iter().enumerate() {
+        let mut comments: Vec<_> = state
+            .comments
+            .iter()
+            .filter(|comment| !comment.resolved && comment.file_path == entry.change.path)
+            .collect();
+        comments.sort_by_key(|comment| (comment.line_start, comment.line_end, comment.id));
+        targets.extend(comments.into_iter().map(|comment| UnresolvedCommentTarget {
+            file_index,
+            comment_id: comment.id,
+            line_start: comment.line_start,
+        }));
+    }
+    targets
+}
+
+pub fn navigate_file_section(state: &mut AppState, dir: Direction) {
+    let order = [
+        FileListSectionFocus::Unreviewed,
+        FileListSectionFocus::Reviewed,
+        FileListSectionFocus::UnresolvedComments,
+    ];
+    let current = order
+        .iter()
+        .position(|section| *section == state.file_list_section_focus)
+        .unwrap_or(0);
+
+    for offset in 1..=order.len() {
+        let index = match dir {
+            Direction::Next => (current + offset) % order.len(),
+            Direction::Prev => (current + order.len() - offset) % order.len(),
+        };
+        let section = order[index];
+        let Some(file_index) = first_file_in_section(state, section) else {
+            continue;
+        };
+        state.select_file(file_index, section, true);
+        if section == FileListSectionFocus::UnresolvedComments {
+            state.selected_comment_id = first_unresolved_comment_for_file(state, file_index);
+        } else {
+            state.selected_comment_id = None;
+            state.pending_delete_comment_id = None;
+        }
+        state.mark_model_changed();
+        return;
+    }
+}
+
+fn first_file_in_section(state: &AppState, section: FileListSectionFocus) -> Option<usize> {
+    match section {
+        FileListSectionFocus::Unreviewed => (state.unreviewed_count() > 0).then_some(0),
+        FileListSectionFocus::Reviewed => {
+            let start = state.unreviewed_count();
+            (start < state.files.len()).then_some(start)
+        }
+        FileListSectionFocus::UnresolvedComments => state
+            .files
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| {
+                state
+                    .comments
+                    .iter()
+                    .any(|comment| !comment.resolved && comment.file_path == entry.change.path)
+            })
+            .map(|(index, _)| index),
+    }
+}
+
+fn first_unresolved_comment_for_file(state: &AppState, file_index: usize) -> Option<i64> {
+    let path = &state.files.get(file_index)?.change.path;
+    state
+        .comments
+        .iter()
+        .filter(|comment| !comment.resolved && comment.file_path == *path)
+        .min_by_key(|comment| (comment.line_start, comment.line_end, comment.id))
+        .map(|comment| comment.id)
 }
 
 pub fn toggle_review(state: &AppState, update: &mut AppOutput) {

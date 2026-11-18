@@ -383,12 +383,14 @@ impl Client {
         &self,
         file_path: Option<&str>,
         include_resolved: bool,
+        include_previous_bases: bool,
     ) -> Result<review_types::ListCommentsResult> {
         self.call(
             "list_comments",
             serde_json::json!({
                 "file_path": file_path,
                 "include_resolved": include_resolved,
+                "include_previous_bases": include_previous_bases,
             }),
         )
         .await

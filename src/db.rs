@@ -511,65 +511,34 @@ impl Database {
         Ok(())
     }
 
-    /// List comments for a `(merge_base, head_ref)` pair.
+    /// List comments for a head scope, either in the current merge base or
+    /// carry-over comments from previous merge bases.
     pub fn list_comments(
         &self,
         merge_base: &str,
         head_ref: &str,
         file_path: Option<&str>,
         include_resolved: bool,
+        include_previous_bases: bool,
     ) -> Result<Vec<StoredComment>> {
-        let (sql, param_values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
-            match (file_path, include_resolved) {
-                (None, true) => (
-                    format!(
-                        "{COMMENT_SELECT}
-                         WHERE c.merge_base = ?1 AND c.head_ref = ?2
-                         ORDER BY c.file_path, a.line_start"
-                    ),
-                    vec![
-                        Box::new(merge_base.to_string()),
-                        Box::new(head_ref.to_string()),
-                    ],
-                ),
-                (None, false) => (
-                    format!(
-                        "{COMMENT_SELECT}
-                         WHERE c.merge_base = ?1 AND c.head_ref = ?2
-                           AND NOT {COMMENT_RESOLVED_EXPR}
-                         ORDER BY c.file_path, a.line_start"
-                    ),
-                    vec![
-                        Box::new(merge_base.to_string()),
-                        Box::new(head_ref.to_string()),
-                    ],
-                ),
-                (Some(fp), true) => (
-                    format!(
-                        "{COMMENT_SELECT}
-                         WHERE c.merge_base = ?1 AND c.head_ref = ?2 AND c.file_path = ?3
-                         ORDER BY a.line_start"
-                    ),
-                    vec![
-                        Box::new(merge_base.to_string()),
-                        Box::new(head_ref.to_string()),
-                        Box::new(fp.to_string()),
-                    ],
-                ),
-                (Some(fp), false) => (
-                    format!(
-                        "{COMMENT_SELECT}
-                         WHERE c.merge_base = ?1 AND c.head_ref = ?2 AND c.file_path = ?3
-                           AND NOT {COMMENT_RESOLVED_EXPR}
-                         ORDER BY a.line_start"
-                    ),
-                    vec![
-                        Box::new(merge_base.to_string()),
-                        Box::new(head_ref.to_string()),
-                        Box::new(fp.to_string()),
-                    ],
-                ),
-            };
+        let base_clause = if include_previous_bases {
+            "c.merge_base != ?1"
+        } else {
+            "c.merge_base = ?1"
+        };
+        let mut sql = format!("{COMMENT_SELECT} WHERE {base_clause} AND c.head_ref = ?2");
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+            Box::new(merge_base.to_string()),
+            Box::new(head_ref.to_string()),
+        ];
+        if let Some(fp) = file_path {
+            sql.push_str(" AND c.file_path = ?3");
+            param_values.push(Box::new(fp.to_string()));
+        }
+        if !include_resolved {
+            sql.push_str(&format!(" AND NOT {COMMENT_RESOLVED_EXPR}"));
+        }
+        sql.push_str(" ORDER BY c.file_path, a.line_start");
 
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|b| b.as_ref()).collect();
@@ -1163,25 +1132,53 @@ mod tests {
         db.resolve_comment(&resolution_event(&c3)).unwrap();
 
         // All unresolved
-        let comments = db.list_comments("main", "feat", None, false).unwrap();
+        let comments = db
+            .list_comments("main", "feat", None, false, false)
+            .unwrap();
         assert_eq!(comments.len(), 2);
 
         // All including resolved
-        let comments = db.list_comments("main", "feat", None, true).unwrap();
+        let comments = db.list_comments("main", "feat", None, true, false).unwrap();
         assert_eq!(comments.len(), 3);
 
         // Filtered by file, unresolved only
         let comments = db
-            .list_comments("main", "feat", Some("a.rs"), false)
+            .list_comments("main", "feat", Some("a.rs"), false, false)
             .unwrap();
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].body, "comment 1");
 
         // Filtered by file, including resolved
         let comments = db
-            .list_comments("main", "feat", Some("a.rs"), true)
+            .list_comments("main", "feat", Some("a.rs"), true, false)
             .unwrap();
         assert_eq!(comments.len(), 2);
+    }
+
+    #[test]
+    fn test_list_comments_can_load_previous_base_unresolved_comments() {
+        let (_dir, db) = test_db();
+
+        db.create_comment(&simple_comment("a.rs", 1, "x", "current base"))
+            .unwrap();
+
+        let mut old_unresolved = simple_comment("a.rs", 2, "y", "old unresolved");
+        old_unresolved.merge_base = "old-main".to_string();
+        db.create_comment(&old_unresolved).unwrap();
+
+        let mut old_resolved = simple_comment("a.rs", 3, "z", "old resolved");
+        old_resolved.merge_base = "older-main".to_string();
+        let old_resolved = db.create_comment(&old_resolved).unwrap();
+        db.resolve_comment(&resolution_event(&old_resolved))
+            .unwrap();
+
+        let exact = db.list_comments("main", "feat", None, true, false).unwrap();
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].body, "current base");
+
+        let carry_over = db.list_comments("main", "feat", None, false, true).unwrap();
+        assert_eq!(carry_over.len(), 1);
+        assert_eq!(carry_over[0].body, "old unresolved");
     }
 
     #[test]

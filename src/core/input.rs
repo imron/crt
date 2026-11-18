@@ -102,6 +102,7 @@ pub struct PointerSemanticHit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppTarget {
     File { index: usize },
+    Comment { id: i64 },
     DiffText { anchor: TextAnchor },
     Pane { pane_id: PaneId },
 }

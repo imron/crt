@@ -3,7 +3,7 @@
 pub mod model;
 mod update;
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 
 use self::model::AppModel;
@@ -18,8 +18,8 @@ use crate::core::search as core_search;
 use crate::core::{ConnectionState, InputEvent};
 use crate::protocol::NotificationKind;
 use crate::review_types::{
-    ConnectionContext, ContentMode, CreateCommentParams, DefinitionLocation, FileEntry, PaneFocus,
-    RenderVariant, ReviewActionResult, ReviewStatus, SearchMatch,
+    Comment, ConnectionContext, ContentMode, CreateCommentParams, DefinitionLocation, FileEntry,
+    ListCommentsResult, PaneFocus, RenderVariant, ReviewActionResult, ReviewStatus, SearchMatch,
 };
 use anyhow::{Context, Result};
 
@@ -59,6 +59,24 @@ pub struct ResetReviewSummary {
 pub enum ReviewStartup {
     Review(App),
     Reset(ResetReviewSummary),
+}
+
+async fn list_current_and_previous_unresolved_comments(
+    client: &Client,
+) -> Result<ListCommentsResult> {
+    let mut result = client.list_comments(None, true, false).await?;
+    let previous_unresolved = client.list_comments(None, false, true).await?;
+    append_unique_comments(&mut result.comments, previous_unresolved.comments);
+    Ok(result)
+}
+
+fn append_unique_comments(comments: &mut Vec<Comment>, new_comments: Vec<Comment>) {
+    let mut seen: BTreeSet<i64> = comments.iter().map(|comment| comment.id).collect();
+    for comment in new_comments {
+        if seen.insert(comment.id) {
+            comments.push(comment);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +136,22 @@ pub struct CommentAnchorCapture {
     pub anchor_text: String,
     pub context_before: String,
     pub context_after: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileListSectionFocus {
+    Unreviewed,
+    Reviewed,
+    UnresolvedComments,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SavedFilePosition {
+    pub diff_scroll: usize,
+    pub diff_line_cursor: usize,
+    pub diff_col_cursor: usize,
+    pub content_mode: ContentMode,
+    pub render_variant: RenderVariant,
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +215,7 @@ impl App {
                 Vec::new()
             }
         };
-        let comments = match client.list_comments(None, true).await {
+        let comments = match list_current_and_previous_unresolved_comments(&client).await {
             Ok(result) => result.comments,
             Err(e) => {
                 eprintln!("Warning: could not load comments: {e}");
@@ -267,7 +301,7 @@ impl App {
     }
 
     pub async fn list_comments(&self) -> Result<crate::review_types::ListCommentsResult> {
-        self.client()?.list_comments(None, true).await
+        list_current_and_previous_unresolved_comments(self.client()?).await
     }
 
     async fn drain_notifications(&self) -> Result<Vec<Notification>> {
@@ -541,6 +575,7 @@ impl App {
         review::sort_files(&mut self.state.files);
         self.state.selected_file =
             review::restore_selection_by_path(&self.state.files, selected_path.as_deref());
+        self.state.file_list_section_focus = self.state.focus_for_file(self.state.selected_file);
 
         let restored_same_file = selected_path.as_deref().is_some_and(|path| {
             self.state
@@ -566,9 +601,12 @@ impl App {
     }
 
     fn apply_review_result(&mut self, result: &ReviewActionResult) {
+        self.state.save_selected_file_position();
         self.state.selected_file =
             review::apply_review_result(&mut self.state.files, self.state.selected_file, result);
+        self.state.file_list_section_focus = self.state.focus_for_file(self.state.selected_file);
         self.state.on_file_changed();
+        self.state.restore_selected_file_position();
     }
 
     async fn run_command(&mut self, command: Command) -> Option<StatusUpdate> {
@@ -796,8 +834,8 @@ impl App {
                 file_index,
                 line_number,
             } => {
-                self.state.selected_file = file_index;
-                self.state.on_file_changed();
+                let focus = self.state.focus_for_file(file_index);
+                self.state.select_file(file_index, focus, false);
                 self.state.diff_line_cursor = (line_number as usize).saturating_sub(1);
                 Some(StatusUpdate::Clear)
             }
@@ -910,6 +948,10 @@ pub struct AppState {
     pub base_content: Option<String>,
     /// Vertical scroll offset in the file list (in display rows).
     pub file_list_scroll: usize,
+    /// File-list section currently targeted by section navigation.
+    pub file_list_section_focus: FileListSectionFocus,
+    /// Last visited diff location for each file path.
+    pub saved_file_positions: HashMap<String, SavedFilePosition>,
     /// Current diff algorithm.
     pub diff_algorithm: crate::config::DiffAlgorithm,
     /// The default diff algorithm (from git config or fallback). Used to
@@ -982,6 +1024,8 @@ impl AppState {
             head_content: None,
             base_content: None,
             file_list_scroll: 0,
+            file_list_section_focus: FileListSectionFocus::Unreviewed,
+            saved_file_positions: HashMap::new(),
             diff_algorithm,
             default_diff_algorithm: diff_algorithm,
             ignore_whitespace: false,
@@ -1038,6 +1082,80 @@ impl AppState {
     /// Since files are sorted unreviewed-first, these are files[0..count].
     pub fn unreviewed_count(&self) -> usize {
         review::unreviewed_count(&self.files)
+    }
+
+    pub fn focus_for_file(&self, file_index: usize) -> FileListSectionFocus {
+        if file_index < self.unreviewed_count() {
+            FileListSectionFocus::Unreviewed
+        } else {
+            FileListSectionFocus::Reviewed
+        }
+    }
+
+    pub fn save_selected_file_position(&mut self) {
+        let Some(path) = self
+            .selected_file_entry()
+            .map(|entry| entry.change.path.clone())
+        else {
+            return;
+        };
+        self.saved_file_positions.insert(
+            path,
+            SavedFilePosition {
+                diff_scroll: self.diff_scroll,
+                diff_line_cursor: self.diff_line_cursor,
+                diff_col_cursor: self.diff_col_cursor,
+                content_mode: self.content_mode,
+                render_variant: self.render_variant,
+            },
+        );
+    }
+
+    pub fn restore_selected_file_position(&mut self) {
+        let Some(position) = self
+            .selected_file_entry()
+            .and_then(|entry| self.saved_file_positions.get(&entry.change.path))
+            .copied()
+        else {
+            return;
+        };
+
+        self.content_mode = position.content_mode;
+        self.render_variant = position.render_variant;
+        if self.content_mode == ContentMode::FullFile
+            && self.render_variant == RenderVariant::BaseVersion
+        {
+            self.load_base_content_raw();
+        }
+        self.diff_scroll = position.diff_scroll;
+        self.diff_line_cursor = position.diff_line_cursor;
+        self.diff_col_cursor = position.diff_col_cursor;
+        self.mark_model_changed();
+    }
+
+    pub fn select_file(
+        &mut self,
+        file_index: usize,
+        section_focus: FileListSectionFocus,
+        restore_position: bool,
+    ) -> bool {
+        if self.files.get(file_index).is_none() {
+            return false;
+        }
+        if file_index == self.selected_file {
+            self.file_list_section_focus = section_focus;
+            self.mark_model_changed();
+            return true;
+        }
+
+        self.save_selected_file_position();
+        self.selected_file = file_index;
+        self.file_list_section_focus = section_focus;
+        self.on_file_changed();
+        if restore_position {
+            self.restore_selected_file_position();
+        }
+        true
     }
 
     /// Load content for the currently selected file from the working tree.
@@ -1214,9 +1332,10 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::navigation::Direction;
     use crate::core::{
         CommentEffect, CommentsPanelEffect, CoreEffect, DefinitionResultsEffect, DiffCursorEffect,
-        PaneId, SearchResultsEffect, VisualSelectionEffect,
+        PaneEffect, PaneId, SearchResultsEffect, VisualSelectionEffect,
     };
     use crate::protocol::NotificationKind;
     use crate::review_types::{
@@ -1595,6 +1714,197 @@ mod tests {
         assert_eq!(app.state.diff_scroll, 5);
         assert_eq!(app.state.content_mode, ContentMode::FullFile);
         assert_eq!(app.state.render_variant, RenderVariant::HeadVersion);
+    }
+
+    #[test]
+    fn file_navigation_restores_last_position_per_file() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("a.rs"), test_file("b.rs")],
+        );
+        app.state.diff_line_cursor = 42;
+        app.state.diff_col_cursor = 3;
+        app.state.diff_scroll = 40;
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::NavigateFile(Direction::Next)],
+        );
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "b.rs");
+
+        app.state.diff_line_cursor = 7;
+        app.state.diff_col_cursor = 2;
+        app.state.diff_scroll = 5;
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::NavigateFile(Direction::Prev)],
+        );
+
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "a.rs");
+        assert_eq!(app.state.diff_line_cursor, 42);
+        assert_eq!(app.state.diff_col_cursor, 3);
+        assert_eq!(app.state.diff_scroll, 40);
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::NavigateFile(Direction::Next)],
+        );
+
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "b.rs");
+        assert_eq!(app.state.diff_line_cursor, 7);
+        assert_eq!(app.state.diff_col_cursor, 2);
+        assert_eq!(app.state.diff_scroll, 5);
+    }
+
+    #[test]
+    fn section_navigation_cycles_to_unresolved_comments() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("a.rs"), test_file_with_status("b.rs", reviewed())],
+        );
+        app.state.comments = vec![stored_comment(9, "b.rs")];
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::NavigateFileSection(Direction::Next)],
+        );
+
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "b.rs");
+        assert_eq!(
+            app.state.file_list_section_focus,
+            FileListSectionFocus::Reviewed
+        );
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::NavigateFileSection(Direction::Next)],
+        );
+
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "b.rs");
+        assert_eq!(
+            app.state.file_list_section_focus,
+            FileListSectionFocus::UnresolvedComments
+        );
+        assert_eq!(app.state.selected_comment_id, Some(9));
+    }
+
+    #[test]
+    fn unresolved_comment_section_navigation_scans_comment_rows() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("a.rs"), test_file("b.rs")],
+        );
+        let mut first = stored_comment(3, "a.rs");
+        first.line_start = 2;
+        first.line_end = 2;
+        let mut second = stored_comment(5, "b.rs");
+        second.line_start = 6;
+        second.line_end = 6;
+        app.state.comments = vec![first, second];
+        app.state.pane_focus = PaneFocus::FileList;
+        app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
+        app.state.selected_comment_id = Some(3);
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::HeadVersion;
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 12]),
+            vec![CoreEffect::NavigateFile(Direction::Next)],
+        );
+
+        assert_eq!(app.state.selected_comment_id, Some(5));
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "b.rs");
+        assert_eq!(app.state.pane_focus, PaneFocus::Diff);
+        assert!(app.state.show_comments_panel);
+        assert_eq!(app.state.diff_line_cursor, 5);
+        assert_eq!(
+            app.state.file_list_section_focus,
+            FileListSectionFocus::UnresolvedComments
+        );
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 12]),
+            vec![CoreEffect::NavigateFile(Direction::Prev)],
+        );
+
+        assert_eq!(app.state.selected_comment_id, Some(3));
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "a.rs");
+        assert_eq!(app.state.diff_line_cursor, 1);
+    }
+
+    #[test]
+    fn activating_unresolved_comment_row_jumps_to_comment_anchor() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("a.rs"), test_file("b.rs")],
+        );
+        let mut comment = stored_comment(9, "b.rs");
+        comment.line_start = 4;
+        comment.line_end = 4;
+        app.state.comments = vec![comment];
+        app.state.selected_file = 1;
+        app.state.pane_focus = PaneFocus::FileList;
+        app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
+        app.state.selected_comment_id = Some(9);
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::HeadVersion;
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 12]),
+            vec![CoreEffect::Pane(PaneEffect::ActivateFileListSelection)],
+        );
+
+        assert_eq!(app.state.pane_focus, PaneFocus::Diff);
+        assert_eq!(app.state.selected_comment_id, Some(9));
+        assert_eq!(app.state.diff_line_cursor, 3);
+        assert_eq!(
+            app.state.file_list_section_focus,
+            FileListSectionFocus::UnresolvedComments
+        );
+    }
+
+    #[test]
+    fn unresolved_comment_shortcut_advances_from_current_line_to_next_file() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("a.rs"), test_file("b.rs")],
+        );
+        let mut first = stored_comment(3, "a.rs");
+        first.line_start = 4;
+        first.line_end = 4;
+        let mut second = stored_comment(5, "b.rs");
+        second.line_start = 2;
+        second.line_end = 2;
+        app.state.comments = vec![first, second];
+        app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::HeadVersion;
+        app.state.diff_line_cursor = 4;
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 12]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "b.rs");
+        assert_eq!(app.state.selected_comment_id, Some(5));
+        assert_eq!(app.state.diff_line_cursor, 1);
+        assert_eq!(app.state.pane_focus, PaneFocus::Diff);
+        assert!(app.state.show_comments_panel);
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 12]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Prev)],
+        );
+
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "a.rs");
+        assert_eq!(app.state.selected_comment_id, Some(3));
+        assert_eq!(app.state.diff_line_cursor, 3);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use super::cursor::clamp_cursor_and_scroll;
 use super::output::AppOutput;
 use super::viewport::AppViewport;
-use crate::app::AppState;
+use crate::app::{AppState, FileListSectionFocus};
 use crate::core::CommentsPanelEffect;
 use crate::review_types::{Comment, ContentMode, LineKind, PaneFocus, RenderVariant};
 
@@ -99,6 +99,18 @@ fn navigate_to_selected(state: &mut AppState, view: &impl AppViewport) {
     navigate_to_comment(state, view, &comment);
 }
 
+pub fn navigate_to_comment_id(state: &mut AppState, view: &impl AppViewport, comment_id: i64) {
+    let Some(comment) = state
+        .comments
+        .iter()
+        .find(|comment| comment.id == comment_id)
+        .cloned()
+    else {
+        return;
+    };
+    navigate_to_comment(state, view, &comment);
+}
+
 fn navigate_adjacent_comment(state: &mut AppState, view: &impl AppViewport, direction: Direction) {
     if !state.show_comments_panel {
         state.show_comments_panel = true;
@@ -183,10 +195,12 @@ fn navigate_to_comment(state: &mut AppState, view: &impl AppViewport, comment: &
         .iter()
         .position(|entry| entry.change.path == comment.file_path)
     {
-        if file_index != state.selected_file {
-            state.selected_file = file_index;
-            state.on_file_changed();
-        }
+        let focus = if state.file_list_section_focus == FileListSectionFocus::UnresolvedComments {
+            FileListSectionFocus::UnresolvedComments
+        } else {
+            state.focus_for_file(file_index)
+        };
+        state.select_file(file_index, focus, false);
     }
     state.selected_comment_id = Some(comment.id);
     state.pane_focus = PaneFocus::Diff;
@@ -270,7 +284,7 @@ fn current_head_line(state: &AppState) -> Option<u32> {
     }
 }
 
-fn current_head_line_for_navigation(state: &AppState) -> Option<u32> {
+pub(super) fn current_head_line_for_navigation(state: &AppState) -> Option<u32> {
     current_head_line(state).or_else(|| match state.content_mode {
         ContentMode::Diff => diff_insertion_head_line_before_row(state, state.diff_line_cursor),
         ContentMode::FullFile => None,

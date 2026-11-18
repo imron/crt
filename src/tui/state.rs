@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use super::render::diff_view::DiffCache;
 use crate::app::model::AppModel;
-use crate::app::{AppOutput, AppState, AppViewport, StatusUpdate};
+use crate::app::{AppOutput, AppState, AppViewport, FileListSectionFocus, StatusUpdate};
 use crate::core::{AppTarget, ConnectionState, PaneId, PointerSemanticHit, PromptId, TextAnchor};
 use crate::review_types::PaneFocus;
 use ratatui::layout::Rect;
@@ -84,6 +84,8 @@ pub struct TuiState {
     pub file_list_rendered_text: Vec<String>,
     /// Mapping from rendered file-list rows to file indices.
     pub file_list_row_to_file: Vec<Option<usize>>,
+    /// Mapping from rendered file-list rows to unresolved comment ids.
+    pub file_list_row_to_comment: Vec<Option<i64>>,
     /// Screen area of the file list pane.
     pub file_list_area: Rect,
     /// Screen area of the diff pane.
@@ -152,6 +154,7 @@ impl Default for TuiState {
             diff_rendered_text: Vec::new(),
             file_list_rendered_text: Vec::new(),
             file_list_row_to_file: Vec::new(),
+            file_list_row_to_comment: Vec::new(),
             file_list_area: Rect::default(),
             diff_area: Rect::default(),
             comments_area: Rect::default(),
@@ -218,11 +221,22 @@ impl TuiState {
     }
 
     pub fn clamp_file_list_scroll(&self, state: &mut AppState) {
-        let Some(cursor_row) = self
-            .file_list_row_to_file
-            .iter()
-            .position(|file_idx| *file_idx == Some(state.selected_file))
-        else {
+        let cursor_row =
+            if state.file_list_section_focus == FileListSectionFocus::UnresolvedComments {
+                state.selected_comment_id.and_then(|comment_id| {
+                    self.file_list_row_to_comment
+                        .iter()
+                        .position(|row_comment_id| *row_comment_id == Some(comment_id))
+                })
+            } else {
+                None
+            }
+            .or_else(|| {
+                self.file_list_row_to_file
+                    .iter()
+                    .position(|file_idx| *file_idx == Some(state.selected_file))
+            });
+        let Some(cursor_row) = cursor_row else {
             return;
         };
         let inner_height = self.file_list_area.height.saturating_sub(2) as usize;
@@ -361,10 +375,16 @@ impl TuiState {
     fn pointer_target(&self, pane: PaneFocus, text_anchor: Option<TextAnchor>) -> AppTarget {
         match (pane, text_anchor) {
             (PaneFocus::FileList, Some(anchor)) => self
-                .file_list_row_to_file
+                .file_list_row_to_comment
                 .get(anchor.line)
-                .and_then(|file_idx| *file_idx)
-                .map(|index| AppTarget::File { index })
+                .and_then(|comment_id| *comment_id)
+                .map(|id| AppTarget::Comment { id })
+                .or_else(|| {
+                    self.file_list_row_to_file
+                        .get(anchor.line)
+                        .and_then(|file_idx| *file_idx)
+                        .map(|index| AppTarget::File { index })
+                })
                 .unwrap_or(AppTarget::Pane {
                     pane_id: PaneId::FileList,
                 }),
@@ -389,11 +409,14 @@ impl TuiState {
     ) -> Option<String> {
         let anchor = text_anchor?;
         match pane {
-            PaneFocus::FileList => match self.file_list_row_to_file.get(anchor.line) {
-                Some(Some(file_idx)) => {
-                    model_file_path(model, *file_idx).map(|path| format!("file:{path}"))
-                }
-                _ => Some(format!("file-list-row:{}", anchor.line)),
+            PaneFocus::FileList => match self.file_list_row_to_comment.get(anchor.line) {
+                Some(Some(comment_id)) => Some(format!("comment:{comment_id}")),
+                _ => match self.file_list_row_to_file.get(anchor.line) {
+                    Some(Some(file_idx)) => {
+                        model_file_path(model, *file_idx).map(|path| format!("file:{path}"))
+                    }
+                    _ => Some(format!("file-list-row:{}", anchor.line)),
+                },
             },
             PaneFocus::Diff => Some(format!("diff-line:{}", anchor.line)),
             PaneFocus::Comments => Some(format!("comment-row:{}", anchor.line)),

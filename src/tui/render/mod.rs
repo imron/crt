@@ -234,10 +234,25 @@ fn draw_status_bar(
         .file_list
         .sections
         .iter()
+        .filter(|section| {
+            section.kind != crate::app::model::FileListSectionKind::UnresolvedComments
+        })
         .flat_map(|section| &section.rows)
-        .filter(|row| matches!(row.review_status, ReviewStatus::Reviewed { .. }))
+        .filter(|row| {
+            row.kind == crate::app::model::FileListRowKind::File
+                && matches!(row.review_status, ReviewStatus::Reviewed { .. })
+        })
         .count();
-    let total = model.file_list_row_count();
+    let total = model
+        .file_list
+        .sections
+        .iter()
+        .filter(|section| {
+            section.kind != crate::app::model::FileListSectionKind::UnresolvedComments
+        })
+        .flat_map(|section| &section.rows)
+        .filter(|row| row.kind == crate::app::model::FileListRowKind::File)
+        .count();
 
     let left = format!(
         " {} \u{2192} {} \u{2192} {} | {reviewed_count}/{total} reviewed",

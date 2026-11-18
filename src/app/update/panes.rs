@@ -1,10 +1,18 @@
-use crate::app::AppState;
+use super::comments;
+use super::viewport::AppViewport;
+use crate::app::{AppState, FileListSectionFocus};
 use crate::core::{PaneEffect, PaneId};
 use crate::review_types::{PaneFocus, ReviewStatus};
 
-pub fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
+pub fn apply_pane_effect(state: &mut AppState, view: &impl AppViewport, effect: PaneEffect) {
     match effect {
         PaneEffect::ActivateFileListSelection => {
+            if state.file_list_section_focus == FileListSectionFocus::UnresolvedComments {
+                if let Some(comment_id) = state.selected_comment_id {
+                    comments::navigate_to_comment_id(state, view, comment_id);
+                    return;
+                }
+            }
             if state.show_diff_pane {
                 state.pane_focus = PaneFocus::Diff;
                 state.mark_model_changed();
@@ -23,11 +31,13 @@ pub fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
         }
         PaneEffect::SelectFile { file_index } => {
             if state.files.get(file_index).is_some() {
-                if file_index != state.selected_file {
-                    state.selected_file = file_index;
-                    state.on_file_changed();
-                }
+                let focus = state.focus_for_file(file_index);
+                state.select_file(file_index, focus, true);
             }
+        }
+        PaneEffect::SelectComment { comment_id } => {
+            state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
+            comments::navigate_to_comment_id(state, view, comment_id);
         }
     }
 }
