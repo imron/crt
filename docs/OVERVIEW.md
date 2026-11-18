@@ -680,9 +680,11 @@ choose the session for scoped tools.
 | `list_review_sessions`  | Active review sessions from connected clients. |
 | `select_review_session` | Select a session for the scoped tools.         |
 | `list_changed_files`    | Changed files, with review and diff metadata.  |
+| `list_file_statuses`    | Compact review status, without diff hunks.     |
 | `get_file_diff`         | Diff content for one file (base..HEAD).        |
 | `search_codebase`       | Regex search across the worktree or the diff.  |
 | `find_definition`       | Best-effort symbol definition lookup.          |
+| `create_review_comment` | Comment on a line range in the review scope.   |
 | `list_review_comments`  | Comments in scope, filtered by file/status.    |
 | `get_comment_detail`    | Full context for one review comment.           |
 | `resolve_comment`       | Mark a review comment resolved.                |
