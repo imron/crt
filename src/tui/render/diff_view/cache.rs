@@ -3,6 +3,7 @@ use std::hash::{Hash, Hasher};
 
 use ratatui::text::Line;
 
+use super::content::current_comment_line;
 use crate::app::model::CommentAttachment;
 use crate::review_types::{ContentMode, RenderVariant};
 
@@ -28,6 +29,7 @@ pub struct DiffCacheKey {
     head_blame_len: usize,
     base_blame_len: usize,
     comments: Vec<CommentAttachment>,
+    current_comment_line: Option<u32>,
     /// Stable hash of the diff content (from DiffContent::diff_hash).
     diff_hash: String,
 }
@@ -67,6 +69,73 @@ pub fn build_key(diff: &crate::app::model::DiffPanel, inner_w: usize) -> DiffCac
         head_blame_len: diff.head_blame.len(),
         base_blame_len: diff.base_blame.len(),
         comments: diff.comments.clone(),
+        current_comment_line: current_comment_line(diff),
         diff_hash: diff.diff_hash.clone().unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::model::{DiffPanel, ReviewStatus};
+    use crate::config::DiffAlgorithm;
+    use crate::core::TextAnchor;
+    use crate::review_types::AnchorStatus;
+
+    fn diff_panel(cursor_line: usize, render_variant: RenderVariant) -> DiffPanel {
+        DiffPanel {
+            selected_file_index: Some(0),
+            file_id: Some("file.rs".to_string()),
+            path: Some("file.rs".to_string()),
+            review_status: Some(ReviewStatus::Unreviewed),
+            content_mode: ContentMode::FullFile,
+            render_variant,
+            diff_algorithm: DiffAlgorithm::Myers,
+            default_diff_algorithm: DiffAlgorithm::Myers,
+            ignore_whitespace: false,
+            show_blame: false,
+            show_merge_base: true,
+            reviewed_diff_expanded: false,
+            is_binary: false,
+            diff_hash: Some("diff".to_string()),
+            hunks: vec![],
+            head_content: Some("one\ntwo\nthree\n".to_string()),
+            base_content: Some("one\ntwo\nthree\n".to_string()),
+            head_blame: vec![],
+            base_blame: vec![],
+            scroll: 0,
+            cursor: TextAnchor {
+                line: cursor_line,
+                column: 0,
+            },
+            search_query: None,
+            search_highlights: vec![],
+            current_search_highlight: None,
+            visual_selection: None,
+            pending_comment_anchor: None,
+            comments: vec![CommentAttachment {
+                id: 1,
+                line_start: 2,
+                line_end: 2,
+                resolved: false,
+                anchor_status: AnchorStatus::Anchored,
+            }],
+        }
+    }
+
+    #[test]
+    fn cache_key_changes_when_current_comment_line_changes() {
+        let before_comment = diff_panel(0, RenderVariant::HeadVersion);
+        let on_comment = diff_panel(1, RenderVariant::HeadVersion);
+
+        assert!(build_key(&before_comment, 80) != build_key(&on_comment, 80));
+    }
+
+    #[test]
+    fn cache_key_ignores_cursor_line_for_base_comment_markers() {
+        let first_line = diff_panel(0, RenderVariant::BaseVersion);
+        let second_line = diff_panel(1, RenderVariant::BaseVersion);
+
+        assert!(build_key(&first_line, 80) == build_key(&second_line, 80));
     }
 }
