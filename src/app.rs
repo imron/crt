@@ -30,7 +30,6 @@ pub use update::{AppOutput, StatusUpdate, ViewportMetrics};
 enum AppWork {
     ToggleSelectedReview,
     UndoLastAction,
-    ReloadFileSnapshot,
     /// Refresh review statuses / changed-file set without re-fetching full
     /// diffs for every file.
     RefreshReviewStatuses,
@@ -481,7 +480,6 @@ impl App {
             let work_status = match work {
                 AppWork::ToggleSelectedReview => self.toggle_selected_review().await,
                 AppWork::UndoLastAction => self.undo_last_action().await,
-                AppWork::ReloadFileSnapshot => self.reload_file_snapshot().await,
                 AppWork::RefreshReviewStatuses => self.refresh_review_statuses().await,
                 AppWork::RunCommand(command) => self.run_command(command).await,
                 AppWork::CreateComment { anchor, body } => {
