@@ -79,8 +79,8 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) {
     }
 
     // Render mouse selection highlight on top of everything.
-    if let Some(sel) = &state.mouse_selection {
-        draw_selection_highlight(frame, sel, &state.styles, state.diff_gutter_cols);
+    if state.mouse_selection.is_some() {
+        draw_selection_highlight(frame, state);
     }
 
     // Search results overlay.
@@ -103,13 +103,15 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) {
 // Selection highlight
 // ---------------------------------------------------------------------------
 
-fn draw_selection_highlight(
-    frame: &mut Frame,
-    sel: &crate::app::MouseSelection,
-    styles: &StyleConfig,
-    diff_gutter_cols: usize,
-) {
-    let area = sel.pane_area;
+fn draw_selection_highlight(frame: &mut Frame, state: &AppState) {
+    let Some(sel) = &state.mouse_selection else {
+        return;
+    };
+
+    let area = match sel.pane {
+        crate::model::PaneFocus::FileList => state.file_list_area,
+        crate::model::PaneFocus::Diff => state.diff_area,
+    };
     // Inner area excludes borders.
     let inner = Rect {
         x: area.x + 1,
@@ -118,36 +120,44 @@ fn draw_selection_highlight(
         height: area.height.saturating_sub(2),
     };
 
-    // In the diff pane, skip past the line-number gutters so the selection
-    // only covers the code content (prefix + text).
-    let content_left = if sel.pane == crate::model::PaneFocus::Diff && diff_gutter_cols > 0 {
-        inner.x + diff_gutter_cols as u16
-    } else {
-        inner.x
+    let (scroll, base_col) = match sel.pane {
+        crate::model::PaneFocus::FileList => (state.file_list_scroll, 0usize),
+        crate::model::PaneFocus::Diff => (state.diff_scroll, state.diff_content_start_col()),
     };
 
-    let (start_col, start_row, end_col, end_row) = sel.normalized();
+    let visible_start_line = scroll;
+    let visible_end_line = visible_start_line.saturating_add(inner.height as usize);
+    let (start, end) = sel.normalized();
+    if end.line < visible_start_line || start.line >= visible_end_line {
+        return;
+    }
 
     let highlight = Style::default()
-        .bg(*styles.selection.bg)
-        .fg(*styles.selection.fg);
+        .bg(*state.styles.selection.bg)
+        .fg(*state.styles.selection.fg);
 
     let buf = frame.buffer_mut();
-    for row in start_row..=end_row {
-        if row < inner.y || row >= inner.bottom() {
+    for line_idx in start.line..=end.line {
+        if line_idx < visible_start_line || line_idx >= visible_end_line {
             continue;
         }
+        let row = inner.y + line_idx.saturating_sub(scroll) as u16;
 
-        let col_start = if row == start_row {
-            start_col.max(content_left)
+        let col_start = if line_idx == start.line {
+            inner
+                .x
+                .saturating_add(saturating_u16(base_col.saturating_add(start.column)))
         } else {
-            content_left
+            inner.x.saturating_add(saturating_u16(base_col))
         };
-        let col_end = if row == end_row {
-            end_col.min(inner.right().saturating_sub(1))
+        let col_end = if line_idx == end.line {
+            inner
+                .x
+                .saturating_add(saturating_u16(base_col.saturating_add(end.column)))
         } else {
             inner.right().saturating_sub(1)
-        };
+        }
+        .min(inner.right().saturating_sub(1));
 
         if col_start > col_end {
             continue;
@@ -159,6 +169,10 @@ fn draw_selection_highlight(
             }
         }
     }
+}
+
+fn saturating_u16(value: usize) -> u16 {
+    u16::try_from(value).unwrap_or(u16::MAX)
 }
 
 // ---------------------------------------------------------------------------

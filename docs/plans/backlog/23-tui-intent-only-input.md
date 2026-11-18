@@ -107,6 +107,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   effects.
 - Routed file-list and diff-pane left-click activation through core input as
   semantic pane/cursor effects.
+- Migrated drag selection, double-click copy, and selection highlighting to
+  semantic text anchors instead of raw terminal content coordinates.
 
 ## Acceptance Criteria
 
