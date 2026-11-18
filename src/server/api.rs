@@ -260,7 +260,10 @@ pub async fn handle_list_changed_files(
     let worktree = ctx.worktree.clone();
     let merge_base = ctx.merge_base.to_string();
     let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
-    let algorithm = ctx.diff_algorithm;
+    // Review hashing always uses patience so list endpoints stay on the fast
+    // bulk git2 path. Display algorithm is applied client-side when loading a
+    // selected file.
+    let algorithm = crate::config::DiffAlgorithm::Patience;
 
     // Git operations are blocking — run on the blocking thread pool.
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
@@ -320,7 +323,8 @@ pub async fn handle_list_file_statuses(
     let worktree = ctx.worktree.clone();
     let merge_base = ctx.merge_base.to_string();
     let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
-    let algorithm = ctx.diff_algorithm;
+    // Keep review-status hashing on patience for bulk performance.
+    let algorithm = crate::config::DiffAlgorithm::Patience;
 
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let repo = git::Repo::open(&worktree)?;
@@ -611,11 +615,12 @@ pub async fn handle_mark_reviewed(
         }
     };
 
-    // Compute the current diff hash.
+    // Compute the current diff hash using the same patience algorithm as the
+    // list endpoints so reviewed/unreviewed comparisons stay consistent.
     let worktree = ctx.worktree.clone();
     let merge_base = ctx.merge_base.to_string();
     let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
-    let algorithm = ctx.diff_algorithm;
+    let algorithm = crate::config::DiffAlgorithm::Patience;
     let head_ref = ctx.head_scope_key();
     let file_path = p.file_path.clone();
 
