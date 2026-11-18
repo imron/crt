@@ -102,8 +102,11 @@ struct FileTreeItem: View {
                 }
             } icon: {
                 Image(systemName: "doc.fill")
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(.white, Color.secondary)
+                    .foregroundStyle(.white)
+                    .overlay {
+                        Image(systemName: "doc")
+                            .foregroundStyle(.black)
+                    }
             }
             .tag(file.path)
         }
