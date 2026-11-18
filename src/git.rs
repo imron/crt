@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 
 // ---------------------------------------------------------------------------
@@ -190,9 +190,7 @@ impl Repo {
 
         let mut changes = Vec::new();
 
-        for delta_idx in 0..diff.deltas().len() {
-            let delta = diff.get_delta(delta_idx).expect("delta index in range");
-
+        for delta in diff.deltas() {
             let kind = match delta.status() {
                 git2::Delta::Added => ChangeKind::Added,
                 git2::Delta::Deleted => ChangeKind::Deleted,
@@ -259,26 +257,23 @@ impl Repo {
         // The delta flags may not be set until the diff is examined, so we
         // check the blob content directly.
         let is_binary = diff.deltas().next().is_some_and(|d| {
-            d.new_file()
-                .id()
-                .is_zero()
-                .then_some(false)
-                .unwrap_or_else(|| {
-                    self.inner
-                        .find_blob(d.new_file().id())
-                        .map(|b| b.is_binary())
-                        .unwrap_or(false)
-                })
-                || d.old_file()
-                    .id()
-                    .is_zero()
-                    .then_some(false)
-                    .unwrap_or_else(|| {
-                        self.inner
-                            .find_blob(d.old_file().id())
-                            .map(|b| b.is_binary())
-                            .unwrap_or(false)
-                    })
+            let new_binary = if d.new_file().id().is_zero() {
+                false
+            } else {
+                self.inner
+                    .find_blob(d.new_file().id())
+                    .map(|b| b.is_binary())
+                    .unwrap_or(false)
+            };
+            let old_binary = if d.old_file().id().is_zero() {
+                false
+            } else {
+                self.inner
+                    .find_blob(d.old_file().id())
+                    .map(|b| b.is_binary())
+                    .unwrap_or(false)
+            };
+            new_binary || old_binary
         });
 
         if is_binary {
@@ -295,7 +290,7 @@ impl Repo {
 
         diff.print(git2::DiffFormat::Patch, |_delta, hunk, line| {
             // Feed everything to the hasher for a stable hash
-            hasher.update(&[line.origin() as u8]);
+            hasher.update([line.origin() as u8]);
             hasher.update(line.content());
 
             match line.origin() {
