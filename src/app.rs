@@ -1667,6 +1667,54 @@ mod tests {
         }
     }
 
+    fn test_file_with_deletion_to_later_head_context_hunk(path: &str) -> FileEntry {
+        let mut lines = vec![DiffLine {
+            kind: LineKind::Deletion,
+            content: "navigate_to_comment(state, view, &comment);".to_string(),
+            old_lineno: Some(154),
+            new_lineno: None,
+        }];
+        for line in 172..=175 {
+            lines.push(DiffLine {
+                kind: LineKind::Addition,
+                content: format!("head change {line}"),
+                old_lineno: None,
+                new_lineno: Some(line),
+            });
+        }
+        for offset in 0..13 {
+            let old_lineno = 155 + offset;
+            let new_lineno = 176 + offset;
+            lines.push(DiffLine {
+                kind: LineKind::Context,
+                content: format!("shared context {old_lineno}/{new_lineno}"),
+                old_lineno: Some(old_lineno),
+                new_lineno: Some(new_lineno),
+            });
+        }
+
+        FileEntry {
+            change: FileChange {
+                path: path.to_string(),
+                old_path: None,
+                kind: ChangeKind::Modified,
+            },
+            status: ReviewStatus::Unreviewed,
+            diff: DiffContent {
+                hunks: vec![DiffHunk {
+                    old_start: 154,
+                    old_lines: 14,
+                    new_start: 172,
+                    new_lines: 17,
+                    header: "@@ -154,14 +172,17 @@".to_string(),
+                    lines,
+                }],
+                is_binary: false,
+                diff_hash: format!("hash-{path}"),
+            },
+        }
+    }
+
     fn test_file_with_shared_tail_offset_hunk(path: &str) -> FileEntry {
         let mut lines = vec![
             DiffLine {
@@ -3341,6 +3389,83 @@ mod tests {
     }
 
     #[test]
+    fn inline_visual_selection_preserves_context_to_later_head_line() {
+        let path = "src/app/update/comments.rs";
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_deletion_to_later_head_context_hunk(path)],
+        );
+        app.state.base_content = Some(
+            (1..=167)
+                .map(|n| format!("base {n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.state.head_content = Some(
+            (1..=188)
+                .map(|n| format!("head {n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.state.content_mode = ContentMode::Diff;
+        app.state.render_variant = RenderVariant::Inline;
+        app.state.pane_focus = PaneFocus::Diff;
+        let model = app.model();
+        let start_row = model
+            .diff
+            .inline_rows
+            .rows
+            .iter()
+            .position(|row| row.old_lineno == Some(154))
+            .expect("base 154 should render");
+        let end_row = model
+            .diff
+            .inline_rows
+            .rows
+            .iter()
+            .position(|row| row.new_lineno == Some(188))
+            .expect("head 188 should render");
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartText {
+                    anchor: TextAnchor {
+                        line: start_row,
+                        column: 0,
+                    },
+                }),
+                CoreEffect::VisualSelection(VisualSelectionEffect::ExtendTo {
+                    anchor: TextAnchor {
+                        line: end_row,
+                        column: 0,
+                    },
+                }),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+            ],
+        );
+
+        let capture = app
+            .state
+            .pending_comment_anchor
+            .as_ref()
+            .expect("mixed inline selection should capture anchor data");
+        assert_eq!(capture.file_path, path);
+        assert_eq!(capture.segments.len(), 2);
+        let base = segment_for_side(capture, CommentAnchorSide::Base)
+            .expect("selection should capture a base segment");
+        let head = segment_for_side(capture, CommentAnchorSide::Head)
+            .expect("selection should capture a head segment");
+        assert_eq!(base.line_start, 154);
+        assert_eq!(base.line_end, 167);
+        assert_eq!(head.line_start, 172);
+        assert_eq!(head.line_end, 188);
+        assert_eq!(capture.line_start, 154);
+        assert_eq!(capture.line_end, 188);
+    }
+
+    #[test]
     fn visual_selection_across_hunks_captures_all_side_segments() {
         let mut app = App::new(
             Config::default(),
@@ -4205,6 +4330,55 @@ mod tests {
         let context = app.interaction_context();
 
         assert_eq!(context.current_comment.map(|comment| comment.id), Some(2));
+    }
+
+    #[test]
+    fn selected_overlapping_comment_wins_current_comment_lookup() {
+        let path = "src/app/update/comments.rs";
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_deletion_to_later_head_context_hunk(path)],
+        );
+        app.state.content_mode = ContentMode::Diff;
+        app.state.render_variant = RenderVariant::Inline;
+        app.state.head_content = Some(
+            (1..=188)
+                .map(|n| format!("head {n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let mut broad = stored_comment(33, path);
+        move_comment_to_base_head_ranges(&mut broad, 154, 167, 172, 188);
+        let mut nested = stored_comment(34, path);
+        move_comment_head_range(&mut nested, 172, 175);
+        app.state.comments = vec![broad, nested];
+        app.state.diff_line_cursor = app
+            .model()
+            .diff
+            .inline_rows
+            .rows
+            .iter()
+            .position(|row| row.new_lineno == Some(172))
+            .expect("head 172 should render");
+
+        app.state.selected_comment_id = None;
+        let default_context = app.interaction_context();
+        assert_eq!(
+            default_context.current_comment.map(|comment| comment.id),
+            Some(34)
+        );
+
+        app.state.selected_comment_id = Some(33);
+        let selected_context = app.interaction_context();
+        assert_eq!(
+            selected_context.current_comment.map(|comment| comment.id),
+            Some(33)
+        );
+
+        let model = app.model();
+        assert_eq!(model.comments_panel.comments.len(), 1);
+        assert_eq!(model.comments_panel.comments[0].id, 33);
     }
 
     #[test]

@@ -324,18 +324,13 @@ fn normalized_selected_lines(
         return selected.to_vec();
     }
 
+    if change_group_count(selected) <= 1 {
+        return selected.to_vec();
+    }
+
     let mut rows = Vec::new();
     for idx in start_row..=end_row {
         collect_change_row(selection_lines, idx, &mut rows);
-    }
-    if rows.is_empty() {
-        for idx in start_row..=end_row {
-            if let Some(line) = selection_lines.get(idx) {
-                if line.is_change {
-                    rows.push(line.clone());
-                }
-            }
-        }
     }
     rows.sort_by_key(|line| {
         line.entries
@@ -345,6 +340,22 @@ fn normalized_selected_lines(
     });
     rows.dedup();
     rows
+}
+
+fn change_group_count(lines: &[SourceLine]) -> usize {
+    let mut groups = 0usize;
+    let mut in_group = false;
+    for line in lines {
+        if line.is_change {
+            if !in_group {
+                groups = groups.saturating_add(1);
+                in_group = true;
+            }
+        } else {
+            in_group = false;
+        }
+    }
+    groups
 }
 
 fn side_sort_key(side: CommentAnchorSide) -> u8 {
