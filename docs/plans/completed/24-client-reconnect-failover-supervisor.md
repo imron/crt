@@ -7,7 +7,7 @@ for suitability. It contains an interrupted reconnect supervisor spike that may
 be useful as a reference, but it should be reviewed against the current
 architecture before reuse or discarded if stale.
 
-## Status: Backlog
+## Status: Completed
 
 ## Order
 
@@ -91,15 +91,33 @@ boundary, not the TUI runtime, owns client/service workflows.
 
 ## Acceptance Criteria
 
-- [ ] Clients recover from active server death without restart.
-- [ ] Exactly one recovering client wins bind in race scenarios.
-- [ ] Other clients reconnect to winner automatically.
-- [ ] Reconnect path performs snapshot resync before steady-state deltas resume.
-- [ ] UI shows transient reconnect status and returns to normal.
-- [ ] Connection-state notifications are exposed via core effects/events.
-- [ ] Prompt/interaction state is safe across disconnect/reconnect boundaries.
-- [ ] No regression in normal connected operation.
+- [x] Clients recover from active server death without restart.
+- [x] Exactly one recovering client wins bind in race scenarios.
+- [x] Other clients reconnect to winner automatically.
+- [x] Reconnect path performs snapshot resync before steady-state deltas resume.
+- [x] UI shows transient reconnect status and returns to normal.
+- [x] Connection-state notifications are exposed via core effects/events.
+- [x] Prompt/interaction state is safe across disconnect/reconnect boundaries.
+- [x] No regression in normal connected operation.
 
 ## Resolved Decisions
 
 - Retry jitter is configurable for tests and fixed by default in production.
+
+## Completed Notes
+
+- Added shared client reconnect supervision to `src/client.rs`, including
+  transport-loss classification, transient request failures while
+  disconnected, configurable jitter, reconnect attempts, embedded startup, and
+  bind-race retry behavior.
+- Moved connect-or-start ownership from `App` into the shared client so TUI and
+  future MCP/GUI callers use the same runtime recovery path.
+- Reconnect now re-runs the original `init` request before reporting
+  `Reconnected`.
+- `App` drains client connection events, shows `Reconnecting...` /
+  `Reconnected`, clears transient overlay/prompt state, and reloads a fresh
+  file snapshot after reconnect before returning to steady-state notification
+  handling.
+- TUI presentation state consumes semantic connection-state updates and clears
+  active prompt widgets so stale submissions cannot survive reconnect.
+- Added deterministic reconnect coverage in `tests/client_supervisor_test.rs`.

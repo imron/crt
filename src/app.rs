@@ -4,18 +4,17 @@ pub mod model;
 mod update;
 
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::path::PathBuf;
 
 use self::model::AppModel;
-use crate::client::{Client, Notification};
+use crate::client::{Client, ClientEvent, Notification};
 use crate::config::Config;
-use crate::core::InputEvent;
 use crate::core::command::Command;
 use crate::core::diff;
 use crate::core::interaction::{CoreEffect, CoreInteractionEngine, InteractionContext};
 use crate::core::review;
 use crate::core::search as core_search;
+use crate::core::{ConnectionState, InputEvent};
 use crate::protocol::NotificationKind;
 use crate::review_types::{
     ConnectionContext, ContentMode, DefinitionLocation, FileEntry, PaneFocus, RenderVariant,
@@ -24,9 +23,6 @@ use crate::review_types::{
 use anyhow::{Context, Result};
 
 pub use update::{AppOutput, AppViewport, StatusUpdate};
-
-/// How long to wait for an embedded server to become ready after startup.
-const EMBEDDED_SERVER_STARTUP_DELAY: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AppWork {
@@ -94,7 +90,6 @@ pub struct App {
     pub config: Config,
     client: Option<Client>,
     config_path: Option<PathBuf>,
-    embedded_server: Option<tokio_util::sync::CancellationToken>,
     pending_work: VecDeque<AppWork>,
 }
 
@@ -110,7 +105,6 @@ impl App {
             config,
             client: None,
             config_path: None,
-            embedded_server: None,
             pending_work: VecDeque::new(),
         }
     }
@@ -118,7 +112,7 @@ impl App {
     pub async fn start_review(base: &str, reset: bool, standalone: bool) -> Result<ReviewStartup> {
         let socket_path = default_socket_path()?;
         let cwd = std::env::current_dir().context("Failed to determine current directory")?;
-        let (embedded_server, client) = connect_or_start(&socket_path, standalone).await?;
+        let client = Client::connect_or_start(&socket_path, standalone).await?;
         let init = client.init(&cwd.to_string_lossy(), base).await?;
 
         if reset {
@@ -129,13 +123,10 @@ impl App {
                 cleared: result.cleared,
             };
             drop(client);
-            shutdown_embedded(embedded_server).await;
             return Ok(ReviewStartup::Reset(summary));
         }
 
-        let mut app = Self::load(client, init).await?;
-        app.embedded_server = embedded_server;
-        Ok(ReviewStartup::Review(app))
+        Ok(ReviewStartup::Review(Self::load(client, init).await?))
     }
 
     pub async fn load(client: Client, context: ConnectionContext) -> Result<Self> {
@@ -156,7 +147,7 @@ impl App {
     }
 
     pub async fn shutdown(mut self) {
-        shutdown_embedded(self.embedded_server.take()).await;
+        self.client.take();
     }
 
     fn config_path(&self) -> Option<&PathBuf> {
@@ -226,11 +217,31 @@ impl App {
         Ok(self.client()?.drain_notifications().await)
     }
 
+    async fn drain_client_events(&self) -> Result<Vec<ClientEvent>> {
+        Ok(self.client()?.drain_events().await)
+    }
+
+    async fn recover_client_if_disconnected(&self) -> Result<Option<ConnectionState>> {
+        self.client()?.recover_if_disconnected().await
+    }
+
     pub async fn process_background_work(&mut self) -> Option<StatusUpdate> {
         let mut status = self.process_pending_work().await;
 
+        if let Some(connection_status) = self.process_connection_events().await {
+            status = Some(connection_status);
+        }
+
+        if let Some(reconnect_status) = self.process_reconnect().await {
+            status = Some(reconnect_status);
+        }
+
         if let Some(notification_status) = self.process_notifications().await {
             status = Some(notification_status);
+        }
+
+        if let Some(connection_status) = self.process_connection_events().await {
+            status = Some(connection_status);
         }
 
         if let Some(work_status) = self.process_pending_work().await {
@@ -238,6 +249,52 @@ impl App {
         }
 
         status
+    }
+
+    async fn process_connection_events(&mut self) -> Option<StatusUpdate> {
+        let events = match self.drain_client_events().await {
+            Ok(events) => events,
+            Err(e) => return Some(StatusUpdate::Set(format!("Connection event error: {e}"))),
+        };
+
+        let mut status = None;
+        for event in events {
+            match event {
+                ClientEvent::ConnectionState(ConnectionState::Reconnecting) => {
+                    self.state.clear_transient_interaction_state();
+                    status = Some(StatusUpdate::ConnectionState(ConnectionState::Reconnecting));
+                }
+                ClientEvent::ConnectionState(ConnectionState::Reconnected) => {
+                    self.state.clear_transient_interaction_state();
+                    if let Some(reload_status) = self.reload_file_snapshot().await {
+                        status = Some(reload_status);
+                    } else {
+                        status = Some(StatusUpdate::ConnectionState(ConnectionState::Reconnected));
+                    }
+                }
+                ClientEvent::ConnectionState(ConnectionState::Connected) => {}
+                ClientEvent::ConnectionState(ConnectionState::Disconnected) => {
+                    self.state.clear_transient_interaction_state();
+                    status = Some(StatusUpdate::ConnectionState(ConnectionState::Disconnected));
+                }
+            }
+        }
+
+        status
+    }
+
+    async fn process_reconnect(&mut self) -> Option<StatusUpdate> {
+        match self.recover_client_if_disconnected().await {
+            Ok(Some(ConnectionState::Reconnected)) => None,
+            Ok(Some(ConnectionState::Reconnecting)) => {
+                Some(StatusUpdate::ConnectionState(ConnectionState::Reconnecting))
+            }
+            Ok(Some(ConnectionState::Disconnected)) => {
+                Some(StatusUpdate::ConnectionState(ConnectionState::Disconnected))
+            }
+            Ok(Some(ConnectionState::Connected)) | Ok(None) => None,
+            Err(e) => Some(StatusUpdate::Set(format!("Reconnect error: {e}"))),
+        }
     }
 
     async fn process_pending_work(&mut self) -> Option<StatusUpdate> {
@@ -518,9 +575,7 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        if let Some(token) = self.embedded_server.take() {
-            token.cancel();
-        }
+        self.client.take();
     }
 }
 
@@ -533,46 +588,6 @@ pub fn default_socket_path() -> Result<PathBuf> {
             .with_context(|| format!("Failed to create {}", crt_dir.display()))?;
     }
     Ok(crt_dir.join("server.sock"))
-}
-
-/// Connect to a running server, or start an embedded one.
-///
-/// Returns a cancellation token when this app started an embedded server. The
-/// app owns that token for the lifetime of the review session.
-async fn connect_or_start(
-    socket_path: &Path,
-    standalone: bool,
-) -> Result<(Option<tokio_util::sync::CancellationToken>, Client)> {
-    if standalone {
-        let dir = std::env::temp_dir().join(format!("crt-{}", std::process::id()));
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("Failed to create temp dir {}", dir.display()))?;
-        let standalone_socket = dir.join("server.sock");
-        let cancel = crate::server::start_embedded(&standalone_socket).await?;
-        tokio::time::sleep(EMBEDDED_SERVER_STARTUP_DELAY).await;
-        let client = Client::connect(&standalone_socket).await?;
-        return Ok((Some(cancel), client));
-    }
-
-    match Client::connect(socket_path).await {
-        Ok(c) => Ok((None, c)),
-        Err(_) => {
-            let cancel = crate::server::start_embedded(socket_path).await?;
-            tokio::time::sleep(EMBEDDED_SERVER_STARTUP_DELAY).await;
-            let client = Client::connect(socket_path)
-                .await
-                .context("Failed to connect to embedded server")?;
-            Ok((Some(cancel), client))
-        }
-    }
-}
-
-/// Cancel an embedded server and wait briefly for cleanup.
-async fn shutdown_embedded(cancel: Option<tokio_util::sync::CancellationToken>) {
-    if let Some(token) = cancel {
-        token.cancel();
-        tokio::time::sleep(EMBEDDED_SERVER_STARTUP_DELAY).await;
-    }
 }
 
 fn notification_requires_snapshot_reload(notifications: &[Notification]) -> bool {
@@ -895,6 +910,15 @@ impl AppState {
             self.diff_search_matches.clear();
             self.diff_search_current = 0;
         }
+    }
+
+    pub fn clear_transient_interaction_state(&mut self) {
+        self.search_results = None;
+        self.definition_results = None;
+        self.diff_search_matches.clear();
+        self.diff_search_current = 0;
+        self.core_interaction.reset_prompt_state();
+        self.mark_model_changed();
     }
 }
 

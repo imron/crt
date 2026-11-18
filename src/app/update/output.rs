@@ -1,3 +1,4 @@
+use crate::core::ConnectionState;
 use crate::core::command::Command;
 
 #[derive(Debug, Default)]
@@ -16,6 +17,7 @@ pub struct AppOutput {
 pub enum StatusUpdate {
     Set(String),
     Clear,
+    ConnectionState(ConnectionState),
 }
 
 impl AppOutput {

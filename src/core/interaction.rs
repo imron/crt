@@ -156,6 +156,10 @@ impl CoreInteractionEngine {
         Self::default()
     }
 
+    pub fn reset_prompt_state(&mut self) {
+        self.active_prompt = None;
+    }
+
     /// Single core input entrypoint for UI adapters.
     pub fn handle_input(&mut self, event: InputEvent, context: &InteractionContext) -> CoreEffects {
         if let InputEvent::Mouse(mouse) = &event {

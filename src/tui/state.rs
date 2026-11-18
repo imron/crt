@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use super::render::diff_view::DiffCache;
 use crate::app::model::AppModel;
 use crate::app::{AppOutput, AppState, AppViewport, StatusUpdate};
-use crate::core::{AppTarget, PaneId, PointerSemanticHit, PromptId, TextAnchor};
+use crate::core::{AppTarget, ConnectionState, PaneId, PointerSemanticHit, PromptId, TextAnchor};
 use crate::review_types::PaneFocus;
 use ratatui::layout::Rect;
 
@@ -361,7 +361,28 @@ impl TuiState {
             Some(StatusUpdate::Clear) => {
                 self.clear_status_message();
             }
+            Some(StatusUpdate::ConnectionState(state)) => {
+                self.apply_connection_state(state);
+            }
             None => {}
+        }
+    }
+
+    fn apply_connection_state(&mut self, state: ConnectionState) {
+        match state {
+            ConnectionState::Connected => {}
+            ConnectionState::Reconnecting => {
+                self.clear_prompt();
+                self.set_status_message("Reconnecting...");
+            }
+            ConnectionState::Reconnected => {
+                self.clear_prompt();
+                self.set_status_message("Reconnected");
+            }
+            ConnectionState::Disconnected => {
+                self.clear_prompt();
+                self.set_status_message("Disconnected");
+            }
         }
     }
 
@@ -515,6 +536,21 @@ mod tests {
         state.apply_status_update(Some(StatusUpdate::Clear));
 
         assert!(!state.has_status_message());
+    }
+
+    #[test]
+    fn connection_state_updates_clear_active_prompt() {
+        let mut state = TuiState::default();
+        state.open_command_prompt(PromptId(2), "search old".to_string());
+
+        state.apply_status_update(Some(StatusUpdate::ConnectionState(
+            ConnectionState::Reconnecting,
+        )));
+
+        assert_eq!(state.active_core_prompt, None);
+        assert_eq!(state.input_mode, InputMode::Normal);
+        assert!(state.command_input.is_empty());
+        assert!(state.has_status_message());
     }
 
     #[test]
