@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use super::super::state::TuiState;
-use crate::app::model::{AppModel, FileListRowModel, FileListSectionKind, ReviewStatusModel};
+use crate::app::model::{AppModel, FileListRow, FileListSectionKind, ReviewStatus};
 use crate::config::{FilesStyle, StyleConfig};
 use crate::model::{ChangeKind, PaneFocus};
 
@@ -88,20 +88,20 @@ fn section_header(fs: &FilesStyle, label: &str, count: usize, width: usize) -> L
 /// Returns both the styled Line and the plain text (for clipboard).
 fn file_line(
     fs: &FilesStyle,
-    row: &FileListRowModel,
+    row: &FileListRow,
     pane_focused: bool,
     max_width: usize,
 ) -> (Line<'static>, String) {
     let marker = match &row.review_status {
-        ReviewStatusModel::Unreviewed => "\u{2717}",      // ✗
-        ReviewStatusModel::Reviewed { .. } => "\u{2713}", // ✓
-        ReviewStatusModel::Changed { .. } => "~",
+        ReviewStatus::Unreviewed => "\u{2717}",      // ✗
+        ReviewStatus::Reviewed { .. } => "\u{2713}", // ✓
+        ReviewStatus::Changed { .. } => "~",
     };
 
     let marker_color = match &row.review_status {
-        ReviewStatusModel::Unreviewed => *fs.unreviewed_fg,
-        ReviewStatusModel::Reviewed { .. } => *fs.reviewed_fg,
-        ReviewStatusModel::Changed { .. } => *fs.changed_fg,
+        ReviewStatus::Unreviewed => *fs.unreviewed_fg,
+        ReviewStatus::Reviewed { .. } => *fs.reviewed_fg,
+        ReviewStatus::Changed { .. } => *fs.changed_fg,
     };
 
     let kind_indicator = match row.change_kind {
