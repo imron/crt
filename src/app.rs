@@ -38,6 +38,8 @@ pub enum InputMode {
     Normal,
     /// Command mode — `:` prompt is active, collecting user input.
     Command,
+    /// Diff search mode — `/` prompt is active, collecting search query.
+    DiffSearch,
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +246,17 @@ pub struct AppState {
     /// Pending command to execute asynchronously (set by key handler,
     /// processed by async event loop).
     pub pending_command: Option<String>,
+    /// Active diff search query (the confirmed search term).
+    pub diff_search_query: Option<String>,
+    /// In-progress diff search input (while typing in `/` prompt).
+    pub diff_search_input: String,
+    /// Cursor position within `diff_search_input`.
+    pub diff_search_cursor: usize,
+    /// Cached match positions: (display_row, byte_start, byte_end) relative
+    /// to `diff_rendered_text`. Recomputed when query or content changes.
+    pub diff_search_matches: Vec<(usize, usize, usize)>,
+    /// Index of the currently focused match in `diff_search_matches`.
+    pub diff_search_current: usize,
 }
 
 impl AppState {
@@ -319,6 +332,11 @@ impl AppState {
             definition_results: None,
             jump_stack: Vec::new(),
             pending_command: None,
+            diff_search_query: None,
+            diff_search_input: String::new(),
+            diff_search_cursor: 0,
+            diff_search_matches: Vec::new(),
+            diff_search_current: 0,
         }
     }
 
@@ -481,6 +499,68 @@ impl AppState {
             .and_then(|e| e.diff.hunks.first())
             .map(|h| (h.new_start as usize).saturating_sub(1))
             .unwrap_or(0);
+    }
+
+    /// Recompute diff search matches from the current query and rendered text.
+    /// The query is treated as a regex (case-insensitive). Returns an error
+    /// message if the regex is invalid.
+    pub fn recompute_diff_search_matches(&mut self) -> Option<String> {
+        self.diff_search_matches.clear();
+        self.diff_search_current = 0;
+        let query = match &self.diff_search_query {
+            Some(q) if !q.is_empty() => q.clone(),
+            _ => return None,
+        };
+        let re = match regex::RegexBuilder::new(&query)
+            .case_insensitive(true)
+            .build()
+        {
+            Ok(re) => re,
+            Err(e) => {
+                // Strip the verbose prefix regex puts on errors.
+                let msg = e.to_string();
+                let short = msg
+                    .lines()
+                    .next()
+                    .unwrap_or(&msg)
+                    .trim_start_matches("regex parse error:")
+                    .trim();
+                return Some(format!("Invalid regex: {short}"));
+            }
+        };
+        for (row, line) in self.diff_rendered_text.iter().enumerate() {
+            // Skip gutter columns so we only match content.
+            let gutter = self.diff_gutter_cols;
+            let search_start = gutter.min(line.len());
+            let content = &line[search_start..];
+            for m in re.find_iter(content) {
+                // Skip zero-length matches to avoid infinite loops.
+                if m.start() == m.end() {
+                    continue;
+                }
+                let abs_start = search_start + m.start();
+                let abs_end = search_start + m.end();
+                self.diff_search_matches.push((row, abs_start, abs_end));
+            }
+        }
+        None
+    }
+
+    /// Jump to the next diff search match at or after the cursor.
+    pub fn diff_search_jump_to_current(&mut self) {
+        if self.diff_search_matches.is_empty() {
+            return;
+        }
+        // Find the first match at or after the current cursor line.
+        let idx = self
+            .diff_search_matches
+            .iter()
+            .position(|(row, _, _)| *row >= self.diff_line_cursor)
+            .unwrap_or(0);
+        self.diff_search_current = idx;
+        let (row, _, _) = self.diff_search_matches[idx];
+        self.diff_line_cursor = row;
+        self.clamp_cursor_and_scroll();
     }
 
     /// Called after `selected_file` changes. Resets diff state and loads
