@@ -44,8 +44,18 @@ See the individual sub-plan files under docs/plans/backlog/ for detailed
 requirements, acceptance criteria, and notes for each slice.
 
 Keybinding decision (recorded here):
+- Use `c` in the diff pane to comment on the current line. If the file list
+  has focus, switch to the diff pane and comment on the current diff line.
+  If a visual selection is active, `c` comments on that selection.
 - Use plain `}` for next comment and `{` for previous comment in the
   current file's diff.
+- Use `Shift-C` to toggle the comments panel.
+- Use `Tab` to cycle focus between visible panes/panels; do not use `3`
+  to focus the comments panel.
+- Use `e` to edit an existing comment at the current cursor/comment focus.
+  If there is no comment at the current cursor, `e` does nothing.
+- In later lifecycle flows, `c` also switches to the comment editor for the
+  current comment context; otherwise it creates a new comment at the cursor.
 
 ## Requirements
 
@@ -62,36 +72,41 @@ Keybinding decision (recorded here):
 
 3. **`Enter` to create comment**: after making a keyboard or mouse
    selection, press `Enter` to open the comment input. The selected lines
-   remain visible while the input is active.
+   remain visible while the input is active. Pressing `c` with an active
+   selection does the same.
 
-4. **Comment input (short)**: a multi-line text input area appears at the
+4. **`c` to comment current line**: in the diff pane, press `c` to open
+   the comment input anchored to the current diff line. If the file list has
+   focus, `c` switches to the diff pane and comments on the current diff line.
+
+5. **Comment input (short)**: a multi-line text input area appears at the
    bottom of the screen or as an overlay. `Ctrl-Enter` (or designated key)
    submits. `Escape` cancels.
 
-5. **Comment input (long)**: a keybinding within the comment input
+6. **Comment input (long)**: a keybinding within the comment input
    (e.g. `Ctrl-e`) opens `$EDITOR` for longer comments. The editor buffer
    shows selected lines and context above a separator. On editor exit, the
    unchanged generated prefix is stripped; if the prefix was changed, the
    full file content is used as the comment body.
 
-6. **Cancel selection**: `Escape` in `V`/`v` mode before `Enter` cancels
+7. **Cancel selection**: `Escape` in `V`/`v` mode before `Enter` cancels
    the selection and returns to normal mode.
 
-7. **Anchor capture**: on creation, automatically capture and store
+8. **Anchor capture**: on creation, automatically capture and store
    anchor_text, context_before (3–5 lines), and context_after (3–5 lines).
 
-8. **Server interaction**: creating a comment sends `create_comment` to
+9. **Server interaction**: creating a comment sends `create_comment` to
    the server. The server stores it and notifies other connected clients.
 
 ### Comment Display (core / panel-first)
 
-9. **Gutter indicators**: lines with comments show a marker in the gutter.
+10. **Gutter indicators**: lines with comments show a marker in the gutter.
    - `●` for unresolved comments.
    - `○` for resolved comments.
    Gutter markers are visible whenever comments exist for the file,
    independent of whether the comments panel is open.
 
-10. **Comments panel**: a togglable panel (Shift-C) for viewing all comments
+11. **Comments panel**: a togglable panel (Shift-C) for viewing all comments
      for the current file or scope. The panel appears at the bottom of the
      diff view. Unresolved comments are shown fully; resolved comments are
      shown collapsed (header + preview). `Enter` on a collapsed resolved
@@ -100,25 +115,26 @@ Keybinding decision (recorded here):
      - Sorting by file/line/timestamp.
      - Navigating to a comment's location in the diff.
 
-11. **Cursor-driven panel display**: when the cursor is on a line that has
+12. **Cursor-driven panel display**: when the cursor is on a line that has
      a comment marker in the gutter, the relevant comment(s) are shown
      (expanded) in the comments panel.
 
 Later / optional (inline comments):
 
-12. **`c` (deferred)**: possible future toggle for showing comments inline
-     in the diff pane.
+13. **Inline toggle key (deferred)**: a possible future key can toggle
+     comments inline in the diff pane. Do not use `c`; it is reserved for
+     comment creation/editing.
 
-13. **Inline comment blocks** (deferred): unresolved comments displayed
+14. **Inline comment blocks** (deferred): unresolved comments displayed
      below the lines they're attached to when inline mode is active.
 
 ### Anchor Resolution
 
-13. **Only unresolved comments are re-anchored.** Resolved comments skip
+15. **Only unresolved comments are re-anchored.** Resolved comments skip
     anchoring entirely. A resolved comment whose anchor_text no longer
     exists is expected — the feedback was addressed.
 
-14. **Re-anchoring**: the server performs anchor resolution when loading
+16. **Re-anchoring**: the server performs anchor resolution when loading
     comments for a connection. For each unresolved comment:
     - **Step 1**: anchor_text at stored line number → anchored.
     - **Step 2**: anchor_text elsewhere in file → shifted, reattach.
@@ -129,31 +145,31 @@ Later / optional (inline comments):
     `file_blob_sha` and fresh context strings. The `v_current_anchors` view
     then provides the latest attachment for display and future re-anchoring.
 
-15. **Orphaned comments**: visible in the comments panel with their
+17. **Orphaned comments**: visible in the comments panel with their
     last-known context (from the most recent anchor version, or the
     creation version if none exists) and an orphaned indicator.
     Not silently lost.
 
 ### Comment Lifecycle
 
-16. **Resolve/unresolve**: a keybinding toggles resolved status. Sends
+18. **Resolve/unresolve**: a keybinding toggles resolved status. Sends
     `resolve_comment` or `unresolve_comment` to the server. When
     resolved, the inline block disappears; the comment remains in the
     panel.
 
-17. **Resolved + orphaned is success**: expected outcome when agent
+19. **Resolved + orphaned is success**: expected outcome when agent
     addresses feedback and code changes significantly.
 
-18. **Edit**: a keybinding reopens the comment input with existing body.
+20. **Edit**: a keybinding reopens the comment input with existing body.
     Sends `update_comment` to the server.
 
-19. **Delete**: a keybinding deletes the comment with confirmation. Sends
+21. **Delete**: a keybinding deletes the comment with confirmation. Sends
     `delete_comment` to the server.
 
-20. **Navigate between comments**: keybindings to jump to next/previous
+22. **Navigate between comments**: keybindings to jump to next/previous
     comment in the current file's diff.
 
-21. **Live updates**: when another client (e.g. agent via MCP) resolves
+23. **Live updates**: when another client (e.g. agent via MCP) resolves
     a comment, the server notifies the TUI. The comment's display
     updates immediately.
 
@@ -184,8 +200,6 @@ Later / optional (inline comments):
 
 ## Open Questions
 
-- What keybinding opens the comments panel? `3` (matching `1`/`2` for
-  pane toggling)? A command like `:comments`?
 - Should comments have priorities or labels (e.g. "must fix", "nit",
   "question")?
 - Should there be a way to reply to a comment (threaded comments)?

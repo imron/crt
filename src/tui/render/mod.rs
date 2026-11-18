@@ -325,6 +325,7 @@ fn draw_help_overlay(frame: &mut Frame, styles: &StyleConfig) {
         Line::from("  g/G H/M/L     Top/bottom; view top/mid/bottom"),
         Line::from("  0/$ w/b W/B    Line start/end; word/big-word"),
         Line::from("  ] / [         Next / previous diff hunk"),
+        Line::from("  c             Comment current diff line"),
         Line::from("  r             Toggle reviewed / unreviewed"),
         Line::from("  i             Toggle inline / side-by-side"),
         Line::from("  s             Cycle: diff / HEAD / base"),

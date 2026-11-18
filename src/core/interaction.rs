@@ -199,7 +199,7 @@ impl CoreInteractionEngine {
             if key.kind == KeyEventKind::Press {
                 if context.visual_selection_active
                     && context.diff_pane_visible
-                    && key.key == Key::Enter
+                    && matches!(key.key, Key::Enter | Key::Char('c'))
                     && key_has_no_modifier(key.modifiers)
                 {
                     let id = self.next_prompt(PromptKind::Comment);
@@ -234,6 +234,28 @@ impl CoreInteractionEngine {
                 }
                 if let Some(effect) = visual_selection_key_effect(key, context) {
                     return vec![CoreEffect::VisualSelection(effect)];
+                }
+                if context.diff_pane_visible
+                    && matches!(
+                        context.focused_pane,
+                        Some(PaneId::Diff) | Some(PaneId::FileList)
+                    )
+                    && !context.visual_selection_active
+                    && key.key == Key::Char('c')
+                    && key_has_no_modifier(key.modifiers)
+                {
+                    let id = self.next_prompt(PromptKind::Comment);
+                    return vec![
+                        CoreEffect::VisualSelection(VisualSelectionEffect::StartLine),
+                        CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+                        CoreEffect::RequestPrompt(PromptRequest {
+                            id,
+                            kind: PromptKind::Comment,
+                            title: "Comment".to_string(),
+                            placeholder: Some("Write a comment".to_string()),
+                            initial_value: String::new(),
+                        }),
+                    ];
                 }
                 if context.pending_comment_anchor_active
                     && key.key == Key::Enter
@@ -1347,6 +1369,82 @@ mod tests {
     }
 
     #[test]
+    fn diff_comment_key_captures_current_line_and_requests_prompt() {
+        let mut engine = CoreInteractionEngine::new();
+        let context = InteractionContext {
+            focused_pane: Some(PaneId::Diff),
+            diff_pane_visible: true,
+            ..InteractionContext::default()
+        };
+
+        let effects = engine.handle_input(
+            key_event(Key::Char('c'), InputModifiers::default()),
+            &context,
+        );
+
+        assert_eq!(
+            effects,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartLine),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+                CoreEffect::RequestPrompt(PromptRequest {
+                    id: PromptId(1),
+                    kind: PromptKind::Comment,
+                    title: "Comment".to_string(),
+                    placeholder: Some("Write a comment".to_string()),
+                    initial_value: String::new(),
+                })
+            ]
+        );
+    }
+
+    #[test]
+    fn diff_comment_key_accepts_file_list_focus() {
+        let mut engine = CoreInteractionEngine::new();
+        let context = InteractionContext {
+            focused_pane: Some(PaneId::FileList),
+            diff_pane_visible: true,
+            ..InteractionContext::default()
+        };
+
+        let effects = engine.handle_input(
+            key_event(Key::Char('c'), InputModifiers::default()),
+            &context,
+        );
+
+        assert_eq!(
+            effects,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartLine),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+                CoreEffect::RequestPrompt(PromptRequest {
+                    id: PromptId(1),
+                    kind: PromptKind::Comment,
+                    title: "Comment".to_string(),
+                    placeholder: Some("Write a comment".to_string()),
+                    initial_value: String::new(),
+                })
+            ]
+        );
+    }
+
+    #[test]
+    fn diff_comment_key_requires_visible_diff_pane() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(Key::Char('c'), InputModifiers::default()),
+            &InteractionContext {
+                focused_pane: Some(PaneId::Diff),
+                diff_pane_visible: false,
+                ..InteractionContext::default()
+            },
+        );
+
+        assert!(effects.is_empty());
+    }
+
+    #[test]
     fn active_visual_selection_routes_movement_escape_and_enter() {
         let mut engine = CoreInteractionEngine::new();
         let context = InteractionContext {
@@ -1375,6 +1473,35 @@ mod tests {
         );
         assert_eq!(
             enter,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+                CoreEffect::RequestPrompt(PromptRequest {
+                    id: PromptId(1),
+                    kind: PromptKind::Comment,
+                    title: "Comment".to_string(),
+                    placeholder: Some("Write a comment".to_string()),
+                    initial_value: String::new(),
+                })
+            ]
+        );
+    }
+
+    #[test]
+    fn active_visual_selection_comment_key_commits_and_requests_prompt() {
+        let mut engine = CoreInteractionEngine::new();
+        let context = InteractionContext {
+            diff_pane_visible: true,
+            visual_selection_active: true,
+            ..InteractionContext::default()
+        };
+
+        let effects = engine.handle_input(
+            key_event(Key::Char('c'), InputModifiers::default()),
+            &context,
+        );
+
+        assert_eq!(
+            effects,
             vec![
                 CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
                 CoreEffect::RequestPrompt(PromptRequest {
