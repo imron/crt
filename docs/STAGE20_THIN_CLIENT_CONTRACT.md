@@ -168,7 +168,7 @@ UI-owned:
 | --- | --- |
 | `src/tui/input.rs` key normalization | App/Core input handling |
 | `src/tui/input.rs` prompt submit/cancel | Prompt handshake (`prompt.rs` + `interaction.rs`) |
-| `src/app_update.rs` command/search/navigation reducers | `App` methods over `AppModel` |
+| `src/app/update.rs` command/search/navigation reducers | Private implementation behind `App` methods over `AppModel` |
 | `src/tui/runtime.rs` pending async command execution | App-requested external work handled by runtime |
 | `src/tui/runtime.rs` review toggle RPC flow | Review service + app-owned result application |
 | `src/tui/runtime.rs` file-list reload | Review/diff services + snapshot policy |

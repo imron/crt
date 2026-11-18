@@ -62,7 +62,8 @@ state are likely.
 7. Add contract tests for Stage 20 interaction model:
    - `InputEvent` handling paths for key/prompt/pointer flows,
    - prompt handshake correctness (`RequestPrompt` -> submit/cancel -> effects),
-   - `RenderModel + InteractionMap` consistency for pointer hit mapping.
+   - `AppModel` plus backend-owned hit map consistency for pointer target
+     mapping.
 
 8. Add reconnect-state tests for Stage 24 core effects/events:
    - `Reconnecting...` and `Reconnected` signaling,
