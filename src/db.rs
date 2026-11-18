@@ -659,6 +659,27 @@ impl Database {
         Ok(count > 0)
     }
 
+    pub fn comment_has_resolution_in_scope(
+        &self,
+        id: i64,
+        merge_base: &str,
+        head_ref: &str,
+    ) -> Result<bool> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM comment_resolution_events
+                 WHERE comment_id = ?1
+                   AND resolved_merge_base = ?2
+                   AND resolved_head_ref = ?3",
+                params![id, merge_base, head_ref],
+                |row| row.get(0),
+            )
+            .context("Failed to check comment resolution scope")?;
+        Ok(count > 0)
+    }
+
     /// Delete a comment.
     pub fn delete_comment(&self, id: i64) -> Result<bool> {
         self.conn
@@ -1212,10 +1233,22 @@ mod tests {
         assert!(!comment.resolved);
 
         db.resolve_comment(&resolution_event(&comment)).unwrap();
+        assert!(
+            db.comment_has_resolution_in_scope(comment.id, "main", "feat")
+                .unwrap()
+        );
+        assert!(
+            !db.comment_has_resolution_in_scope(comment.id, "other-main", "feat")
+                .unwrap()
+        );
         let fetched = db.get_comment(comment.id).unwrap().unwrap();
         assert!(fetched.resolved);
 
         db.unresolve_comment(comment.id).unwrap();
+        assert!(
+            !db.comment_has_resolution_in_scope(comment.id, "main", "feat")
+                .unwrap()
+        );
         let fetched = db.get_comment(comment.id).unwrap().unwrap();
         assert!(!fetched.resolved);
     }

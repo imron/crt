@@ -1673,10 +1673,25 @@ async fn load_comment_in_scope(
     if (stored.merge_base == ctx.merge_base_key() && stored.head_ref == ctx.head_scope_key())
         || !stored.resolved
     {
-        Some(stored)
-    } else {
-        None
+        return Some(stored);
     }
+
+    let has_current_scope_resolution = {
+        let db_guard = db.lock().await;
+        match db_guard.comment_has_resolution_in_scope(
+            comment_id,
+            ctx.merge_base_key(),
+            &ctx.head_scope_key(),
+        ) {
+            Ok(has_resolution) => has_resolution,
+            Err(e) => {
+                eprintln!("Failed to check comment {comment_id} resolution scope: {e:#}");
+                false
+            }
+        }
+    };
+
+    has_current_scope_resolution.then_some(stored)
 }
 
 async fn update_comment_resolved(

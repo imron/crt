@@ -677,6 +677,55 @@ async fn test_comment_lifecycle() {
 }
 
 #[tokio::test]
+async fn test_carry_over_comment_can_be_unresolved_after_resolve() {
+    let server = TestServer::start().await;
+    let mut conn = server.connect_and_init().await;
+
+    let create = conn
+        .request(
+            "create_comment",
+            serde_json::json!({
+                "file_path": "file.txt",
+                "line_start": 1,
+                "line_end": 1,
+                "char_start": null,
+                "char_end": null,
+                "anchor_text": "hello",
+                "context_before": "",
+                "context_after": "",
+                "body": "carry-over feedback",
+            }),
+        )
+        .await;
+    assert!(create["error"].is_null(), "create failed: {create}");
+    let id = create["result"]["comment"]["id"].as_i64().unwrap();
+
+    let db_path = server.repo_dir.join(".crt/reviews.db");
+    let db = rusqlite::Connection::open(db_path).unwrap();
+    db.execute(
+        "UPDATE comments SET merge_base = ?1 WHERE id = ?2",
+        rusqlite::params!["old-merge-base", id],
+    )
+    .unwrap();
+    drop(db);
+
+    let resolved = conn
+        .request("resolve_comment", serde_json::json!({ "id": id }))
+        .await;
+    assert!(resolved["error"].is_null(), "resolve failed: {resolved}");
+    assert_eq!(resolved["result"]["comment"]["resolved"], true);
+
+    let unresolved = conn
+        .request("unresolve_comment", serde_json::json!({ "id": id }))
+        .await;
+    assert!(
+        unresolved["error"].is_null(),
+        "unresolve failed: {unresolved}"
+    );
+    assert_eq!(unresolved["result"]["comment"]["resolved"], false);
+}
+
+#[tokio::test]
 async fn test_comment_reanchors_unresolved_only() {
     let server = TestServer::start().await;
     std::fs::write(server.repo_dir.join("file.txt"), "hello\nworld\n").unwrap();
