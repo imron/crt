@@ -137,3 +137,66 @@ pub fn apply_search_highlights(
 
     result
 }
+
+/// Apply character-indexed visual selection highlights to a line.
+pub fn apply_visual_selection_highlights(
+    line: &Line,
+    ranges: &[(usize, usize)],
+    fg: Color,
+    bg: Color,
+) -> Vec<Span<'static>> {
+    let mut result: Vec<Span<'static>> = Vec::new();
+    let mut char_pos: usize = 0;
+
+    for span in &line.spans {
+        let text = span.content.as_ref();
+        let span_chars: Vec<char> = text.chars().collect();
+        let span_start = char_pos;
+        let span_end = span_start + span_chars.len();
+        let mut cursor = span_start;
+
+        for &(range_start, range_end) in ranges {
+            if range_end <= span_start || range_start >= span_end {
+                continue;
+            }
+            let overlap_start = range_start.max(span_start);
+            let overlap_end = range_end.min(span_end);
+
+            if cursor < overlap_start {
+                result.push(Span::styled(
+                    chars_to_string(&span_chars, cursor - span_start, overlap_start - span_start),
+                    span.style,
+                ));
+            }
+
+            result.push(Span::styled(
+                chars_to_string(
+                    &span_chars,
+                    overlap_start - span_start,
+                    overlap_end - span_start,
+                ),
+                span.style.fg(fg).bg(bg),
+            ));
+            cursor = overlap_end;
+        }
+
+        if cursor < span_end {
+            result.push(Span::styled(
+                chars_to_string(&span_chars, cursor - span_start, span_end - span_start),
+                span.style,
+            ));
+        }
+
+        char_pos = span_end;
+    }
+
+    result
+}
+
+fn chars_to_string(chars: &[char], start: usize, end: usize) -> String {
+    chars
+        .iter()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect()
+}

@@ -16,10 +16,13 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use self::cache::build_key;
 use self::content::{build_content, build_title};
-use self::highlight::{apply_col_cursor, apply_search_highlights};
+use self::highlight::{
+    apply_col_cursor, apply_search_highlights, apply_visual_selection_highlights,
+};
 use self::line::BLAME_COL_WIDTH;
 use super::super::state::TuiState;
-use crate::app::model::{AppModel, TextRange};
+use crate::app::VisualSelectionMode;
+use crate::app::model::{AppModel, TextRange, VisualSelection};
 use crate::config::StyleConfig;
 use crate::review_types::PaneFocus;
 
@@ -128,6 +131,8 @@ pub fn draw(
     let cursor_line_bg = *styles.diff.cursor_line_bg;
     let search_match_bg = *styles.diff.search_match_bg;
     let search_current_bg = *styles.diff.search_current_match_bg;
+    let selection_fg = *styles.selection.fg;
+    let selection_bg = *styles.selection.bg;
     let cursor_visible_idx = diff.cursor.line.saturating_sub(diff.scroll);
     let diff_view_height = tui_state.diff_view_height;
     let content_start_col = tui_state.diff_content_start_col();
@@ -200,6 +205,21 @@ pub fn draw(
                     Line::from(highlighted)
                 };
 
+                let selection_ranges = visual_selection_ranges(
+                    diff.visual_selection.as_ref(),
+                    &tui_state.diff_rendered_text,
+                    display_row,
+                    content_start_col,
+                );
+                if !selection_ranges.is_empty() {
+                    result_line = Line::from(apply_visual_selection_highlights(
+                        &result_line,
+                        &selection_ranges,
+                        selection_fg,
+                        selection_bg,
+                    ));
+                }
+
                 // Apply column cursor overlay on the cursor line.
                 if is_cursor_line {
                     result_line =
@@ -219,6 +239,61 @@ pub fn draw(
     );
 
     frame.render_widget(paragraph, area);
+}
+
+fn visual_selection_ranges(
+    selection: Option<&VisualSelection>,
+    rendered_text: &[String],
+    display_row: usize,
+    content_start_col: usize,
+) -> Vec<(usize, usize)> {
+    let Some(selection) = selection else {
+        return Vec::new();
+    };
+    let line_len = rendered_text
+        .get(display_row)
+        .map(|line| line.chars().count())
+        .unwrap_or(0);
+    if line_len == 0 {
+        return Vec::new();
+    }
+
+    let (start, end) = if (selection.end.line, selection.end.column)
+        < (selection.start.line, selection.start.column)
+    {
+        (selection.end, selection.start)
+    } else {
+        (selection.start, selection.end)
+    };
+
+    if display_row < start.line || display_row > end.line {
+        return Vec::new();
+    }
+
+    let range = match selection.mode {
+        VisualSelectionMode::Line => (content_start_col, line_len),
+        VisualSelectionMode::Character => {
+            let start_col = if display_row == start.line {
+                content_start_col.saturating_add(start.column)
+            } else {
+                content_start_col.min(line_len)
+            };
+            let end_col = if display_row == end.line {
+                content_start_col
+                    .saturating_add(end.column)
+                    .saturating_add(1)
+            } else {
+                line_len
+            };
+            (start_col.min(line_len), end_col.min(line_len))
+        }
+    };
+
+    if range.0 >= range.1 {
+        Vec::new()
+    } else {
+        vec![range]
+    }
 }
 
 fn render_search_highlights(

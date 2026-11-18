@@ -1,6 +1,6 @@
 # Stage 13a: Visual Selection and Anchor Capture for Comments
 
-## Status: Not Started
+## Status: Complete
 
 ## Order
 
@@ -69,17 +69,17 @@ the parent plan.
 
 ## Acceptance Criteria
 
-- [ ] `V` enters line selection; `j`/`k` extend the highlighted range.
-- [ ] `v` enters character selection; appropriate movement extends the
+- [x] `V` enters line selection; `j`/`k` extend the highlighted range.
+- [x] `v` enters character selection; appropriate movement extends the
       character range.
-- [ ] `Escape` in visual mode clears the selection and returns to normal
+- [x] `Escape` in visual mode clears the selection and returns to normal
       input without side effects.
-- [ ] Enter with an active selection produces a complete capture of file,
+- [x] Enter with an active selection produces a complete capture of file,
       ranges, anchor_text, and context strings.
-- [ ] Capture works for both line ranges and sub-line character ranges.
-- [ ] No changes to comment persistence or UI creation flow (deferred to
+- [x] Capture works for both line ranges and sub-line character ranges.
+- [x] No changes to comment persistence or UI creation flow (deferred to
       later slices).
-- [ ] Existing cursor, search, and review navigation behavior is unaffected
+- [x] Existing cursor, search, and review navigation behavior is unaffected
       outside of visual mode.
 
 ## Implementation Notes
@@ -97,4 +97,11 @@ the parent plan.
 
 ## Progress
 
-- (To be filled during implementation)
+- Added core visual-selection effects for line and character modes, with
+  active-mode routing for movement, Escape, and Enter.
+- Added app-owned visual-selection state plus a committed comment-anchor
+  capture shaped for later `CreateCommentParams` use.
+- Added diff-pane highlighting for active visual selections using the
+  existing selection style configuration.
+- Added unit coverage for key routing, cancellation, line capture, and
+  sub-line character capture.
