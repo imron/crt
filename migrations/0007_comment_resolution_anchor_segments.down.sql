@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS idx_comment_resolution_anchor_segments_comment;
+DROP INDEX IF EXISTS idx_comment_resolution_anchor_segments_event;
+DROP TABLE IF EXISTS comment_resolution_anchor_segments;

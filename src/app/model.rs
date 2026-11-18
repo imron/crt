@@ -915,12 +915,34 @@ fn comment_attachments_for_file(
         .filter(|comment| comment.file_path == file_path)
         .map(|comment| CommentAttachment {
             id: comment.id,
-            line_start: comment.line_start,
-            line_end: comment.line_end,
+            line_start: comment_anchor_line_start(comment),
+            line_end: comment_anchor_line_end(comment),
             resolved: comment.resolved,
             anchor_status: comment.anchor_status,
         })
         .collect()
+}
+
+fn comment_anchor_line_start(comment: &review_types::Comment) -> i64 {
+    comment
+        .anchor
+        .segments
+        .iter()
+        .filter(|segment| segment.file_path == comment.file_path)
+        .map(|segment| segment.line_start)
+        .min()
+        .unwrap_or(comment.line_start)
+}
+
+fn comment_anchor_line_end(comment: &review_types::Comment) -> i64 {
+    comment
+        .anchor
+        .segments
+        .iter()
+        .filter(|segment| segment.file_path == comment.file_path)
+        .map(|segment| segment.line_end)
+        .max()
+        .unwrap_or(comment.line_end)
 }
 
 fn comments_panel_model(state: &AppState) -> CommentsPanel {

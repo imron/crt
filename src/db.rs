@@ -57,6 +57,7 @@ pub struct NewCommentResolutionEvent {
     pub resolved_commit: String,
     pub resolved_head_ref: String,
     pub resolved_merge_base: String,
+    pub anchor: CommentAnchor,
     pub file_path: String,
     pub line_start: i64,
     pub line_end: i64,
@@ -170,6 +171,12 @@ const MIGRATIONS: &[Migration] = &[
         up: include_str!("../migrations/0006_compound_comment_anchors.up.sql"),
         down: include_str!("../migrations/0006_compound_comment_anchors.down.sql"),
     },
+    Migration {
+        version: 7,
+        name: "comment_resolution_anchor_segments",
+        up: include_str!("../migrations/0007_comment_resolution_anchor_segments.up.sql"),
+        down: include_str!("../migrations/0007_comment_resolution_anchor_segments.down.sql"),
+    },
 ];
 
 impl Database {
@@ -248,6 +255,9 @@ impl Database {
             && self.column_exists("comments", "created_head_commit")?
         {
             self.mark_migration_applied(6, "compound_comment_anchors")?;
+        }
+        if self.table_exists("comment_resolution_anchor_segments")? {
+            self.mark_migration_applied(7, "comment_resolution_anchor_segments")?;
         }
 
         Ok(())
@@ -687,6 +697,36 @@ impl Database {
                 ],
             )
             .context("Failed to record comment resolution event")?;
+        let resolution_event_id = self.conn.last_insert_rowid();
+        for segment in &event.anchor.segments {
+            self.conn
+                .execute(
+                    "INSERT INTO comment_resolution_anchor_segments
+                        (resolution_event_id, comment_id, side, file_path,
+                         line_start, line_end, char_start, char_end,
+                         anchor_text, context_before, context_after,
+                         placement_status, match_method, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                             ?12, ?13, ?14)",
+                    params![
+                        resolution_event_id,
+                        event.comment_id,
+                        comment_anchor_side_to_db(segment.side),
+                        segment.file_path,
+                        segment.line_start,
+                        segment.line_end,
+                        segment.char_start,
+                        segment.char_end,
+                        segment.anchor_text,
+                        segment.context_before,
+                        segment.context_after,
+                        anchor_placement_status_to_db(segment.placement_status),
+                        anchor_match_method_to_db(segment.match_method),
+                        resolved_at,
+                    ],
+                )
+                .context("Failed to record comment resolution anchor segment")?;
+        }
         Ok(())
     }
 
@@ -701,6 +741,12 @@ impl Database {
             )
             .context("Failed to unresolve comment")?;
         if count > 0 {
+            self.conn
+                .execute(
+                    "DELETE FROM comment_resolution_anchor_segments WHERE comment_id = ?1",
+                    params![id],
+                )
+                .context("Failed to delete comment resolution anchor segments")?;
             self.conn
                 .execute(
                     "DELETE FROM comment_resolution_events WHERE comment_id = ?1",
@@ -734,6 +780,12 @@ impl Database {
 
     /// Delete a comment.
     pub fn delete_comment(&self, id: i64) -> Result<bool> {
+        self.conn
+            .execute(
+                "DELETE FROM comment_resolution_anchor_segments WHERE comment_id = ?1",
+                params![id],
+            )
+            .context("Failed to delete comment resolution anchor segments")?;
         self.conn
             .execute(
                 "DELETE FROM comment_resolution_events WHERE comment_id = ?1",
@@ -1146,6 +1198,7 @@ mod tests {
             resolved_commit: "resolved-commit".to_string(),
             resolved_head_ref: comment.head_ref.clone(),
             resolved_merge_base: comment.merge_base.clone(),
+            anchor: comment.anchor.clone(),
             file_path: comment.file_path.clone(),
             line_start: comment.line_start,
             line_end: comment.line_end,
@@ -1303,7 +1356,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(count, 6);
+        assert_eq!(count, 7);
     }
 
     #[test]
