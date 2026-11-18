@@ -2074,6 +2074,61 @@ mod tests {
     }
 
     #[test]
+    fn test_resolution_anchor_segments_store_blob_evidence() {
+        let (_dir, db) = test_db();
+
+        let columns: Vec<String> = db
+            .conn
+            .prepare("PRAGMA table_info(comment_resolution_anchor_segments)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+
+        assert!(
+            columns.iter().any(|column| column == "file_blob_sha"),
+            "resolution anchor snapshots must store side blob evidence"
+        );
+    }
+
+    #[test]
+    fn test_resolution_scope_can_follow_rebased_equivalent_history() {
+        let (_dir, db) = test_db();
+
+        let mut comment = simple_comment("a.rs", 1, "head text", "fix this");
+        comment.merge_base = "old-base".to_string();
+        comment.head_ref = "feature".to_string();
+        let comment = db.create_comment(&comment).unwrap();
+        db.resolve_comment(&resolution_event(&comment)).unwrap();
+
+        assert!(
+            db.comment_has_resolution_in_scope(comment.id, "new-base", "feature")
+                .unwrap(),
+            "resolution evidence should carry across equivalent rebased history"
+        );
+    }
+
+    #[test]
+    fn test_resolution_scope_can_follow_squashed_equivalent_patch_id() {
+        let (_dir, db) = test_db();
+
+        let mut comment = simple_comment("a.rs", 1, "head text", "fix this");
+        comment.merge_base = "old-base".to_string();
+        comment.head_ref = "feature".to_string();
+        let comment = db.create_comment(&comment).unwrap();
+        let mut event = resolution_event(&comment);
+        event.resolved_commit = "pre-squash-resolution".to_string();
+        db.resolve_comment(&event).unwrap();
+
+        assert!(
+            db.comment_has_resolution_in_scope(comment.id, "squash-base", "feature")
+                .unwrap(),
+            "stable patch-id evidence should carry resolution across squash history"
+        );
+    }
+
+    #[test]
     fn test_comment_delete() {
         let (_dir, db) = test_db();
 
