@@ -2,7 +2,9 @@
 
 use ratatui::layout::Rect;
 
-use crate::app_model::AppModel;
+pub mod model;
+
+use self::model::AppModel;
 use crate::config::Config;
 use crate::core::diff;
 use crate::core::interaction::CoreInteractionEngine;
