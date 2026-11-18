@@ -8,8 +8,6 @@ pub mod diff_view;
 mod file_list;
 mod word_diff;
 
-use std::time::Duration;
-
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
@@ -188,9 +186,6 @@ fn saturating_u16(value: usize) -> u16 {
 // Status bar
 // ---------------------------------------------------------------------------
 
-/// Status message timeout.
-const STATUS_MSG_TIMEOUT: Duration = Duration::from_secs(3);
-
 fn draw_status_bar(
     frame: &mut Frame,
     model: &AppModel,
@@ -198,9 +193,6 @@ fn draw_status_bar(
     styles: &StyleConfig,
     area: Rect,
 ) {
-    // Expire old status messages.
-    tui_state.expire_status_message(STATUS_MSG_TIMEOUT);
-
     let ss = &styles.status;
 
     let reviewed_count = model
