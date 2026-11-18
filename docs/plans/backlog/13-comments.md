@@ -39,7 +39,6 @@ Later / optional sub-plans:
 
 - 13i-unresolved-comments-pane.md
 - 13k-base-head-comment-anchors.md
-- 13l-comment-projection.md
 
 The core comment functionality (selection/capture, composer, re-anchoring,
 gutter markers, and comments panel) can be built and used without any
@@ -56,13 +55,13 @@ Completed sub-plans:
 - 13d-gutter-display.md
 - 13e-panel-lifecycle.md
 - 13i-unresolved-comments-pane.md
+- 13l-comment-projection.md
 
 Remaining sub-plans:
 
 - 13f-live-polish-tests.md
 - 13j-check-comments-command.md
 - 13k-base-head-comment-anchors.md
-- 13l-comment-projection.md
 
 Superseded sub-plans:
 

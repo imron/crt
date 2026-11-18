@@ -1,6 +1,6 @@
 # Stage 18: Rebase Review Migration
 
-## Status: Backlog
+## Status: Complete
 
 ## Goal
 
@@ -79,10 +79,10 @@ For each old review record:
 
 ### 1. DB Layer (`src/db.rs`)
 
-- Add `load_reviews_by_head_ref(head_ref) -> Vec<(String, HashMap<String, StoredReview>)>`
-  that returns all reviews for a given `head_ref` regardless of
-  `merge_base`, grouped by merge_base, ordered by most recent
-  `reviewed_at` descending.
+- Add `load_reviews_by_head_ref(head_ref)`.
+  - It returns all reviews for a given `head_ref` regardless of `merge_base`.
+  - Results are grouped by merge base and ordered by most recent
+    `reviewed_at` descending.
 - Add a bulk migration helper or reuse `store_review()` in a loop.
 
 ### 2. Git Layer (`src/git.rs`)

@@ -2,7 +2,14 @@
 
 ## Status
 
-Backlog.
+Complete.
+
+## Completion Note
+
+Stage 29 is implemented. The active diff pane is backed by `ActiveDocument`
+and `DiffDocument`, the TUI renders `RenderLine` values, and the old diff row
+builder, comment projection fallback, and legacy renderer path have been
+removed.
 
 ## Goal
 
@@ -17,16 +24,14 @@ spans, or base/head semantics from rendered terminal lines.
 
 ## Why
 
-The current model has improved over time, but it still splits related concepts
-across multiple places:
+The old model split related concepts across multiple places:
 
 - `AppState` stores raw review/session state.
-- `AppModel` projects some render rows on every render.
-- `CommentProjection` separately maps comments onto rows and source lines.
-- The TUI renderer still builds terminal lines, gutter widths, hunk rows,
-  rendered text, and cache keys.
-- Some app update paths query `AppViewport`, which is backed by the latest TUI
-  render state.
+- `AppModel` projected some render rows on every render.
+- `CommentProjection` separately mapped comments onto rows and source lines.
+- The TUI renderer built terminal lines, gutter widths, hunk rows, rendered
+  text, and cache keys.
+- Some app update paths queried rendered viewport state from the TUI.
 
 This creates too many coordinate systems:
 

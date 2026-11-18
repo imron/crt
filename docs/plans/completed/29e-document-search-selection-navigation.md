@@ -102,8 +102,8 @@ Pure document behavior for search, selection, hunk targets, source metadata,
 and cursor equivalence is covered in 29a. This slice should test only app-layer
 migration and glue:
 
-- diff search update code calls document search APIs, not
-  `AppViewport::diff_rendered_text`.
+- diff search update code calls document search APIs, not viewport-rendered
+  text.
 - search navigation updates app cursor/scroll from document match rows.
 - visual selection update code stores document positions from app input.
 - `TextAnchor` is used only at the input boundary for visual selection; app
@@ -119,7 +119,7 @@ migration and glue:
 
 ## Acceptance Criteria
 
-- [x] Diff search no longer depends on `AppViewport::diff_rendered_text`.
+- [x] Diff search no longer depends on viewport-rendered text.
 - [x] Hunk navigation no longer depends on TUI hunk rows.
 - [x] `AppState.visual_selection` is document-typed, with `TextAnchor`
       converted only at the app input boundary.
@@ -136,6 +136,5 @@ migration and glue:
   extraction, and comment anchor capture now use active document APIs.
 - `AppState.visual_selection` stores document positions. `TextAnchor` remains
   an input-boundary type for TUI/core events and legacy model projection.
-- Legacy `AppViewport` methods and compatibility projections still exist for
-  old renderer cleanup in 29f, but active migrated behavior no longer depends
-  on them for this slice.
+- Legacy viewport methods and compatibility projections were removed in 29f;
+  active migrated behavior no longer depends on rendered TUI text.
