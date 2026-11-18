@@ -9,8 +9,7 @@ use crate::core::command::{self, Command, CommandParse};
 use crate::core::navigation::{self, Direction, FileNavigationScope};
 use crate::core::search as core_search;
 use crate::core::{
-    CoreEffect, DefinitionResultsEffect, DiffCursorEffect, DiffSearchEffect, InteractionContext,
-    PaneEffect, PaneId, SearchResultsEffect,
+    CoreEffect, DiffCursorEffect, DiffSearchEffect, InteractionContext, PaneEffect, PaneId,
 };
 use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
@@ -70,8 +69,6 @@ impl AppUpdate {
 
 pub fn interaction_context(state: &AppState) -> InteractionContext {
     InteractionContext {
-        search_results_visible: state.search_results.is_some(),
-        definition_results_visible: state.definition_results.is_some(),
         focused_pane: Some(match state.pane_focus {
             PaneFocus::FileList => PaneId::FileList,
             PaneFocus::Diff => PaneId::Diff,
@@ -118,12 +115,7 @@ pub fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> App
             CoreEffect::DiffCursor(effect) => {
                 apply_diff_cursor_effect(state, effect);
             }
-            CoreEffect::SearchResults(effect) => {
-                apply_search_results_effect(state, &mut update, effect);
-            }
-            CoreEffect::DefinitionResults(effect) => {
-                apply_definition_results_effect(state, &mut update, effect);
-            }
+            CoreEffect::SearchResults(_) | CoreEffect::DefinitionResults(_) => {}
             CoreEffect::Pane(effect) => {
                 apply_pane_effect(state, effect);
             }
@@ -457,100 +449,6 @@ fn apply_diff_cursor_effect(state: &mut AppState, effect: DiffCursorEffect) {
     }
 }
 
-fn apply_search_results_effect(
-    state: &mut AppState,
-    update: &mut AppUpdate,
-    effect: SearchResultsEffect,
-) {
-    match effect {
-        SearchResultsEffect::Close => {
-            state.search_results = None;
-        }
-        SearchResultsEffect::SelectNext => {
-            let Some(results) = state.search_results.as_mut() else {
-                return;
-            };
-            if !results.matches.is_empty() {
-                results.selected = (results.selected + 1).min(results.matches.len() - 1);
-                if results.selected >= results.scroll + 20 {
-                    results.scroll = results.selected.saturating_sub(19);
-                }
-            }
-        }
-        SearchResultsEffect::SelectPrevious => {
-            let Some(results) = state.search_results.as_mut() else {
-                return;
-            };
-            results.selected = results.selected.saturating_sub(1);
-            if results.selected < results.scroll {
-                results.scroll = results.selected;
-            }
-        }
-        SearchResultsEffect::SelectFirst => {
-            let Some(results) = state.search_results.as_mut() else {
-                return;
-            };
-            results.selected = 0;
-            results.scroll = 0;
-        }
-        SearchResultsEffect::SelectLast => {
-            let Some(results) = state.search_results.as_mut() else {
-                return;
-            };
-            if !results.matches.is_empty() {
-                results.selected = results.matches.len() - 1;
-                results.scroll = results.selected.saturating_sub(19);
-            }
-        }
-        SearchResultsEffect::AcceptSelected => {
-            let selected = state
-                .search_results
-                .as_ref()
-                .and_then(|results| results.matches.get(results.selected).cloned());
-            state.search_results = None;
-            if let Some(search_match) = selected {
-                navigate_to_search_match(state, update, &search_match);
-            }
-        }
-    }
-}
-
-fn apply_definition_results_effect(
-    state: &mut AppState,
-    update: &mut AppUpdate,
-    effect: DefinitionResultsEffect,
-) {
-    match effect {
-        DefinitionResultsEffect::Close => {
-            state.definition_results = None;
-        }
-        DefinitionResultsEffect::SelectNext => {
-            let Some(results) = state.definition_results.as_mut() else {
-                return;
-            };
-            if !results.definitions.is_empty() {
-                results.selected = (results.selected + 1).min(results.definitions.len() - 1);
-            }
-        }
-        DefinitionResultsEffect::SelectPrevious => {
-            let Some(results) = state.definition_results.as_mut() else {
-                return;
-            };
-            results.selected = results.selected.saturating_sub(1);
-        }
-        DefinitionResultsEffect::AcceptSelected => {
-            let selected = state
-                .definition_results
-                .as_ref()
-                .and_then(|results| results.definitions.get(results.selected).cloned());
-            state.definition_results = None;
-            if let Some(definition) = selected {
-                navigate_to_definition(state, update, &definition);
-            }
-        }
-    }
-}
-
 fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
     match effect {
         PaneEffect::ActivateFileListSelection => {
@@ -579,22 +477,21 @@ fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
     }
 }
 
-fn navigate_to_search_match(
-    state: &mut AppState,
-    update: &mut AppUpdate,
-    m: &crate::model::SearchMatch,
-) {
+pub fn navigate_to_search_match(state: &mut AppState, m: &crate::model::SearchMatch) -> AppUpdate {
+    let mut update = AppUpdate::handled();
     let target = core_search::resolve_search_target(&state.files, m);
-    navigate_to_location_target(state, update, target);
+    navigate_to_location_target(state, &mut update, target);
+    update
 }
 
-fn navigate_to_definition(
+pub fn navigate_to_definition(
     state: &mut AppState,
-    update: &mut AppUpdate,
     def: &crate::model::DefinitionLocation,
-) {
+) -> AppUpdate {
+    let mut update = AppUpdate::handled();
     let target = core_search::resolve_definition_target(&state.files, def);
-    navigate_to_location_target(state, update, target);
+    navigate_to_location_target(state, &mut update, target);
+    update
 }
 
 fn navigate_to_location_target(

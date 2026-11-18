@@ -129,6 +129,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   suspend, quit, and focus refresh into TUI-owned state.
 - Moved file-list layout width and config path into TUI-owned state, with app
   updates requesting layout persistence through the TUI boundary.
+- Moved search and definition overlay result state into TUI-owned state while
+  keeping accepted-result navigation in app update helpers.
 
 ## Acceptance Criteria
 
