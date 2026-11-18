@@ -82,6 +82,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   navigation effects.
 - Routed hunk jumps, go-to-definition, and jump-stack pop through core input
   as typed navigation effects.
+- Fixed go-to-definition symbol extraction to use the current diff column
+  cursor instead of the first identifier on the line.
 
 ## Acceptance Criteria
 

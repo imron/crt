@@ -283,8 +283,13 @@ fn request_go_to_definition(state: &mut AppState) {
     }
 }
 
-/// Extract the first identifier-like word from the current cursor line.
+/// Extract the identifier-like word under the current diff column cursor.
 fn extract_word_at_cursor(state: &AppState) -> Option<String> {
+    let content = content_for_word_extraction(state)?;
+    word_at_char_offset(content, state.diff_col_cursor)
+}
+
+fn content_for_word_extraction(state: &AppState) -> Option<&str> {
     let line = state.diff_rendered_text.get(state.diff_line_cursor)?;
     // Skip gutter columns to get to actual content.
     let gutter = state.diff_gutter_cols;
@@ -310,12 +315,31 @@ fn extract_word_at_cursor(state: &AppState) -> Option<String> {
         content.trim()
     };
 
-    let start = content.find(|c: char| c.is_alphanumeric() || c == '_')?;
-    let word: String = content[start..]
-        .chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '_')
-        .collect();
-    if word.is_empty() { None } else { Some(word) }
+    Some(content)
+}
+
+fn word_at_char_offset(content: &str, column: usize) -> Option<String> {
+    let chars: Vec<char> = content.chars().collect();
+    let ch = *chars.get(column)?;
+    if !is_identifier_char(ch) {
+        return None;
+    }
+
+    let mut start = column;
+    while start > 0 && is_identifier_char(chars[start - 1]) {
+        start -= 1;
+    }
+
+    let mut end = column;
+    while end + 1 < chars.len() && is_identifier_char(chars[end + 1]) {
+        end += 1;
+    }
+
+    Some(chars[start..=end].iter().collect())
+}
+
+fn is_identifier_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
 /// Handle a key press event by mutating the application state.
@@ -1489,6 +1513,35 @@ mod tests {
         assert!(
             input_event_from_key(CrosstermKeyEvent::new(KeyCode::Null, KeyModifiers::NONE,))
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn word_at_char_offset_selects_identifier_under_cursor() {
+        assert_eq!(
+            word_at_char_offset("let first = second_value;", 12),
+            Some("second_value".to_string())
+        );
+    }
+
+    #[test]
+    fn word_at_char_offset_selects_identifier_from_underscore() {
+        assert_eq!(
+            word_at_char_offset("call merge_base now", 10),
+            Some("merge_base".to_string())
+        );
+    }
+
+    #[test]
+    fn word_at_char_offset_returns_none_on_separator() {
+        assert_eq!(word_at_char_offset("foo.bar", 3), None);
+    }
+
+    #[test]
+    fn word_at_char_offset_uses_character_offsets() {
+        assert_eq!(
+            word_at_char_offset("let café_value = 1", 6),
+            Some("café_value".to_string())
         );
     }
 }
