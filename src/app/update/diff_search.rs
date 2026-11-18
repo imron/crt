@@ -43,23 +43,23 @@ pub fn navigate_diff_search_match(
     }
 
     let cursor = state.diff_line_cursor;
+    let cursor_col = view.diff_content_start_col() + state.diff_col_cursor;
     let len = state.diff_search_matches.len();
     let idx = match direction {
         Direction::Next => state
             .diff_search_matches
             .iter()
-            .position(|(row, _, _)| *row > cursor)
+            .position(|(row, start, _)| *row > cursor || (*row == cursor && *start > cursor_col))
             .unwrap_or(0),
         Direction::Prev => state
             .diff_search_matches
             .iter()
-            .rposition(|(row, _, _)| *row < cursor)
+            .rposition(|(row, start, _)| *row < cursor || (*row == cursor && *start < cursor_col))
             .unwrap_or(len - 1),
     };
 
     state.diff_search_current = idx;
-    let (row, _, _) = state.diff_search_matches[idx];
-    state.diff_line_cursor = row;
+    set_cursor_to_match(state, view, idx);
     clamp_cursor_and_scroll(state, view);
     state.mark_model_changed();
     let cur = idx + 1;
@@ -145,9 +145,16 @@ fn diff_search_jump_to_current(state: &mut AppState, view: &impl AppViewport) {
         .position(|(row, _, _)| *row >= state.diff_line_cursor)
         .unwrap_or(0);
     state.diff_search_current = idx;
-    let (row, _, _) = state.diff_search_matches[idx];
-    state.diff_line_cursor = row;
+    set_cursor_to_match(state, view, idx);
     clamp_cursor_and_scroll(state, view);
+}
+
+fn set_cursor_to_match(state: &mut AppState, view: &impl AppViewport, idx: usize) {
+    let Some((row, start, _)) = state.diff_search_matches.get(idx).copied() else {
+        return;
+    };
+    state.diff_line_cursor = row;
+    state.diff_col_cursor = start.saturating_sub(view.diff_content_start_col());
 }
 
 #[cfg(test)]
@@ -217,5 +224,34 @@ mod tests {
         assert_eq!(state.diff_search_matches.len(), 1);
         let (_, start, end) = state.diff_search_matches[0];
         assert_eq!(&view.lines[0][start..end], "specific");
+    }
+
+    #[test]
+    fn diff_search_navigation_visits_multiple_matches_on_same_line() {
+        let mut state = state();
+        let view = View {
+            lines: vec![
+                "           specific and specific here".to_string(),
+                "           later specific".to_string(),
+            ],
+        };
+        assert!(recompute_diff_search_matches(&mut state, &view).is_none());
+        assert_eq!(state.diff_search_matches.len(), 3);
+        state.diff_search_current = 0;
+        state.diff_line_cursor = 0;
+        state.diff_col_cursor = 0;
+
+        let mut update = AppOutput::default();
+        navigate_diff_search_match(&mut state, &view, &mut update, Direction::Next);
+
+        assert_eq!(state.diff_search_current, 1);
+        assert_eq!(state.diff_line_cursor, 0);
+        assert_eq!(state.diff_col_cursor, 13);
+
+        navigate_diff_search_match(&mut state, &view, &mut update, Direction::Prev);
+
+        assert_eq!(state.diff_search_current, 0);
+        assert_eq!(state.diff_line_cursor, 0);
+        assert_eq!(state.diff_col_cursor, 0);
     }
 }
