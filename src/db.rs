@@ -2129,6 +2129,48 @@ mod tests {
     }
 
     #[test]
+    fn test_resolution_anchor_evidence_can_prove_rebased_content_state() {
+        let (_dir, db) = test_db();
+
+        let mut comment = simple_comment("a.rs", 1, "head text", "fix this");
+        comment.merge_base = "old-base".to_string();
+        comment.head_ref = "feature".to_string();
+        let comment = db.create_comment(&comment).unwrap();
+        db.resolve_comment(&resolution_event(&comment)).unwrap();
+
+        assert!(
+            db.comment_has_resolution_in_scope(
+                comment.id,
+                "rebased-base-with-same-anchor",
+                "feature"
+            )
+            .unwrap(),
+            "matching resolution-time anchor evidence should prove the resolved content state"
+        );
+    }
+
+    #[test]
+    fn test_resolution_anchor_evidence_rejects_changed_rebased_content_state() {
+        let (_dir, db) = test_db();
+
+        let mut comment = simple_comment("a.rs", 1, "head text", "fix this");
+        comment.merge_base = "old-base".to_string();
+        comment.head_ref = "feature".to_string();
+        let comment = db.create_comment(&comment).unwrap();
+        db.resolve_comment(&resolution_event(&comment)).unwrap();
+
+        assert!(
+            !db.comment_has_resolution_in_scope(
+                comment.id,
+                "rebased-base-with-different-anchor",
+                "feature"
+            )
+            .unwrap(),
+            "resolution-time anchor evidence must not resolve changed content"
+        );
+    }
+
+    #[test]
     fn test_comment_delete() {
         let (_dir, db) = test_db();
 

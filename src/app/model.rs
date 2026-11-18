@@ -1822,6 +1822,37 @@ mod tests {
     }
 
     #[test]
+    fn cross_hunk_compound_comment_marker_spans_selected_visual_range() {
+        let comment = compound_comment(
+            45,
+            "src/lib.rs",
+            vec![
+                anchor_segment(
+                    review_types::CommentAnchorSide::Base,
+                    "src/lib.rs",
+                    10,
+                    10,
+                    "old first",
+                ),
+                anchor_segment(
+                    review_types::CommentAnchorSide::Head,
+                    "src/lib.rs",
+                    20,
+                    20,
+                    "new second",
+                ),
+            ],
+        );
+
+        let attachments = comment_attachments_for_file(&[comment], "src/lib.rs");
+        let markers = CommentMarkerSet::new(&attachments, None);
+
+        assert_marker(&markers, 10, Some(CommentMarkerKind::Start), false, false);
+        assert_marker(&markers, 15, Some(CommentMarkerKind::Join), false, false);
+        assert_marker(&markers, 20, Some(CommentMarkerKind::End), false, false);
+    }
+
+    #[test]
     fn full_file_base_view_shows_base_segment_comment_markers() {
         let mut app = App::new(
             Config::default(),

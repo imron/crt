@@ -407,9 +407,9 @@ pub fn build_side_by_side_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::model::CommentAttachment;
+    use crate::app::model::{CommentAttachment, DiffLine};
     use crate::config::DiffStyle;
-    use crate::review_types::AnchorStatus;
+    use crate::review_types::{AnchorStatus, LineKind};
 
     #[test]
     fn side_by_side_separates_comment_marker_and_source() {
@@ -440,5 +440,59 @@ mod tests {
             .collect();
 
         assert!(rendered.contains("● source"));
+    }
+
+    #[test]
+    fn side_by_side_replacement_shows_comment_marker_on_both_columns() {
+        let comments = [CommentAttachment {
+            id: 1,
+            line_start: 1,
+            line_end: 1,
+            resolved: false,
+            anchor_status: AnchorStatus::Anchored,
+        }];
+        let markers = CommentMarkerSet::new(&comments, None);
+        let hunk = DiffHunk {
+            header: "@@ -1 +1 @@".to_string(),
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 1,
+            lines: vec![
+                DiffLine {
+                    kind: LineKind::Deletion,
+                    content: "old".to_string(),
+                    old_lineno: Some(1),
+                    new_lineno: None,
+                },
+                DiffLine {
+                    kind: LineKind::Addition,
+                    content: "new".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(1),
+                },
+            ],
+        };
+
+        let built = build_side_by_side_diff(
+            &DiffStyle::default(),
+            Color::Black,
+            &[hunk],
+            None,
+            &[],
+            &[],
+            &markers,
+            Color::Blue,
+            80,
+        );
+        let rendered: String = built.lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert_eq!(rendered.matches('●').count(), 2);
+        assert!(rendered.contains("● - old"));
+        assert!(rendered.contains("● + new"));
     }
 }
