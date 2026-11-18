@@ -1,40 +1,20 @@
-//! macOS GUI adapter entry.
+//! macOS GUI adapter.
 //!
 //! SwiftUI owns the process main thread. A multi-thread tokio runtime
 //! keeps the client and any embedded server alive on worker threads.
 //! Snapshot data crosses FFI as a JSON envelope (`{"data": ...}`).
 
-use anyhow::Result;
-
-pub fn run() -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        run_macos()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        anyhow::bail!("`crt gui` is only available on macOS")
-    }
-}
-
-#[cfg(target_os = "macos")]
-use anyhow::Context;
-#[cfg(target_os = "macos")]
+use anyhow::{Context, Result};
 use serde::Serialize;
 
-#[cfg(target_os = "macos")]
 use crate::app;
-#[cfg(target_os = "macos")]
-use crate::client::Client;
-#[cfg(target_os = "macos")]
-use crate::git::Repo;
+use crate::client;
+use crate::git;
 
-#[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn crt_gui_run(data: *const u8, size: usize);
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Serialize)]
 struct GuiSnapshot {
     version: String,
@@ -44,20 +24,17 @@ struct GuiSnapshot {
     status: String,
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Serialize)]
 struct SnapshotEnvelope<'a> {
     data: &'a GuiSnapshot,
 }
 
-#[cfg(target_os = "macos")]
 struct GuiSession {
-    client: Client,
+    client: client::Client,
     snapshot: GuiSnapshot,
 }
 
-#[cfg(target_os = "macos")]
-fn run_macos() -> Result<()> {
+pub fn run_gui() -> Result<()> {
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
     let session = rt.block_on(connect_session())?;
     let json = serde_json::to_vec(&SnapshotEnvelope {
@@ -76,13 +53,12 @@ fn run_macos() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 async fn connect_session() -> Result<GuiSession> {
     let socket_path = app::default_socket_path()?;
     let cwd = std::env::current_dir().context("Failed to determine current directory")?;
-    let repo = Repo::open(&cwd)?;
+    let repo = git::Repo::open(&cwd)?;
     let context = repo.context()?;
-    let client = Client::connect_or_start(&socket_path, false).await?;
+    let client = client::Client::connect_or_start(&socket_path, false).await?;
 
     let repo_name = context
         .worktree
@@ -103,7 +79,7 @@ async fn connect_session() -> Result<GuiSession> {
     })
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 mod tests {
     use super::{GuiSnapshot, SnapshotEnvelope};
 
