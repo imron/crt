@@ -66,6 +66,15 @@ with the server over a Unix domain socket using JSON-RPC.
   simultaneous clients.
 - `crt mcp-server` — MCP adapter. Connects to a running server (or starts
   an embedded one). Bridges MCP stdio protocol to the server's JSON-RPC API.
+- `--standalone` — starts a process-private embedded server socket under the
+  system temp directory. It uses the same client/server transport without
+  joining the shared `~/.crt/server.sock` session.
+
+Embedded servers are process-coupled. If the hosting TUI or MCP adapter exits,
+the embedded server is cancelled and its socket is removed on a best-effort
+basis. Other clients recover through the reconnect/failover supervisor by
+connecting to, or racing to start, a replacement embedded server. `crt server`
+is the only explicit persistent server mode.
 
 **Why client-server:**
 
@@ -575,27 +584,31 @@ share state (same merge-base).
 crt <base>                    TUI — review base..HEAD (connects to server or starts embedded)
 crt <base> --reset            Clear all review state for (base, current branch)
 crt server                    Start persistent server (~/.crt/server.sock)
-crt mcp-server                Start MCP adapter (stdio, connects to server)
+crt mcp-server --base <base>  Start MCP adapter (stdio, connects to server)
 crt apply-comments <base>     Write review markers into worktree files
 crt clear-comments <base>     Remove review markers from worktree files
 ```
 
 ## MCP Server
 
-The `crt mcp-server` subcommand starts an MCP adapter that bridges the
-MCP stdio protocol to the crt server's JSON-RPC API. It connects to a
-running server (or starts an embedded one).
+The `crt mcp-server --base <base>` subcommand starts an MCP adapter that
+bridges the MCP stdio protocol to the crt server's JSON-RPC API. It connects
+to a running server (or starts an embedded one) using the same lifecycle and
+reconnect supervisor path as the TUI.
 
 ### Tools
 
-| Tool                     | Description                                      |
-| ------------------------ | ------------------------------------------------ |
-| `list_review_comments`   | All unresolved comments. Optional `file_path` filter and `include_resolved` flag. |
-| `get_comment_detail`     | Full context for a comment: anchor text, surrounding code, anchor status. |
-| `resolve_comment`        | Mark a comment as resolved.                      |
-| `unresolve_comment`      | Mark a resolved comment as unresolved.            |
-| `list_review_summary`    | High-level overview: files changed, review progress, comment counts. |
-| `get_file_diff`          | Diff content for a specific file (base..HEAD).   |
+| Tool                  | Description                                      |
+| --------------------- | ------------------------------------------------ |
+| `list_changed_files`  | Files changed in the current review scope, including review status and diff metadata. |
+| `get_file_diff`       | Diff content for a specific file (base..HEAD).   |
+| `search_codebase`     | Regex search across the worktree or changed files. |
+| `find_definition`     | Best-effort symbol definition lookup.            |
+| `list_review_summary` | High-level overview: files changed and review progress. |
+
+Comment tools (`list_review_comments`, `get_comment_detail`,
+`resolve_comment`, `unresolve_comment`) remain part of the MCP roadmap and
+should be added when the corresponding server comment methods are implemented.
 
 ## File Markers
 
