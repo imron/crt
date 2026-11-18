@@ -1,6 +1,7 @@
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
+use super::comment_markers::CommentMarker;
 use crate::app::model::BlameLine;
 
 // ---------------------------------------------------------------------------
@@ -33,11 +34,12 @@ pub fn format_blame(blame: Option<&BlameLine>) -> String {
 pub fn make_line(
     old_lineno: Option<u32>,
     new_lineno: Option<u32>,
-    comment_marker: &str,
+    comment_marker: &CommentMarker,
     prefix: &str,
     content: &str,
     content_style: Style,
     gutter_fg: Color,
+    current_comment_fg: Color,
     blame_fg: Color,
     default_bg: Color,
     gutter_w: usize,
@@ -70,13 +72,21 @@ pub fn make_line(
     parts.push(Span::styled(old_num, gutter_style));
     parts.push(Span::styled(" ", gutter_style));
     parts.push(Span::styled(new_num, gutter_style));
-    if !comment_marker.is_empty() {
-        parts.push(Span::styled(comment_marker.to_string(), gutter_style));
+    if !comment_marker.text().is_empty() {
+        let marker_style = if comment_marker.is_current() {
+            gutter_style.fg(current_comment_fg)
+        } else {
+            gutter_style
+        };
+        parts.push(Span::styled(
+            comment_marker.text().to_string(),
+            marker_style,
+        ));
     }
     parts.push(Span::styled(format!(" {prefix} "), content_style));
 
     // Width consumed by blame + gutters + separator + prefix.
-    let fixed_cols = blame_cols + gutter_w + 1 + gutter_w + comment_marker.chars().count() + 3;
+    let fixed_cols = blame_cols + gutter_w + 1 + gutter_w + comment_marker.width() + 3;
     let content_cols = inner_w.saturating_sub(fixed_cols);
     let visible_len = content.chars().count();
     let pad = content_cols.saturating_sub(visible_len);
@@ -94,12 +104,13 @@ pub fn make_line(
 pub fn make_line_with_emphasis(
     old_lineno: Option<u32>,
     new_lineno: Option<u32>,
-    comment_marker: &str,
+    comment_marker: &CommentMarker,
     prefix: &str,
     spans: &[super::super::word_diff::DiffSpan<'_>],
     base_style: Style,
     emphasis_style: Style,
     gutter_fg: Color,
+    current_comment_fg: Color,
     blame_fg: Color,
     default_bg: Color,
     gutter_w: usize,
@@ -132,12 +143,20 @@ pub fn make_line_with_emphasis(
     parts.push(Span::styled(old_num, gutter_style));
     parts.push(Span::styled(" ", gutter_style));
     parts.push(Span::styled(new_num, gutter_style));
-    if !comment_marker.is_empty() {
-        parts.push(Span::styled(comment_marker.to_string(), gutter_style));
+    if !comment_marker.text().is_empty() {
+        let marker_style = if comment_marker.is_current() {
+            gutter_style.fg(current_comment_fg)
+        } else {
+            gutter_style
+        };
+        parts.push(Span::styled(
+            comment_marker.text().to_string(),
+            marker_style,
+        ));
     }
     parts.push(Span::styled(format!(" {prefix} "), base_style));
 
-    let fixed_cols = blame_cols + gutter_w + 1 + gutter_w + comment_marker.chars().count() + 3;
+    let fixed_cols = blame_cols + gutter_w + 1 + gutter_w + comment_marker.width() + 3;
     let content_cols = inner_w.saturating_sub(fixed_cols);
 
     let mut char_count = 0;
