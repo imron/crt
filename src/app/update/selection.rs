@@ -199,28 +199,9 @@ fn segments_for_selected_lines(
     let content_lines: Vec<&str> = content_for_side(state, side)
         .map(|content| content.lines().collect())
         .unwrap_or_default();
-    let mut segments = Vec::new();
-    let mut current: Vec<(&SourceLineEntry, i64)> = Vec::new();
-
-    for row in side_rows {
-        let starts_new_segment = current
-            .last()
-            .is_some_and(|(_, previous_line)| row.1 != previous_line.saturating_add(1));
-        if starts_new_segment {
-            if let Some(segment) = segment_from_side_rows(file_path, side, &content_lines, &current)
-            {
-                segments.push(segment);
-            }
-            current.clear();
-        }
-        current.push(row);
-    }
-
-    if let Some(segment) = segment_from_side_rows(file_path, side, &content_lines, &current) {
-        segments.push(segment);
-    }
-
-    segments
+    segment_from_side_rows(file_path, side, &content_lines, &side_rows)
+        .into_iter()
+        .collect()
 }
 
 fn segment_from_side_rows(
@@ -231,11 +212,13 @@ fn segment_from_side_rows(
 ) -> Option<CommentAnchorSegment> {
     let line_start = rows.iter().map(|(_, line)| *line).min()?;
     let line_end = rows.iter().map(|(_, line)| *line).max()?;
-    let anchor_text = rows
-        .iter()
-        .map(|(entry, _)| entry.content.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let anchor_text = anchor_text_for_line_range(content_lines, line_start, line_end)
+        .unwrap_or_else(|| {
+            rows.iter()
+                .map(|(entry, _)| entry.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
 
     Some(CommentAnchorSegment {
         side,
@@ -250,6 +233,17 @@ fn segment_from_side_rows(
         placement_status: AnchorPlacementStatus::Anchored,
         match_method: AnchorMatchMethod::ExactAtLine,
     })
+}
+
+fn anchor_text_for_line_range(lines: &[&str], line_start: i64, line_end: i64) -> Option<String> {
+    let start = line_start
+        .checked_sub(1)
+        .and_then(|line| usize::try_from(line).ok())?;
+    let end = usize::try_from(line_end).ok()?;
+    if start >= end || end > lines.len() {
+        return None;
+    }
+    Some(lines[start..end].join("\n"))
 }
 
 fn content_for_side(state: &AppState, side: CommentAnchorSide) -> Option<&str> {
@@ -610,5 +604,54 @@ mod tests {
         let head = entry_for(replacement_tail, CommentAnchorSide::Head);
         assert_eq!(head.line_number, 28);
         assert_eq!(head.content, "new line two");
+    }
+
+    #[test]
+    fn selected_non_contiguous_side_rows_coalesce_to_one_segment() {
+        let mut state = AppState::new(
+            crate::config::DiffAlgorithm::Myers,
+            crate::review_types::ConnectionContext {
+                repo_root: "/repo".to_string(),
+                worktree: "/repo".to_string(),
+                base_ref: "main".to_string(),
+                head_ref: "feature".to_string(),
+                merge_base: "abc123".to_string(),
+            },
+            Vec::new(),
+            40,
+        );
+        state.head_content = Some("one\ntwo\nthree\nfour\nfive\n".to_string());
+        let selected_lines = vec![
+            SourceLine {
+                entries: vec![SourceLineEntry {
+                    side: CommentAnchorSide::Head,
+                    line_number: 2,
+                    content: "two".to_string(),
+                }],
+                content: "two".to_string(),
+                is_change: true,
+            },
+            SourceLine {
+                entries: vec![SourceLineEntry {
+                    side: CommentAnchorSide::Head,
+                    line_number: 4,
+                    content: "four".to_string(),
+                }],
+                content: "four".to_string(),
+                is_change: true,
+            },
+        ];
+
+        let segments = segments_for_selected_lines(
+            &state,
+            "src/lib.rs",
+            &selected_lines,
+            CommentAnchorSide::Head,
+        );
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].line_start, 2);
+        assert_eq!(segments[0].line_end, 4);
+        assert_eq!(segments[0].anchor_text, "two\nthree\nfour");
     }
 }
