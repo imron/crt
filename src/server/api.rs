@@ -2395,6 +2395,39 @@ mod tests {
         comment
     }
 
+    fn compound_comment_with_segments(
+        segments: Vec<review_types::CommentAnchorSegment>,
+    ) -> StoredComment {
+        let mut comment = stored_comment(1, "compound");
+        comment.anchor = review_types::CommentAnchor {
+            segments,
+            aggregate_status: review_types::AnchorAggregateStatus::Anchored,
+        };
+        comment
+    }
+
+    fn anchor_segment(
+        side: review_types::CommentAnchorSide,
+        line_start: i64,
+        anchor_text: &str,
+        context_before: &str,
+        context_after: &str,
+    ) -> review_types::CommentAnchorSegment {
+        review_types::CommentAnchorSegment {
+            side,
+            file_path: "src/lib.rs".to_string(),
+            line_start,
+            line_end: line_start,
+            char_start: None,
+            char_end: None,
+            anchor_text: anchor_text.to_string(),
+            context_before: context_before.to_string(),
+            context_after: context_after.to_string(),
+            placement_status: review_types::AnchorPlacementStatus::Anchored,
+            match_method: review_types::AnchorMatchMethod::ExactAtLine,
+        }
+    }
+
     fn head_segment(anchor: &NewCommentAnchor) -> &NewCommentAnchorSegment {
         anchor
             .segments
@@ -2434,6 +2467,35 @@ mod tests {
             }
             review_types::AnchorAggregateStatus::Partial => review_types::AnchorStatus::Approximate,
             review_types::AnchorAggregateStatus::Orphaned => review_types::AnchorStatus::Orphaned,
+        }
+    }
+
+    fn resolve_anchor_with_side_content(
+        comment: &StoredComment,
+        base_content: Option<&str>,
+        head_content: Option<&str>,
+    ) -> NewCommentAnchor {
+        let segments: Vec<NewCommentAnchorSegment> = comment
+            .anchor
+            .segments
+            .iter()
+            .map(|segment| match segment.side {
+                review_types::CommentAnchorSide::Base => base_content
+                    .map(|content| {
+                        resolve_anchor_segment(segment, content, "base-blob".to_string(), None)
+                    })
+                    .unwrap_or_else(|| orphaned_anchor_segment(segment, String::new())),
+                review_types::CommentAnchorSide::Head => head_content
+                    .map(|content| {
+                        resolve_anchor_segment(segment, content, "head-blob".to_string(), None)
+                    })
+                    .unwrap_or_else(|| orphaned_anchor_segment(segment, String::new())),
+            })
+            .collect();
+
+        NewCommentAnchor {
+            aggregate_status: aggregate_status_for_new_segments(&segments),
+            segments,
         }
     }
 
@@ -2978,6 +3040,142 @@ mod tests {
 
         assert_eq!(anchor_status(&anchor), review_types::AnchorStatus::Shifted);
         assert_eq!(head_segment(&anchor).line_start, 4);
+    }
+
+    #[test]
+    fn duplicate_text_keeps_exact_at_line_match_when_available() {
+        let comment = stored_comment(4, "target");
+        let anchor = resolve_anchor(
+            &comment,
+            "target\naaa\nbbb\ntarget\nccc\n",
+            "new".to_string(),
+            None,
+        );
+
+        let head = head_segment(&anchor);
+        assert_eq!(anchor_status(&anchor), review_types::AnchorStatus::Anchored);
+        assert_eq!(head.line_start, 4);
+        assert_eq!(
+            head.match_method,
+            review_types::AnchorMatchMethod::ExactAtLine
+        );
+    }
+
+    #[test]
+    fn start_context_without_end_context_does_not_false_anchor_changed_text() {
+        let comment = stored_comment(2, "old target");
+        let anchor = resolve_anchor(
+            &comment,
+            "before\nunrelated\nmissing after\n",
+            "new".to_string(),
+            None,
+        );
+
+        let head = head_segment(&anchor);
+        assert_eq!(anchor_status(&anchor), review_types::AnchorStatus::Orphaned);
+        assert_eq!(
+            head.placement_status,
+            review_types::AnchorPlacementStatus::Orphaned
+        );
+        assert_eq!(head.match_method, review_types::AnchorMatchMethod::NotFound);
+    }
+
+    #[test]
+    fn end_context_without_start_context_does_not_false_anchor_changed_text() {
+        let comment = stored_comment(2, "old target");
+        let anchor = resolve_anchor(
+            &comment,
+            "missing before\nunrelated\nafter\n",
+            "new".to_string(),
+            None,
+        );
+
+        let head = head_segment(&anchor);
+        assert_eq!(anchor_status(&anchor), review_types::AnchorStatus::Orphaned);
+        assert_eq!(
+            head.placement_status,
+            review_types::AnchorPlacementStatus::Orphaned
+        );
+        assert_eq!(head.match_method, review_types::AnchorMatchMethod::NotFound);
+    }
+
+    #[test]
+    fn deleted_base_side_marks_paired_anchor_partial_when_head_anchors() {
+        let comment = compound_comment_with_segments(vec![
+            anchor_segment(
+                review_types::CommentAnchorSide::Base,
+                2,
+                "base target",
+                "base before",
+                "base after",
+            ),
+            anchor_segment(
+                review_types::CommentAnchorSide::Head,
+                2,
+                "head target",
+                "head before",
+                "head after",
+            ),
+        ]);
+
+        let anchor = resolve_anchor_with_side_content(
+            &comment,
+            None,
+            Some("head before\nhead target\nhead after\n"),
+        );
+
+        let base = segment_for_side(&anchor, review_types::CommentAnchorSide::Base);
+        let head = segment_for_side(&anchor, review_types::CommentAnchorSide::Head);
+        assert_eq!(
+            anchor.aggregate_status,
+            review_types::AnchorAggregateStatus::Partial
+        );
+        assert_eq!(
+            base.placement_status,
+            review_types::AnchorPlacementStatus::Orphaned
+        );
+        assert_eq!(
+            head.placement_status,
+            review_types::AnchorPlacementStatus::Anchored
+        );
+        assert_eq!(head.line_start, 2);
+    }
+
+    #[test]
+    fn recreated_unrelated_file_does_not_false_anchor_segment() {
+        let comment = base_only_comment(2, "deleted target");
+
+        let anchor =
+            resolve_anchor_with_side_content(&comment, Some("new unrelated\nfile content\n"), None);
+
+        let base = segment_for_side(&anchor, review_types::CommentAnchorSide::Base);
+        assert_eq!(
+            anchor.aggregate_status,
+            review_types::AnchorAggregateStatus::Orphaned
+        );
+        assert_eq!(
+            base.placement_status,
+            review_types::AnchorPlacementStatus::Orphaned
+        );
+        assert_eq!(base.match_method, review_types::AnchorMatchMethod::NotFound);
+    }
+
+    #[test]
+    fn renamed_file_without_lookup_orphans_segment() {
+        let comment = base_only_comment(2, "deleted target");
+
+        let anchor = resolve_anchor_with_side_content(&comment, None, None);
+
+        let base = segment_for_side(&anchor, review_types::CommentAnchorSide::Base);
+        assert_eq!(
+            anchor.aggregate_status,
+            review_types::AnchorAggregateStatus::Orphaned
+        );
+        assert_eq!(
+            base.placement_status,
+            review_types::AnchorPlacementStatus::Orphaned
+        );
+        assert_eq!(base.file_blob_sha, "");
     }
 
     #[test]
