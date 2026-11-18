@@ -11,7 +11,10 @@ use anyhow::{Context, Result};
 use chrono::Local;
 use rusqlite::{Connection, params};
 
-use crate::review_types::AnchorStatus;
+use crate::review_types::{
+    AnchorAggregateStatus, AnchorMatchMethod, AnchorPlacementStatus, AnchorStatus, CommentAnchor,
+    CommentAnchorSegment, CommentAnchorSide,
+};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -34,6 +37,7 @@ pub struct StoredReview {
 pub struct NewComment {
     pub merge_base: String,
     pub head_ref: String,
+    pub created_head_commit: String,
     pub file_path: String,
     pub body: String,
     pub anchor: NewCommentAnchor,
@@ -64,9 +68,18 @@ pub struct NewCommentResolutionEvent {
     pub anchor_status: AnchorStatus,
 }
 
-/// Anchor data stored as a versioned record.
+/// Compound anchor data stored as a versioned record.
 #[derive(Debug, Clone)]
 pub struct NewCommentAnchor {
+    pub segments: Vec<NewCommentAnchorSegment>,
+    pub aggregate_status: AnchorAggregateStatus,
+}
+
+/// Side-specific segment data stored under an anchor version.
+#[derive(Debug, Clone)]
+pub struct NewCommentAnchorSegment {
+    pub side: CommentAnchorSide,
+    pub file_path: String,
     pub file_blob_sha: String,
     pub line_start: i64,
     pub line_end: i64,
@@ -75,7 +88,8 @@ pub struct NewCommentAnchor {
     pub anchor_text: String,
     pub context_before: String,
     pub context_after: String,
-    pub status: AnchorStatus,
+    pub placement_status: AnchorPlacementStatus,
+    pub match_method: AnchorMatchMethod,
 }
 
 /// A stored comment record.
@@ -84,6 +98,8 @@ pub struct StoredComment {
     pub id: i64,
     pub merge_base: String,
     pub head_ref: String,
+    pub created_head_commit: String,
+    pub anchor: CommentAnchor,
     pub file_path: String,
     pub line_start: i64,
     pub line_end: i64,
@@ -147,6 +163,12 @@ const MIGRATIONS: &[Migration] = &[
         name: "comment_resolution_events",
         up: include_str!("../migrations/0005_comment_resolution_events.up.sql"),
         down: include_str!("../migrations/0005_comment_resolution_events.down.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "compound_comment_anchors",
+        up: include_str!("../migrations/0006_compound_comment_anchors.up.sql"),
+        down: include_str!("../migrations/0006_compound_comment_anchors.down.sql"),
     },
 ];
 
@@ -216,6 +238,16 @@ impl Database {
         }
         if self.table_exists("anchor_versions")? && !self.column_exists("comments", "line_start")? {
             self.mark_migration_applied(4, "split_comment_anchors")?;
+        }
+        if self.table_exists("comment_resolution_events")?
+            && !self.column_exists("comments", "resolved")?
+        {
+            self.mark_migration_applied(5, "comment_resolution_events")?;
+        }
+        if self.table_exists("anchor_segments")?
+            && self.column_exists("comments", "created_head_commit")?
+        {
+            self.mark_migration_applied(6, "compound_comment_anchors")?;
         }
 
         Ok(())
@@ -442,9 +474,17 @@ impl Database {
         self.conn
             .execute(
                 "INSERT INTO comments
-                    (merge_base, head_ref, file_path, body, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-                params![new.merge_base, new.head_ref, new.file_path, new.body, now,],
+                    (merge_base, head_ref, created_head_commit, file_path, body,
+                     created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                params![
+                    new.merge_base,
+                    new.head_ref,
+                    new.created_head_commit,
+                    new.file_path,
+                    new.body,
+                    now,
+                ],
             )
             .context("Failed to create comment")?;
 
@@ -457,25 +497,8 @@ impl Database {
             &now,
         )?;
 
-        Ok(StoredComment {
-            id,
-            merge_base: new.merge_base.clone(),
-            head_ref: new.head_ref.clone(),
-            file_path: new.file_path.clone(),
-            line_start: new.anchor.line_start,
-            line_end: new.anchor.line_end,
-            char_start: new.anchor.char_start,
-            char_end: new.anchor.char_end,
-            anchor_text: new.anchor.anchor_text.clone(),
-            context_before: new.anchor.context_before.clone(),
-            context_after: new.anchor.context_after.clone(),
-            body: new.body.clone(),
-            resolved: false,
-            created_at: now.clone(),
-            updated_at: now,
-            file_blob_sha: new.anchor.file_blob_sha.clone(),
-            anchor_status: new.anchor.status,
-        })
+        self.get_comment(id)?
+            .context("Failed to load newly created comment")
     }
 
     /// Append a new anchor version for an existing comment.
@@ -485,29 +508,49 @@ impl Database {
     }
 
     fn insert_anchor_version_at(&self, version: &NewAnchorVersion, created_at: &str) -> Result<()> {
+        validate_new_anchor(&version.anchor)?;
         self.conn
             .execute(
                 "INSERT INTO anchor_versions
-                    (comment_id, file_blob_sha, line_start, line_end, char_start,
-                     char_end, anchor_text, context_before, context_after, status,
-                     created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    (comment_id, aggregate_status, created_at)
+                 VALUES (?1, ?2, ?3)",
                 params![
                     version.comment_id,
-                    version.anchor.file_blob_sha,
-                    version.anchor.line_start,
-                    version.anchor.line_end,
-                    version.anchor.char_start,
-                    version.anchor.char_end,
-                    version.anchor.anchor_text,
-                    version.anchor.context_before,
-                    version.anchor.context_after,
-                    anchor_status_to_db(version.anchor.status),
+                    anchor_aggregate_status_to_db(version.anchor.aggregate_status),
                     created_at,
                 ],
             )
             .context("Failed to insert anchor version")?;
 
+        let anchor_version_id = self.conn.last_insert_rowid();
+        for segment in &version.anchor.segments {
+            self.conn
+                .execute(
+                    "INSERT INTO anchor_segments
+                        (anchor_version_id, side, file_path, file_blob_sha,
+                         line_start, line_end, char_start, char_end,
+                         anchor_text, context_before, context_after,
+                         placement_status, match_method, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                    params![
+                        anchor_version_id,
+                        comment_anchor_side_to_db(segment.side),
+                        segment.file_path,
+                        segment.file_blob_sha,
+                        segment.line_start,
+                        segment.line_end,
+                        segment.char_start,
+                        segment.char_end,
+                        segment.anchor_text,
+                        segment.context_before,
+                        segment.context_after,
+                        anchor_placement_status_to_db(segment.placement_status),
+                        anchor_match_method_to_db(segment.match_method),
+                        created_at,
+                    ],
+                )
+                .context("Failed to insert anchor segment")?;
+        }
         Ok(())
     }
 
@@ -538,7 +581,12 @@ impl Database {
         if !include_resolved {
             sql.push_str(&format!(" AND NOT {COMMENT_RESOLVED_EXPR}"));
         }
-        sql.push_str(" ORDER BY c.file_path, a.line_start");
+        sql.push_str(
+            " ORDER BY c.file_path,
+              (SELECT MIN(s.line_start)
+               FROM anchor_segments s
+               WHERE s.anchor_version_id = av.id)",
+        );
 
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|b| b.as_ref()).collect();
@@ -548,12 +596,13 @@ impl Database {
             .prepare(&sql)
             .context("Failed to prepare comment query")?;
         let rows = stmt
-            .query_map(&*params_refs, read_comment_row)
+            .query_map(&*params_refs, read_comment_core_row)
             .context("Failed to list comments")?;
 
         let mut comments = Vec::new();
         for row in rows {
-            comments.push(row.context("Failed to read comment row")?);
+            let core = row.context("Failed to read comment row")?;
+            comments.push(self.stored_comment_from_core(core)?);
         }
         Ok(comments)
     }
@@ -566,11 +615,14 @@ impl Database {
             .context("Failed to prepare comment query")?;
 
         let mut rows = stmt
-            .query_map(params![id], read_comment_row)
+            .query_map(params![id], read_comment_core_row)
             .context("Failed to get comment")?;
 
         match rows.next() {
-            Some(row) => Ok(Some(row.context("Failed to read comment row")?)),
+            Some(row) => {
+                let core = row.context("Failed to read comment row")?;
+                Ok(Some(self.stored_comment_from_core(core)?))
+            }
             None => Ok(None),
         }
     }
@@ -690,6 +742,15 @@ impl Database {
             .context("Failed to delete comment resolution events")?;
         self.conn
             .execute(
+                "DELETE FROM anchor_segments
+                 WHERE anchor_version_id IN (
+                    SELECT id FROM anchor_versions WHERE comment_id = ?1
+                 )",
+                params![id],
+            )
+            .context("Failed to delete comment anchor segments")?;
+        self.conn
+            .execute(
                 "DELETE FROM anchor_versions WHERE comment_id = ?1",
                 params![id],
             )
@@ -711,25 +772,158 @@ fn now_iso8601() -> String {
 }
 
 const COMMENT_SELECT: &str = "
-    SELECT c.id, c.merge_base, c.head_ref, c.file_path,
-           a.line_start, a.line_end, a.char_start, a.char_end,
-           a.anchor_text, a.context_before, a.context_after,
-           c.body,
+    SELECT c.id, c.merge_base, c.head_ref, c.created_head_commit,
+           c.file_path, c.body,
            CASE WHEN EXISTS (
                SELECT 1
                FROM comment_resolution_events event
                WHERE event.comment_id = c.id
            ) THEN 1 ELSE 0 END AS resolved,
            c.created_at, c.updated_at,
-           a.file_blob_sha, a.status
+           av.id, av.aggregate_status
     FROM comments c
-    JOIN v_current_anchors a ON a.comment_id = c.id";
+    JOIN v_current_anchor_versions av ON av.comment_id = c.id";
 
 const COMMENT_RESOLVED_EXPR: &str = "EXISTS (
     SELECT 1
     FROM comment_resolution_events event
     WHERE event.comment_id = c.id
 )";
+
+#[derive(Debug)]
+struct StoredCommentCore {
+    id: i64,
+    merge_base: String,
+    head_ref: String,
+    created_head_commit: String,
+    file_path: String,
+    body: String,
+    resolved: bool,
+    created_at: String,
+    updated_at: String,
+    anchor_version_id: i64,
+    aggregate_status: AnchorAggregateStatus,
+}
+
+impl Database {
+    fn stored_comment_from_core(&self, core: StoredCommentCore) -> Result<StoredComment> {
+        let stored_segments = self.load_anchor_segments(core.anchor_version_id)?;
+        let segments = stored_segments
+            .iter()
+            .map(|stored| stored.segment.clone())
+            .collect::<Vec<_>>();
+        let anchor = CommentAnchor::try_with_aggregate_status(segments, core.aggregate_status)
+            .context("Failed to assemble comment anchor")?;
+        let preferred =
+            preferred_segment(&stored_segments).context("Comment anchor has no segments")?;
+
+        let anchor_status = legacy_anchor_status(&anchor);
+        Ok(StoredComment {
+            id: core.id,
+            merge_base: core.merge_base,
+            head_ref: core.head_ref,
+            created_head_commit: core.created_head_commit,
+            anchor,
+            file_path: core.file_path,
+            line_start: preferred.line_start,
+            line_end: preferred.line_end,
+            char_start: preferred.char_start,
+            char_end: preferred.char_end,
+            anchor_text: preferred.anchor_text.to_string(),
+            context_before: preferred.context_before.to_string(),
+            context_after: preferred.context_after.to_string(),
+            body: core.body,
+            resolved: core.resolved,
+            created_at: core.created_at,
+            updated_at: core.updated_at,
+            file_blob_sha: preferred.file_blob_sha.clone(),
+            anchor_status,
+        })
+    }
+
+    fn load_anchor_segments(&self, anchor_version_id: i64) -> Result<Vec<StoredAnchorSegment>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT side, file_path, file_blob_sha, line_start, line_end,
+                        char_start, char_end, anchor_text, context_before,
+                        context_after, placement_status, match_method
+                 FROM anchor_segments
+                 WHERE anchor_version_id = ?1
+                 ORDER BY CASE side WHEN 'base' THEN 0 ELSE 1 END",
+            )
+            .context("Failed to prepare anchor segment query")?;
+
+        let rows = stmt
+            .query_map(params![anchor_version_id], read_anchor_segment_row)
+            .context("Failed to list anchor segments")?;
+
+        let mut segments = Vec::new();
+        for row in rows {
+            segments.push(row.context("Failed to read anchor segment row")?);
+        }
+        Ok(segments)
+    }
+}
+
+#[derive(Debug)]
+struct StoredAnchorSegment {
+    segment: CommentAnchorSegment,
+    file_blob_sha: String,
+}
+
+#[derive(Debug)]
+struct PreferredSegment<'a> {
+    line_start: i64,
+    line_end: i64,
+    char_start: Option<i64>,
+    char_end: Option<i64>,
+    anchor_text: &'a str,
+    context_before: &'a str,
+    context_after: &'a str,
+    file_blob_sha: String,
+}
+
+fn preferred_segment(segments: &[StoredAnchorSegment]) -> Option<PreferredSegment<'_>> {
+    segments
+        .iter()
+        .find(|stored| stored.segment.side == CommentAnchorSide::Head)
+        .or_else(|| segments.first())
+        .map(|stored| PreferredSegment {
+            line_start: stored.segment.line_start,
+            line_end: stored.segment.line_end,
+            char_start: stored.segment.char_start,
+            char_end: stored.segment.char_end,
+            anchor_text: &stored.segment.anchor_text,
+            context_before: &stored.segment.context_before,
+            context_after: &stored.segment.context_after,
+            file_blob_sha: stored.file_blob_sha.clone(),
+        })
+}
+
+fn legacy_anchor_status(anchor: &CommentAnchor) -> AnchorStatus {
+    match anchor.aggregate_status {
+        AnchorAggregateStatus::Anchored => {
+            if anchor
+                .segments
+                .iter()
+                .any(|segment| segment.match_method == AnchorMatchMethod::Context)
+            {
+                AnchorStatus::Approximate
+            } else if anchor
+                .segments
+                .iter()
+                .any(|segment| segment.match_method == AnchorMatchMethod::ExactElsewhere)
+            {
+                AnchorStatus::Shifted
+            } else {
+                AnchorStatus::Anchored
+            }
+        }
+        AnchorAggregateStatus::Partial => AnchorStatus::Approximate,
+        AnchorAggregateStatus::Orphaned => AnchorStatus::Orphaned,
+    }
+}
 
 fn anchor_status_to_db(status: AnchorStatus) -> &'static str {
     match status {
@@ -740,44 +934,156 @@ fn anchor_status_to_db(status: AnchorStatus) -> &'static str {
     }
 }
 
-fn anchor_status_from_db(value: &str) -> rusqlite::Result<AnchorStatus> {
-    match value {
-        "anchored" => Ok(AnchorStatus::Anchored),
-        "shifted" => Ok(AnchorStatus::Shifted),
-        "approximate" => Ok(AnchorStatus::Approximate),
-        "orphaned" => Ok(AnchorStatus::Orphaned),
-        unknown => Err(rusqlite::Error::FromSqlConversionFailure(
-            16,
-            rusqlite::types::Type::Text,
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("unknown anchor status {unknown:?}"),
-            )),
-        )),
+fn comment_anchor_side_to_db(side: CommentAnchorSide) -> &'static str {
+    match side {
+        CommentAnchorSide::Base => "base",
+        CommentAnchorSide::Head => "head",
     }
 }
 
-fn read_comment_row(row: &rusqlite::Row) -> rusqlite::Result<StoredComment> {
-    let anchor_status: String = row.get(16)?;
+fn comment_anchor_side_from_db(value: &str, index: usize) -> rusqlite::Result<CommentAnchorSide> {
+    match value {
+        "base" => Ok(CommentAnchorSide::Base),
+        "head" => Ok(CommentAnchorSide::Head),
+        unknown => conversion_error(index, format!("unknown comment anchor side {unknown:?}")),
+    }
+}
 
-    Ok(StoredComment {
+fn anchor_placement_status_to_db(status: AnchorPlacementStatus) -> &'static str {
+    match status {
+        AnchorPlacementStatus::Anchored => "anchored",
+        AnchorPlacementStatus::Orphaned => "orphaned",
+    }
+}
+
+fn anchor_placement_status_from_db(
+    value: &str,
+    index: usize,
+) -> rusqlite::Result<AnchorPlacementStatus> {
+    match value {
+        "anchored" => Ok(AnchorPlacementStatus::Anchored),
+        "orphaned" => Ok(AnchorPlacementStatus::Orphaned),
+        unknown => conversion_error(
+            index,
+            format!("unknown anchor placement status {unknown:?}"),
+        ),
+    }
+}
+
+fn anchor_match_method_to_db(method: AnchorMatchMethod) -> &'static str {
+    match method {
+        AnchorMatchMethod::ExactAtLine => "exact_at_line",
+        AnchorMatchMethod::ExactElsewhere => "exact_elsewhere",
+        AnchorMatchMethod::Context => "context",
+        AnchorMatchMethod::NotFound => "not_found",
+    }
+}
+
+fn anchor_match_method_from_db(value: &str, index: usize) -> rusqlite::Result<AnchorMatchMethod> {
+    match value {
+        "exact_at_line" => Ok(AnchorMatchMethod::ExactAtLine),
+        "exact_elsewhere" => Ok(AnchorMatchMethod::ExactElsewhere),
+        "context" => Ok(AnchorMatchMethod::Context),
+        "not_found" => Ok(AnchorMatchMethod::NotFound),
+        unknown => conversion_error(index, format!("unknown anchor match method {unknown:?}")),
+    }
+}
+
+fn anchor_aggregate_status_to_db(status: AnchorAggregateStatus) -> &'static str {
+    match status {
+        AnchorAggregateStatus::Anchored => "anchored",
+        AnchorAggregateStatus::Partial => "partial",
+        AnchorAggregateStatus::Orphaned => "orphaned",
+    }
+}
+
+fn anchor_aggregate_status_from_db(
+    value: &str,
+    index: usize,
+) -> rusqlite::Result<AnchorAggregateStatus> {
+    match value {
+        "anchored" => Ok(AnchorAggregateStatus::Anchored),
+        "partial" => Ok(AnchorAggregateStatus::Partial),
+        "orphaned" => Ok(AnchorAggregateStatus::Orphaned),
+        unknown => conversion_error(
+            index,
+            format!("unknown anchor aggregate status {unknown:?}"),
+        ),
+    }
+}
+
+fn conversion_error<T>(index: usize, message: String) -> rusqlite::Result<T> {
+    Err(rusqlite::Error::FromSqlConversionFailure(
+        index,
+        rusqlite::types::Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            message,
+        )),
+    ))
+}
+
+fn validate_new_anchor(anchor: &NewCommentAnchor) -> Result<()> {
+    let segments: Vec<CommentAnchorSegment> = anchor
+        .segments
+        .iter()
+        .map(|segment| CommentAnchorSegment {
+            side: segment.side,
+            file_path: segment.file_path.clone(),
+            line_start: segment.line_start,
+            line_end: segment.line_end,
+            char_start: segment.char_start,
+            char_end: segment.char_end,
+            anchor_text: segment.anchor_text.clone(),
+            context_before: segment.context_before.clone(),
+            context_after: segment.context_after.clone(),
+            placement_status: segment.placement_status,
+            match_method: segment.match_method,
+        })
+        .collect();
+    CommentAnchor::try_with_aggregate_status(segments, anchor.aggregate_status)
+        .context("Invalid comment anchor")?;
+    Ok(())
+}
+
+fn read_comment_core_row(row: &rusqlite::Row) -> rusqlite::Result<StoredCommentCore> {
+    let aggregate_status: String = row.get(10)?;
+
+    Ok(StoredCommentCore {
         id: row.get(0)?,
         merge_base: row.get(1)?,
         head_ref: row.get(2)?,
-        file_path: row.get(3)?,
-        line_start: row.get(4)?,
-        line_end: row.get(5)?,
-        char_start: row.get(6)?,
-        char_end: row.get(7)?,
-        anchor_text: row.get(8)?,
-        context_before: row.get(9)?,
-        context_after: row.get(10)?,
-        body: row.get(11)?,
-        resolved: row.get::<_, i64>(12)? != 0,
-        created_at: row.get(13)?,
-        updated_at: row.get(14)?,
-        file_blob_sha: row.get(15)?,
-        anchor_status: anchor_status_from_db(&anchor_status)?,
+        created_head_commit: row.get(3)?,
+        file_path: row.get(4)?,
+        body: row.get(5)?,
+        resolved: row.get::<_, i64>(6)? != 0,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+        anchor_version_id: row.get(9)?,
+        aggregate_status: anchor_aggregate_status_from_db(&aggregate_status, 10)?,
+    })
+}
+
+fn read_anchor_segment_row(row: &rusqlite::Row) -> rusqlite::Result<StoredAnchorSegment> {
+    let side: String = row.get(0)?;
+    let placement_status: String = row.get(10)?;
+    let match_method: String = row.get(11)?;
+
+    Ok(StoredAnchorSegment {
+        segment: CommentAnchorSegment {
+            side: comment_anchor_side_from_db(&side, 0)?,
+            file_path: row.get(1)?,
+            line_start: row.get(3)?,
+            line_end: row.get(4)?,
+            char_start: row.get(5)?,
+            char_end: row.get(6)?,
+            anchor_text: row.get(7)?,
+            context_before: row.get(8)?,
+            context_after: row.get(9)?,
+            placement_status: anchor_placement_status_from_db(&placement_status, 10)?,
+            match_method: anchor_match_method_from_db(&match_method, 11)?,
+        },
+        file_blob_sha: row.get(2)?,
     })
 }
 
@@ -801,19 +1107,36 @@ mod tests {
         NewComment {
             merge_base: "main".to_string(),
             head_ref: "feat".to_string(),
+            created_head_commit: "head-commit".to_string(),
             file_path: file.to_string(),
             body: body.to_string(),
-            anchor: NewCommentAnchor {
+            anchor: new_head_anchor(file, line, line, anchor, AnchorMatchMethod::ExactAtLine),
+        }
+    }
+
+    fn new_head_anchor(
+        file: &str,
+        line_start: i64,
+        line_end: i64,
+        anchor_text: &str,
+        match_method: AnchorMatchMethod,
+    ) -> NewCommentAnchor {
+        NewCommentAnchor {
+            segments: vec![NewCommentAnchorSegment {
+                side: CommentAnchorSide::Head,
+                file_path: file.to_string(),
                 file_blob_sha: "blob-1".to_string(),
-                line_start: line,
-                line_end: line,
+                line_start,
+                line_end,
                 char_start: None,
                 char_end: None,
-                anchor_text: anchor.to_string(),
+                anchor_text: anchor_text.to_string(),
                 context_before: String::new(),
                 context_after: String::new(),
-                status: AnchorStatus::Anchored,
-            },
+                placement_status: AnchorPlacementStatus::Anchored,
+                match_method,
+            }],
+            aggregate_status: AnchorAggregateStatus::Anchored,
         }
     }
 
@@ -894,19 +1217,7 @@ mod tests {
         }
 
         let db = Database::open(&db_path).unwrap();
-        let fetched = db.get_comment(42).unwrap().unwrap();
-
-        assert_eq!(fetched.body, "body text");
-        assert_eq!(fetched.line_start, 7);
-        assert_eq!(fetched.line_end, 8);
-        assert_eq!(fetched.char_start, Some(1));
-        assert_eq!(fetched.char_end, Some(4));
-        assert_eq!(fetched.anchor_text, "old anchor");
-        assert_eq!(fetched.context_before, "before");
-        assert_eq!(fetched.context_after, "after");
-        assert_eq!(fetched.file_blob_sha, "");
-        assert_eq!(fetched.anchor_status, AnchorStatus::Anchored);
-        assert!(fetched.resolved);
+        assert!(db.get_comment(42).unwrap().is_none());
 
         let count: i64 = db
             .conn
@@ -916,7 +1227,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count, 0);
     }
 
     #[test]
@@ -984,11 +1295,7 @@ mod tests {
         assert_eq!(review.diff_hash, "hash-1");
         assert_eq!(review.reviewed_commit, "");
 
-        let fetched = db.get_comment(7).unwrap().unwrap();
-        assert_eq!(fetched.merge_base, "main");
-        assert_eq!(fetched.anchor_text, "anchor");
-        assert_eq!(fetched.body, "legacy body");
-        assert_eq!(fetched.anchor_status, AnchorStatus::Anchored);
+        assert!(db.get_comment(7).unwrap().is_none());
 
         let count: i64 = db
             .conn
@@ -996,7 +1303,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(count, 5);
+        assert_eq!(count, 6);
     }
 
     #[test]
@@ -1093,18 +1400,25 @@ mod tests {
             .create_comment(&NewComment {
                 merge_base: "main".to_string(),
                 head_ref: "feat".to_string(),
+                created_head_commit: "head-commit".to_string(),
                 file_path: "src/lib.rs".to_string(),
                 body: "This should handle errors".to_string(),
                 anchor: NewCommentAnchor {
-                    file_blob_sha: "blob-1".to_string(),
-                    line_start: 10,
-                    line_end: 12,
-                    char_start: None,
-                    char_end: None,
-                    anchor_text: "fn foo() {}".to_string(),
-                    context_before: "// before".to_string(),
-                    context_after: "// after".to_string(),
-                    status: AnchorStatus::Anchored,
+                    segments: vec![NewCommentAnchorSegment {
+                        side: CommentAnchorSide::Head,
+                        file_path: "src/lib.rs".to_string(),
+                        file_blob_sha: "blob-1".to_string(),
+                        line_start: 10,
+                        line_end: 12,
+                        char_start: None,
+                        char_end: None,
+                        anchor_text: "fn foo() {}".to_string(),
+                        context_before: "// before".to_string(),
+                        context_after: "// after".to_string(),
+                        placement_status: AnchorPlacementStatus::Anchored,
+                        match_method: AnchorMatchMethod::ExactAtLine,
+                    }],
+                    aggregate_status: AnchorAggregateStatus::Anchored,
                 },
             })
             .unwrap();
@@ -1129,8 +1443,8 @@ mod tests {
         let (_dir, db) = test_db();
 
         let mut c = simple_comment("a.rs", 5, "some_var", "Rename this");
-        c.anchor.char_start = Some(10);
-        c.anchor.char_end = Some(20);
+        c.anchor.segments[0].char_start = Some(10);
+        c.anchor.segments[0].char_end = Some(20);
         let comment = db.create_comment(&c).unwrap();
 
         let fetched = db.get_comment(comment.id).unwrap().unwrap();

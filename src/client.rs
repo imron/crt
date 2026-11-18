@@ -937,7 +937,10 @@ fn append_unique_comments(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::review_types::{AnchorStatus, Comment};
+    use crate::review_types::{
+        AnchorAggregateStatus, AnchorMatchMethod, AnchorPlacementStatus, AnchorStatus, Comment,
+        CommentAnchor, CommentAnchorSegment, CommentAnchorSide,
+    };
 
     #[test]
     fn append_unique_comments_keeps_current_and_adds_previous_unresolved() {
@@ -957,6 +960,8 @@ mod tests {
             id,
             merge_base: "merge-base".to_string(),
             head_ref: "HEAD".to_string(),
+            created_head_commit: "head-commit".to_string(),
+            anchor: test_anchor(id),
             file_path: "src/lib.rs".to_string(),
             line_start: id,
             line_end: id,
@@ -970,6 +975,25 @@ mod tests {
             created_at: "2026-07-01T00:00:00+10:00".to_string(),
             updated_at: "2026-07-01T00:00:00+10:00".to_string(),
             anchor_status: AnchorStatus::Anchored,
+        }
+    }
+
+    fn test_anchor(line: i64) -> CommentAnchor {
+        CommentAnchor {
+            segments: vec![CommentAnchorSegment {
+                side: CommentAnchorSide::Head,
+                file_path: "src/lib.rs".to_string(),
+                line_start: line,
+                line_end: line,
+                char_start: None,
+                char_end: None,
+                anchor_text: String::new(),
+                context_before: String::new(),
+                context_after: String::new(),
+                placement_status: AnchorPlacementStatus::Anchored,
+                match_method: AnchorMatchMethod::ExactAtLine,
+            }],
+            aggregate_status: AnchorAggregateStatus::Anchored,
         }
     }
 }

@@ -74,8 +74,9 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::review_types::{
-        AnchorStatus, ChangeKind, Comment, ConnectionContext, DiffContent, FileChange, FileEntry,
-        ReviewStatus,
+        AnchorAggregateStatus, AnchorMatchMethod, AnchorPlacementStatus, AnchorStatus, ChangeKind,
+        Comment, CommentAnchor, CommentAnchorSegment, CommentAnchorSide, ConnectionContext,
+        DiffContent, FileChange, FileEntry, ReviewStatus,
     };
     use ratatui::layout::Rect;
 
@@ -149,6 +150,23 @@ mod tests {
             id,
             merge_base: "abc123".to_string(),
             head_ref: "feature".to_string(),
+            created_head_commit: "head-commit".to_string(),
+            anchor: CommentAnchor {
+                segments: vec![CommentAnchorSegment {
+                    side: CommentAnchorSide::Head,
+                    file_path: file_path.to_string(),
+                    line_start: 2,
+                    line_end: 2,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "anchor".to_string(),
+                    context_before: String::new(),
+                    context_after: String::new(),
+                    placement_status: AnchorPlacementStatus::Anchored,
+                    match_method: AnchorMatchMethod::ExactAtLine,
+                }],
+                aggregate_status: AnchorAggregateStatus::Anchored,
+            },
             file_path: file_path.to_string(),
             line_start: 2,
             line_end: 2,

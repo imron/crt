@@ -10,8 +10,8 @@ use tokio::sync::broadcast;
 
 use super::{ConnectionContext, ServerState};
 use crate::db::{
-    Database, NewAnchorVersion, NewComment, NewCommentAnchor, NewCommentResolutionEvent,
-    StoredComment,
+    Database, NewAnchorVersion, NewComment, NewCommentAnchor, NewCommentAnchorSegment,
+    NewCommentResolutionEvent, StoredComment,
 };
 use crate::git;
 use crate::protocol::{
@@ -811,33 +811,33 @@ pub async fn handle_create_comment(
 
     let merge_base = ctx.merge_base.to_string();
     let head_ref = ctx.head_scope_key();
-    let file_path = p.file_path;
-    let file_blob_sha = match current_file_hash(ctx, &file_path).await {
-        Ok(hash) => hash,
+    let file_path = match p.anchor.segments.first() {
+        Some(segment) => segment.file_path.clone(),
+        None => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INVALID_PARAMS,
+                "Comment anchor must contain at least one segment".to_string(),
+            );
+        }
+    };
+    let anchor = match new_comment_anchor_from_protocol(ctx, &p.anchor).await {
+        Ok(anchor) => anchor,
         Err(e) => {
             return JsonRpcResponse::error(
                 id.clone(),
                 ERR_INTERNAL,
-                format!("Failed to hash anchor file: {e:#}"),
+                format!("Failed to prepare comment anchor: {e:#}"),
             );
         }
     };
     let new = NewComment {
         merge_base: merge_base.clone(),
         head_ref: head_ref.clone(),
+        created_head_commit: ctx.head.resolved_commit().to_string(),
         file_path,
         body: p.body,
-        anchor: NewCommentAnchor {
-            file_blob_sha,
-            line_start: p.line_start,
-            line_end: p.line_end,
-            char_start: p.char_start,
-            char_end: p.char_end,
-            anchor_text: p.anchor_text,
-            context_before: p.context_before,
-            context_after: p.context_after,
-            status: review_types::AnchorStatus::Anchored,
-        },
+        anchor,
     };
 
     let stored = {
@@ -1125,6 +1125,77 @@ async fn current_file_hash(ctx: &ConnectionContext, file_path: &str) -> anyhow::
         Some((_, hash)) => hash,
         None => String::new(),
     })
+}
+
+async fn new_comment_anchor_from_protocol(
+    ctx: &ConnectionContext,
+    anchor: &review_types::CommentAnchor,
+) -> anyhow::Result<NewCommentAnchor> {
+    let validated = review_types::CommentAnchor::try_with_aggregate_status(
+        anchor.segments.clone(),
+        anchor.aggregate_status,
+    )?;
+    let mut segments = Vec::with_capacity(validated.segments.len());
+    for segment in validated.segments {
+        let file_blob_sha =
+            file_hash_for_anchor_side(ctx, segment.side, &segment.file_path).await?;
+        segments.push(NewCommentAnchorSegment {
+            side: segment.side,
+            file_path: segment.file_path,
+            file_blob_sha,
+            line_start: segment.line_start,
+            line_end: segment.line_end,
+            char_start: segment.char_start,
+            char_end: segment.char_end,
+            anchor_text: segment.anchor_text,
+            context_before: segment.context_before,
+            context_after: segment.context_after,
+            placement_status: segment.placement_status,
+            match_method: segment.match_method,
+        });
+    }
+
+    Ok(NewCommentAnchor {
+        segments,
+        aggregate_status: validated.aggregate_status,
+    })
+}
+
+async fn file_hash_for_anchor_side(
+    ctx: &ConnectionContext,
+    side: review_types::CommentAnchorSide,
+    file_path: &str,
+) -> anyhow::Result<String> {
+    match side {
+        review_types::CommentAnchorSide::Head => current_file_hash(ctx, file_path).await,
+        review_types::CommentAnchorSide::Base => base_file_hash(ctx, file_path).await,
+    }
+}
+
+async fn base_file_hash(ctx: &ConnectionContext, file_path: &str) -> anyhow::Result<String> {
+    Ok(match base_file_content(ctx, file_path).await? {
+        Some((_, hash)) => hash,
+        None => String::new(),
+    })
+}
+
+async fn base_file_content(
+    ctx: &ConnectionContext,
+    file_path: &str,
+) -> anyhow::Result<Option<(String, String)>> {
+    let worktree = ctx.worktree.clone();
+    let merge_base = ctx.merge_base.to_string();
+    let file_path = file_path.to_string();
+    let content = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<String>> {
+        let repo = git::Repo::open(&worktree)?;
+        repo.file_content(&merge_base, &file_path)
+    })
+    .await??;
+
+    Ok(content.map(|content| {
+        let hash = hash_content(&content);
+        (content, hash)
+    }))
 }
 
 async fn current_file_content(
@@ -1585,17 +1656,18 @@ fn anchor_from_range(
     let end = safe_start.saturating_add(span).min(lines.len());
     let (context_before, context_after) = context_around(lines, safe_start, end);
 
-    NewCommentAnchor {
+    single_head_anchor(
+        &comment.file_path,
         file_blob_sha,
-        line_start: usize_to_i64_saturating(safe_start + 1),
-        line_end: usize_to_i64_saturating(end.max(safe_start + 1)),
-        char_start: comment.char_start,
-        char_end: comment.char_end,
-        anchor_text: lines[safe_start..end].join("\n"),
+        usize_to_i64_saturating(safe_start + 1),
+        usize_to_i64_saturating(end.max(safe_start + 1)),
+        comment.char_start,
+        comment.char_end,
+        lines[safe_start..end].join("\n"),
         context_before,
         context_after,
         status,
-    }
+    )
 }
 
 fn usize_to_i64_saturating(value: usize) -> i64 {
@@ -1615,29 +1687,103 @@ fn context_around(lines: &[&str], start: usize, end: usize) -> (String, String) 
 }
 
 fn orphaned_anchor(comment: &StoredComment, file_blob_sha: String) -> NewCommentAnchor {
-    NewCommentAnchor {
+    single_head_anchor(
+        &comment.file_path,
         file_blob_sha,
-        line_start: comment.line_start,
-        line_end: comment.line_end,
-        char_start: comment.char_start,
-        char_end: comment.char_end,
-        anchor_text: comment.anchor_text.clone(),
-        context_before: comment.context_before.clone(),
-        context_after: comment.context_after.clone(),
-        status: review_types::AnchorStatus::Orphaned,
+        comment.line_start,
+        comment.line_end,
+        comment.char_start,
+        comment.char_end,
+        comment.anchor_text.clone(),
+        comment.context_before.clone(),
+        comment.context_after.clone(),
+        review_types::AnchorStatus::Orphaned,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn single_head_anchor(
+    file_path: &str,
+    file_blob_sha: String,
+    line_start: i64,
+    line_end: i64,
+    char_start: Option<i64>,
+    char_end: Option<i64>,
+    anchor_text: String,
+    context_before: String,
+    context_after: String,
+    status: review_types::AnchorStatus,
+) -> NewCommentAnchor {
+    let (placement_status, match_method, aggregate_status) = match status {
+        review_types::AnchorStatus::Anchored => (
+            review_types::AnchorPlacementStatus::Anchored,
+            review_types::AnchorMatchMethod::ExactAtLine,
+            review_types::AnchorAggregateStatus::Anchored,
+        ),
+        review_types::AnchorStatus::Shifted => (
+            review_types::AnchorPlacementStatus::Anchored,
+            review_types::AnchorMatchMethod::ExactElsewhere,
+            review_types::AnchorAggregateStatus::Anchored,
+        ),
+        review_types::AnchorStatus::Approximate => (
+            review_types::AnchorPlacementStatus::Anchored,
+            review_types::AnchorMatchMethod::Context,
+            review_types::AnchorAggregateStatus::Anchored,
+        ),
+        review_types::AnchorStatus::Orphaned => (
+            review_types::AnchorPlacementStatus::Orphaned,
+            review_types::AnchorMatchMethod::NotFound,
+            review_types::AnchorAggregateStatus::Orphaned,
+        ),
+    };
+
+    NewCommentAnchor {
+        segments: vec![NewCommentAnchorSegment {
+            side: review_types::CommentAnchorSide::Head,
+            file_path: file_path.to_string(),
+            file_blob_sha,
+            line_start,
+            line_end,
+            char_start,
+            char_end,
+            anchor_text,
+            context_before,
+            context_after,
+            placement_status,
+            match_method,
+        }],
+        aggregate_status,
     }
 }
 
 fn apply_anchor(mut comment: StoredComment, anchor: &NewCommentAnchor) -> StoredComment {
-    comment.file_blob_sha = anchor.file_blob_sha.clone();
-    comment.line_start = anchor.line_start;
-    comment.line_end = anchor.line_end;
-    comment.char_start = anchor.char_start;
-    comment.char_end = anchor.char_end;
-    comment.anchor_text = anchor.anchor_text.clone();
-    comment.context_before = anchor.context_before.clone();
-    comment.context_after = anchor.context_after.clone();
-    comment.anchor_status = anchor.status;
+    let Some(segment) = anchor
+        .segments
+        .iter()
+        .find(|segment| segment.side == review_types::CommentAnchorSide::Head)
+        .or_else(|| anchor.segments.first())
+    else {
+        return comment;
+    };
+
+    comment.file_blob_sha = segment.file_blob_sha.clone();
+    comment.line_start = segment.line_start;
+    comment.line_end = segment.line_end;
+    comment.char_start = segment.char_start;
+    comment.char_end = segment.char_end;
+    comment.anchor_text = segment.anchor_text.clone();
+    comment.context_before = segment.context_before.clone();
+    comment.context_after = segment.context_after.clone();
+    comment.anchor_status = match anchor.aggregate_status {
+        review_types::AnchorAggregateStatus::Anchored => match segment.match_method {
+            review_types::AnchorMatchMethod::ExactAtLine => review_types::AnchorStatus::Anchored,
+            review_types::AnchorMatchMethod::ExactElsewhere => review_types::AnchorStatus::Shifted,
+            review_types::AnchorMatchMethod::Context => review_types::AnchorStatus::Approximate,
+            review_types::AnchorMatchMethod::NotFound => review_types::AnchorStatus::Orphaned,
+        },
+        review_types::AnchorAggregateStatus::Partial => review_types::AnchorStatus::Approximate,
+        review_types::AnchorAggregateStatus::Orphaned => review_types::AnchorStatus::Orphaned,
+    };
     comment
 }
 
@@ -1966,6 +2112,23 @@ mod tests {
             id: 1,
             merge_base: "base".to_string(),
             head_ref: "head".to_string(),
+            created_head_commit: "head-commit".to_string(),
+            anchor: review_types::CommentAnchor {
+                segments: vec![review_types::CommentAnchorSegment {
+                    side: review_types::CommentAnchorSide::Head,
+                    file_path: "src/lib.rs".to_string(),
+                    line_start,
+                    line_end: line_start,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: anchor_text.to_string(),
+                    context_before: "before".to_string(),
+                    context_after: "after".to_string(),
+                    placement_status: review_types::AnchorPlacementStatus::Anchored,
+                    match_method: review_types::AnchorMatchMethod::ExactAtLine,
+                }],
+                aggregate_status: review_types::AnchorAggregateStatus::Anchored,
+            },
             file_path: "src/lib.rs".to_string(),
             line_start,
             line_end: line_start,
@@ -1983,14 +2146,45 @@ mod tests {
         }
     }
 
+    fn head_segment(anchor: &NewCommentAnchor) -> &NewCommentAnchorSegment {
+        anchor
+            .segments
+            .iter()
+            .find(|segment| segment.side == review_types::CommentAnchorSide::Head)
+            .unwrap()
+    }
+
+    fn anchor_status(anchor: &NewCommentAnchor) -> review_types::AnchorStatus {
+        match anchor.aggregate_status {
+            review_types::AnchorAggregateStatus::Anchored => {
+                match head_segment(anchor).match_method {
+                    review_types::AnchorMatchMethod::ExactAtLine => {
+                        review_types::AnchorStatus::Anchored
+                    }
+                    review_types::AnchorMatchMethod::ExactElsewhere => {
+                        review_types::AnchorStatus::Shifted
+                    }
+                    review_types::AnchorMatchMethod::Context => {
+                        review_types::AnchorStatus::Approximate
+                    }
+                    review_types::AnchorMatchMethod::NotFound => {
+                        review_types::AnchorStatus::Orphaned
+                    }
+                }
+            }
+            review_types::AnchorAggregateStatus::Partial => review_types::AnchorStatus::Approximate,
+            review_types::AnchorAggregateStatus::Orphaned => review_types::AnchorStatus::Orphaned,
+        }
+    }
+
     #[test]
     fn resolves_exact_anchor_at_stored_line() {
         let comment = stored_comment(2, "target");
         let anchor = resolve_anchor(&comment, "before\ntarget\nafter\n", "new".to_string(), None);
 
-        assert_eq!(anchor.status, review_types::AnchorStatus::Anchored);
-        assert_eq!(anchor.line_start, 2);
-        assert_eq!(anchor.anchor_text, "target");
+        assert_eq!(anchor_status(&anchor), review_types::AnchorStatus::Anchored);
+        assert_eq!(head_segment(&anchor).line_start, 2);
+        assert_eq!(head_segment(&anchor).anchor_text, "target");
     }
 
     #[test]
@@ -2003,9 +2197,9 @@ mod tests {
             None,
         );
 
-        assert_eq!(anchor.status, review_types::AnchorStatus::Shifted);
-        assert_eq!(anchor.line_start, 3);
-        assert_eq!(anchor.anchor_text, "target");
+        assert_eq!(anchor_status(&anchor), review_types::AnchorStatus::Shifted);
+        assert_eq!(head_segment(&anchor).line_start, 3);
+        assert_eq!(head_segment(&anchor).anchor_text, "target");
     }
 
     #[test]
@@ -2018,9 +2212,12 @@ mod tests {
             None,
         );
 
-        assert_eq!(anchor.status, review_types::AnchorStatus::Approximate);
-        assert_eq!(anchor.line_start, 3);
-        assert_eq!(anchor.anchor_text, "replacement");
+        assert_eq!(
+            anchor_status(&anchor),
+            review_types::AnchorStatus::Approximate
+        );
+        assert_eq!(head_segment(&anchor).line_start, 3);
+        assert_eq!(head_segment(&anchor).anchor_text, "replacement");
     }
 
     #[test]
@@ -2033,10 +2230,16 @@ mod tests {
             None,
         );
 
-        assert_eq!(anchor.status, review_types::AnchorStatus::Approximate);
-        assert_eq!(anchor.line_start, 3);
-        assert_eq!(anchor.line_end, 5);
-        assert_eq!(anchor.anchor_text, "new one\nnew two\nnew three");
+        assert_eq!(
+            anchor_status(&anchor),
+            review_types::AnchorStatus::Approximate
+        );
+        assert_eq!(head_segment(&anchor).line_start, 3);
+        assert_eq!(head_segment(&anchor).line_end, 5);
+        assert_eq!(
+            head_segment(&anchor).anchor_text,
+            "new one\nnew two\nnew three"
+        );
     }
 
     #[test]
@@ -2049,10 +2252,16 @@ mod tests {
             None,
         );
 
-        assert_eq!(anchor.status, review_types::AnchorStatus::Approximate);
-        assert_eq!(anchor.line_start, 3);
-        assert_eq!(anchor.line_end, 5);
-        assert_eq!(anchor.anchor_text, "keep one\nnew middle\nkeep two");
+        assert_eq!(
+            anchor_status(&anchor),
+            review_types::AnchorStatus::Approximate
+        );
+        assert_eq!(head_segment(&anchor).line_start, 3);
+        assert_eq!(head_segment(&anchor).line_end, 5);
+        assert_eq!(
+            head_segment(&anchor).anchor_text,
+            "keep one\nnew middle\nkeep two"
+        );
     }
 
     #[test]
@@ -2065,10 +2274,16 @@ mod tests {
             None,
         );
 
-        assert_eq!(anchor.status, review_types::AnchorStatus::Approximate);
-        assert_eq!(anchor.line_start, 5);
-        assert_eq!(anchor.line_end, 7);
-        assert_eq!(anchor.anchor_text, "same one\nright\nsame two");
+        assert_eq!(
+            anchor_status(&anchor),
+            review_types::AnchorStatus::Approximate
+        );
+        assert_eq!(head_segment(&anchor).line_start, 5);
+        assert_eq!(head_segment(&anchor).line_end, 7);
+        assert_eq!(
+            head_segment(&anchor).anchor_text,
+            "same one\nright\nsame two"
+        );
     }
 
     #[test]
@@ -2076,9 +2291,9 @@ mod tests {
         let comment = stored_comment(2, "target");
         let anchor = resolve_anchor(&comment, "unrelated\ncontent\n", "new".to_string(), None);
 
-        assert_eq!(anchor.status, review_types::AnchorStatus::Orphaned);
-        assert_eq!(anchor.line_start, 2);
-        assert_eq!(anchor.anchor_text, "target");
+        assert_eq!(anchor_status(&anchor), review_types::AnchorStatus::Orphaned);
+        assert_eq!(head_segment(&anchor).line_start, 2);
+        assert_eq!(head_segment(&anchor).anchor_text, "target");
     }
 
     #[test]
@@ -2093,8 +2308,8 @@ mod tests {
             None,
         );
 
-        assert_eq!(anchor.status, review_types::AnchorStatus::Shifted);
-        assert_eq!(anchor.line_start, 4);
+        assert_eq!(anchor_status(&anchor), review_types::AnchorStatus::Shifted);
+        assert_eq!(head_segment(&anchor).line_start, 4);
     }
 
     #[test]
@@ -2109,8 +2324,8 @@ mod tests {
             None,
         );
 
-        assert_eq!(anchor.status, review_types::AnchorStatus::Shifted);
-        assert_eq!(anchor.line_start, 6);
+        assert_eq!(anchor_status(&anchor), review_types::AnchorStatus::Shifted);
+        assert_eq!(head_segment(&anchor).line_start, 6);
     }
 
     #[test]
@@ -2127,8 +2342,8 @@ mod tests {
 
         // Should be Anchored, not Shifted, because the adjusted hint
         // points directly at the correct line.
-        assert_eq!(anchor.status, review_types::AnchorStatus::Anchored);
-        assert_eq!(anchor.line_start, 3);
+        assert_eq!(anchor_status(&anchor), review_types::AnchorStatus::Anchored);
+        assert_eq!(head_segment(&anchor).line_start, 3);
     }
 
     #[test]

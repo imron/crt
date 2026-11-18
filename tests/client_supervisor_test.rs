@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use crt::client::{Client, ClientEvent, ReconnectOptions};
 use crt::core::ConnectionState;
-use crt::protocol::{JsonRpcNotification, Notification, NotificationKind, RpcMethod};
+use crt::protocol::{
+    JsonRpcNotification, JsonRpcResponse, Notification, NotificationKind, RpcMethod,
+};
+use crt::review_types;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::task::JoinHandle;
@@ -63,22 +66,26 @@ impl TestRepo {
                 let id = request["id"].clone();
                 let method = request["method"].as_str().unwrap();
                 let result = match RpcMethod::from_str(method) {
-                    Some(RpcMethod::Init) => serde_json::json!({
-                        "repo_root": repo_dir.clone(),
-                        "worktree": repo_dir.clone(),
-                        "base_ref": "HEAD",
-                        "head_ref": "HEAD",
-                        "merge_base": "0000000000000000000000000000000000000000",
-                    }),
-                    Some(RpcMethod::ListChangedFiles) => serde_json::json!({ "files": [] }),
+                    Some(RpcMethod::Init) => {
+                        serde_json::to_value(review_types::ConnectionContext {
+                            repo_root: repo_dir.clone(),
+                            worktree: repo_dir.clone(),
+                            base_ref: "HEAD".to_string(),
+                            head_ref: "HEAD".to_string(),
+                            merge_base: "0000000000000000000000000000000000000000".to_string(),
+                        })
+                        .unwrap()
+                    }
+                    Some(RpcMethod::ListChangedFiles) => {
+                        serde_json::to_value(review_types::ListChangedFilesResult {
+                            files: Vec::new(),
+                        })
+                        .unwrap()
+                    }
                     other => panic!("unexpected fake server method: {method} ({other:?})"),
                 };
                 let should_notify_after_init = method == RpcMethod::Init.as_str();
-                let response = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "result": result,
-                    "id": id,
-                });
+                let response = JsonRpcResponse::success(id, result);
                 let mut response_line = serde_json::to_string(&response).unwrap();
                 response_line.push('\n');
                 stream

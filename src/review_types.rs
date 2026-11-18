@@ -341,6 +341,8 @@ pub struct Comment {
     pub id: i64,
     pub merge_base: String,
     pub head_ref: String,
+    pub created_head_commit: String,
+    pub anchor: CommentAnchor,
     pub file_path: String,
     pub line_start: i64,
     pub line_end: i64,
@@ -455,14 +457,7 @@ pub struct UnmarkReviewedParams {
 /// Parameters for `create_comment`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateCommentParams {
-    pub file_path: String,
-    pub line_start: i64,
-    pub line_end: i64,
-    pub char_start: Option<i64>,
-    pub char_end: Option<i64>,
-    pub anchor_text: String,
-    pub context_before: String,
-    pub context_after: String,
+    pub anchor: CommentAnchor,
     pub body: String,
 }
 
@@ -666,6 +661,8 @@ impl Comment {
             id: stored.id,
             merge_base: stored.merge_base.clone(),
             head_ref: stored.head_ref.clone(),
+            created_head_commit: stored.created_head_commit.clone(),
+            anchor: stored.anchor.clone(),
             file_path: stored.file_path.clone(),
             line_start: stored.line_start,
             line_end: stored.line_end,
@@ -990,6 +987,23 @@ mod tests {
             id: 42,
             merge_base: "abc".to_string(),
             head_ref: "feat".to_string(),
+            created_head_commit: "head-commit".to_string(),
+            anchor: CommentAnchor {
+                segments: vec![CommentAnchorSegment {
+                    side: CommentAnchorSide::Head,
+                    file_path: "src/lib.rs".to_string(),
+                    line_start: 10,
+                    line_end: 12,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "fn foo() {}".to_string(),
+                    context_before: "// before".to_string(),
+                    context_after: "// after".to_string(),
+                    placement_status: AnchorPlacementStatus::Anchored,
+                    match_method: AnchorMatchMethod::ExactAtLine,
+                }],
+                aggregate_status: AnchorAggregateStatus::Anchored,
+            },
             file_path: "src/lib.rs".to_string(),
             line_start: 10,
             line_end: 12,
