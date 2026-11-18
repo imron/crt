@@ -2,7 +2,25 @@
 
 ## Status
 
-Backlog.
+Superseded by `29-diff-document-model.md`.
+
+## Superseded Note
+
+This plan was the intended final shape for the transitional
+`CommentProjection` abstraction. The broader Stage 29 document model replaces
+that direction.
+
+The responsibilities listed here now belong to the generic document model:
+
+- comment marker projection belongs to `DocumentComments`,
+- current-comment lookup belongs to document comment overlays,
+- comment navigation belongs to document APIs,
+- display spans are document row spans,
+- TUI rendering consumes `RenderLine` and does not query comment-specific
+  projection coordinates.
+
+Keep this file as historical context for why the projection was needed, but do
+not implement it separately.
 
 ## Goal
 
