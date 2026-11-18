@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
+use std::rc::Rc;
 
 use crate::app::model::{BlameLine, CommentMarker, CommentMarkerKind};
 use crate::config::DiffAlgorithm;
@@ -263,8 +263,8 @@ impl SideBySideDocument {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Document {
-    rows: Arc<Vec<DocumentRow>>,
-    hunk_spans: Arc<Vec<HunkSpan>>,
+    rows: Rc<Vec<DocumentRow>>,
+    hunk_spans: Rc<Vec<HunkSpan>>,
     overlays: DocumentOverlays,
 }
 
@@ -272,8 +272,8 @@ impl Document {
     pub fn new(rows: Vec<DocumentRow>, hunk_spans: Vec<HunkSpan>) -> Self {
         let overlays = DocumentOverlays::default();
         Self {
-            rows: Arc::new(rows),
-            hunk_spans: Arc::new(hunk_spans),
+            rows: Rc::new(rows),
+            hunk_spans: Rc::new(hunk_spans),
             overlays,
         }
     }
