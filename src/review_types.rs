@@ -5,6 +5,7 @@
 //! types without importing another module's internals.
 
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 // ---------------------------------------------------------------------------
 // Git-originated types
@@ -152,6 +153,186 @@ pub enum AnchorStatus {
     Approximate,
     /// No match found anywhere in the diff.
     Orphaned,
+}
+
+/// Which side of a review range a comment anchor segment refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommentAnchorSide {
+    /// Old-side file content at the review merge base.
+    Base,
+    /// New-side file content at the review head.
+    Head,
+}
+
+/// Whether a single anchor segment has a usable current placement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnchorPlacementStatus {
+    /// The segment is placed at a current file range.
+    Anchored,
+    /// The segment could not be placed in the target content.
+    Orphaned,
+}
+
+/// How the latest segment placement was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnchorMatchMethod {
+    /// Exact text match at the stored line number.
+    ExactAtLine,
+    /// Exact text match at a different line number.
+    ExactElsewhere,
+    /// Context-assisted match.
+    Context,
+    /// No match found.
+    NotFound,
+}
+
+/// Aggregate placement status for all populated segments in one comment
+/// anchor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnchorAggregateStatus {
+    /// All populated segments are anchored.
+    Anchored,
+    /// At least one segment is anchored and at least one is orphaned.
+    Partial,
+    /// All populated segments are orphaned.
+    Orphaned,
+}
+
+/// One side-specific anchor segment for a review comment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommentAnchorSegment {
+    pub side: CommentAnchorSide,
+    pub file_path: String,
+    pub line_start: i64,
+    pub line_end: i64,
+    pub char_start: Option<i64>,
+    pub char_end: Option<i64>,
+    pub anchor_text: String,
+    pub context_before: String,
+    pub context_after: String,
+    pub placement_status: AnchorPlacementStatus,
+    pub match_method: AnchorMatchMethod,
+}
+
+/// Compound anchor for one logical review comment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommentAnchor {
+    pub segments: Vec<CommentAnchorSegment>,
+    pub aggregate_status: AnchorAggregateStatus,
+}
+
+/// Invalid compound-anchor shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommentAnchorValidationError {
+    Empty,
+    DuplicateSide(CommentAnchorSide),
+    AggregateMismatch {
+        expected: AnchorAggregateStatus,
+        actual: AnchorAggregateStatus,
+    },
+}
+
+impl fmt::Display for CommentAnchorValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "comment anchor must have at least one segment"),
+            Self::DuplicateSide(side) => {
+                write!(f, "comment anchor has duplicate {side:?} segment")
+            }
+            Self::AggregateMismatch { expected, actual } => write!(
+                f,
+                "comment anchor aggregate status {actual:?} does not match derived {expected:?}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CommentAnchorValidationError {}
+
+impl AnchorAggregateStatus {
+    pub fn from_segment_placements(
+        segments: &[CommentAnchorSegment],
+    ) -> Option<AnchorAggregateStatus> {
+        if segments.is_empty() {
+            return None;
+        }
+
+        let anchored = segments
+            .iter()
+            .filter(|segment| segment.placement_status == AnchorPlacementStatus::Anchored)
+            .count();
+        if anchored == segments.len() {
+            Some(AnchorAggregateStatus::Anchored)
+        } else if anchored == 0 {
+            Some(AnchorAggregateStatus::Orphaned)
+        } else {
+            Some(AnchorAggregateStatus::Partial)
+        }
+    }
+}
+
+impl CommentAnchor {
+    pub fn try_new(
+        segments: Vec<CommentAnchorSegment>,
+    ) -> Result<Self, CommentAnchorValidationError> {
+        let aggregate_status = Self::validate_segments_and_derive_status(&segments)?
+            .unwrap_or(AnchorAggregateStatus::Orphaned);
+        Ok(Self {
+            segments,
+            aggregate_status,
+        })
+    }
+
+    pub fn try_with_aggregate_status(
+        segments: Vec<CommentAnchorSegment>,
+        aggregate_status: AnchorAggregateStatus,
+    ) -> Result<Self, CommentAnchorValidationError> {
+        let expected = Self::validate_segments_and_derive_status(&segments)?
+            .unwrap_or(AnchorAggregateStatus::Orphaned);
+        if aggregate_status != expected {
+            return Err(CommentAnchorValidationError::AggregateMismatch {
+                expected,
+                actual: aggregate_status,
+            });
+        }
+        Ok(Self {
+            segments,
+            aggregate_status,
+        })
+    }
+
+    fn validate_segments_and_derive_status(
+        segments: &[CommentAnchorSegment],
+    ) -> Result<Option<AnchorAggregateStatus>, CommentAnchorValidationError> {
+        if segments.is_empty() {
+            return Err(CommentAnchorValidationError::Empty);
+        }
+
+        let mut has_base = false;
+        let mut has_head = false;
+        for segment in segments {
+            match segment.side {
+                CommentAnchorSide::Base if has_base => {
+                    return Err(CommentAnchorValidationError::DuplicateSide(
+                        CommentAnchorSide::Base,
+                    ));
+                }
+                CommentAnchorSide::Base => has_base = true,
+                CommentAnchorSide::Head if has_head => {
+                    return Err(CommentAnchorValidationError::DuplicateSide(
+                        CommentAnchorSide::Head,
+                    ));
+                }
+                CommentAnchorSide::Head => has_head = true,
+            }
+        }
+
+        Ok(AnchorAggregateStatus::from_segment_placements(segments))
+    }
 }
 
 /// A review comment attached to a specific location in a diff.
@@ -611,6 +792,128 @@ mod tests {
             let roundtrip: AnchorStatus = serde_json::from_str(expected).unwrap();
             assert_eq!(roundtrip, status);
         }
+    }
+
+    fn anchor_segment(
+        side: CommentAnchorSide,
+        placement_status: AnchorPlacementStatus,
+    ) -> CommentAnchorSegment {
+        CommentAnchorSegment {
+            side,
+            file_path: "src/lib.rs".to_string(),
+            line_start: 10,
+            line_end: 12,
+            char_start: None,
+            char_end: None,
+            anchor_text: "fn foo() {}".to_string(),
+            context_before: "// before".to_string(),
+            context_after: "// after".to_string(),
+            placement_status,
+            match_method: match placement_status {
+                AnchorPlacementStatus::Anchored => AnchorMatchMethod::ExactAtLine,
+                AnchorPlacementStatus::Orphaned => AnchorMatchMethod::NotFound,
+            },
+        }
+    }
+
+    #[test]
+    fn test_compound_anchor_enum_serialization() {
+        assert_eq!(
+            serde_json::to_string(&CommentAnchorSide::Base).unwrap(),
+            "\"base\""
+        );
+        assert_eq!(
+            serde_json::to_string(&CommentAnchorSide::Head).unwrap(),
+            "\"head\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AnchorPlacementStatus::Anchored).unwrap(),
+            "\"anchored\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AnchorPlacementStatus::Orphaned).unwrap(),
+            "\"orphaned\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AnchorMatchMethod::ExactAtLine).unwrap(),
+            "\"exact_at_line\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AnchorMatchMethod::ExactElsewhere).unwrap(),
+            "\"exact_elsewhere\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AnchorMatchMethod::Context).unwrap(),
+            "\"context\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AnchorMatchMethod::NotFound).unwrap(),
+            "\"not_found\""
+        );
+        assert_eq!(
+            serde_json::to_string(&AnchorAggregateStatus::Partial).unwrap(),
+            "\"partial\""
+        );
+    }
+
+    #[test]
+    fn test_compound_anchor_shape_roundtrips() {
+        let base_only = CommentAnchor::try_new(vec![anchor_segment(
+            CommentAnchorSide::Base,
+            AnchorPlacementStatus::Anchored,
+        )])
+        .unwrap();
+        assert_eq!(base_only.aggregate_status, AnchorAggregateStatus::Anchored);
+
+        let head_only = CommentAnchor::try_new(vec![anchor_segment(
+            CommentAnchorSide::Head,
+            AnchorPlacementStatus::Orphaned,
+        )])
+        .unwrap();
+        assert_eq!(head_only.aggregate_status, AnchorAggregateStatus::Orphaned);
+
+        let paired = CommentAnchor::try_new(vec![
+            anchor_segment(CommentAnchorSide::Base, AnchorPlacementStatus::Anchored),
+            anchor_segment(CommentAnchorSide::Head, AnchorPlacementStatus::Orphaned),
+        ])
+        .unwrap();
+        assert_eq!(paired.aggregate_status, AnchorAggregateStatus::Partial);
+
+        let json = serde_json::to_string(&paired).unwrap();
+        let roundtrip: CommentAnchor = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtrip, paired);
+    }
+
+    #[test]
+    fn test_compound_anchor_rejects_impossible_shapes() {
+        let empty = CommentAnchor::try_new(Vec::new()).unwrap_err();
+        assert_eq!(empty, CommentAnchorValidationError::Empty);
+
+        let duplicate = CommentAnchor::try_new(vec![
+            anchor_segment(CommentAnchorSide::Head, AnchorPlacementStatus::Anchored),
+            anchor_segment(CommentAnchorSide::Head, AnchorPlacementStatus::Anchored),
+        ])
+        .unwrap_err();
+        assert_eq!(
+            duplicate,
+            CommentAnchorValidationError::DuplicateSide(CommentAnchorSide::Head)
+        );
+
+        let mismatch = CommentAnchor::try_with_aggregate_status(
+            vec![anchor_segment(
+                CommentAnchorSide::Base,
+                AnchorPlacementStatus::Anchored,
+            )],
+            AnchorAggregateStatus::Orphaned,
+        )
+        .unwrap_err();
+        assert_eq!(
+            mismatch,
+            CommentAnchorValidationError::AggregateMismatch {
+                expected: AnchorAggregateStatus::Anchored,
+                actual: AnchorAggregateStatus::Orphaned,
+            }
+        );
     }
 
     #[test]
