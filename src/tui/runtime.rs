@@ -4,6 +4,10 @@
 //! terminal-specific presentation state.
 
 use std::io::{self, Write};
+use std::path::PathBuf;
+use std::process::Command as ProcessCommand;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -30,12 +34,14 @@ const CTRL_C_TIMEOUT: Duration = Duration::from_secs(3);
 /// How often the TUI gives the app a chance to process background work while
 /// waiting for terminal input.
 const APP_TICK_INTERVAL: Duration = Duration::from_millis(100);
+const EVENT_POLL_HANDOFF_DELAY: Duration = Duration::from_millis(60);
 
 /// The terminal UI runtime. Owns terminal interaction and presentation state.
 pub struct Tui {
     app: App,
     tui_state: TuiState,
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    event_polling_paused: Arc<AtomicBool>,
 }
 
 impl Tui {
@@ -47,6 +53,7 @@ impl Tui {
             app,
             tui_state: TuiState::new(),
             terminal,
+            event_polling_paused: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -82,11 +89,20 @@ impl Tui {
     /// calls and notifications.
     async fn event_loop(&mut self) -> Result<()> {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+        let event_polling_paused = Arc::clone(&self.event_polling_paused);
 
         // Spawn a blocking task that polls crossterm for events and
         // forwards them to the async channel.
         let poll_handle = tokio::task::spawn_blocking(move || {
             loop {
+                if event_polling_paused.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(10));
+                    if event_tx.is_closed() {
+                        break;
+                    }
+                    continue;
+                }
+
                 // Poll with a short timeout so we can check if the channel
                 // is closed (receiver dropped).
                 if event::poll(Duration::from_millis(50)).unwrap_or(false) {
@@ -172,6 +188,12 @@ impl Tui {
                             self.tui_state.clear_status_message();
                         }
                     }
+                    KeyInputResult::OpenEditor => {
+                        if let Err(e) = self.edit_comment_in_editor() {
+                            self.tui_state
+                                .set_status_message(format!("Editor error: {e}"));
+                        }
+                    }
                     KeyInputResult::Local => {}
                     KeyInputResult::Unhandled => {
                         self.tui_state.clear_status_message();
@@ -247,19 +269,55 @@ impl Tui {
     /// Suspend the process: restore the terminal, send SIGTSTP, then
     /// re-setup the terminal when the user resumes with `fg`.
     fn suspend(&mut self) -> Result<()> {
-        restore_terminal(&mut self.terminal)?;
+        self.event_polling_paused.store(true, Ordering::Release);
+        std::thread::sleep(EVENT_POLL_HANDOFF_DELAY);
+        let suspend_result = (|| -> Result<()> {
+            restore_terminal(&mut self.terminal)?;
 
-        #[cfg(unix)]
-        {
-            // SAFETY: raise() is safe to call with a valid signal number.
-            unsafe {
-                libc::raise(libc::SIGTSTP);
+            #[cfg(unix)]
+            {
+                // SAFETY: raise() is safe to call with a valid signal number.
+                unsafe {
+                    libc::raise(libc::SIGTSTP);
+                }
             }
-        }
 
-        // When the user runs `fg`, execution resumes here.
-        self.terminal = setup_terminal().context("Failed to re-setup terminal after resume")?;
-        Ok(())
+            // When the user runs `fg`, execution resumes here.
+            self.terminal = setup_terminal().context("Failed to re-setup terminal after resume")?;
+            Ok(())
+        })();
+        self.event_polling_paused.store(false, Ordering::Release);
+        suspend_result
+    }
+
+    fn edit_comment_in_editor(&mut self) -> Result<()> {
+        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+        let path = comment_editor_path();
+        std::fs::write(&path, &self.tui_state.comment_input)
+            .with_context(|| format!("Failed to write {}", path.display()))?;
+
+        self.event_polling_paused.store(true, Ordering::Release);
+        std::thread::sleep(EVENT_POLL_HANDOFF_DELAY);
+        let edit_result = (|| -> Result<()> {
+            restore_terminal(&mut self.terminal)?;
+            let status = ProcessCommand::new(&editor).arg(&path).status();
+            self.terminal = setup_terminal().context("Failed to re-setup terminal after editor")?;
+            let status = status.with_context(|| format!("Failed to launch editor `{editor}`"))?;
+
+            if !status.success() {
+                let _ = std::fs::remove_file(&path);
+                anyhow::bail!("editor exited with status {status}");
+            }
+
+            let body = std::fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read {}", path.display()))?;
+            self.tui_state.comment_cursor = body.len();
+            self.tui_state.comment_input = body;
+            Ok(())
+        })();
+        self.event_polling_paused.store(false, Ordering::Release);
+        let _ = std::fs::remove_file(&path);
+        edit_result
     }
 
     /// Check if a mouse column is on the border between file list and diff panes.
@@ -485,6 +543,10 @@ fn mouse_content_hit(event: &InputEvent) -> Option<(PaneFocus, TextAnchor)> {
         _ => return None,
     };
     Some((pane, hit.text_anchor?))
+}
+
+fn comment_editor_path() -> PathBuf {
+    std::env::temp_dir().join(format!("crt-comment-{}.md", std::process::id()))
 }
 
 fn is_identifier_char(c: char) -> bool {

@@ -27,6 +27,7 @@ pub enum CoreInputDispatch {
 #[derive(Debug, Clone, PartialEq)]
 pub enum KeyInputResult {
     Core(CoreInputDispatch),
+    OpenEditor,
     Local,
     Unhandled,
 }
@@ -149,6 +150,10 @@ pub fn handle_key_event(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> Key
 
     if tui_state.input_mode == InputMode::DiffSearch {
         return handle_diff_search_input(tui_state, key);
+    }
+
+    if tui_state.input_mode == InputMode::Comment {
+        return handle_comment_input(tui_state, key);
     }
 
     if tui_state.show_help {
@@ -276,6 +281,106 @@ fn handle_diff_search_input(tui_state: &mut TuiState, key: CrosstermKeyEvent) ->
         _ => {}
     }
     KeyInputResult::Local
+}
+
+/// Handle keystrokes while composing a review comment.
+fn handle_comment_input(tui_state: &mut TuiState, key: CrosstermKeyEvent) -> KeyInputResult {
+    match key.code {
+        KeyCode::Esc => {
+            if let Some(dispatch) = cancel_active_prompt(tui_state) {
+                return KeyInputResult::Core(dispatch);
+            }
+            tui_state.clear_prompt();
+        }
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            let body = tui_state.comment_input.clone();
+            if let Some(dispatch) = submit_active_prompt(tui_state, body) {
+                return KeyInputResult::Core(dispatch);
+            }
+            tui_state.clear_prompt();
+        }
+        KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            let body = tui_state.comment_input.clone();
+            if let Some(dispatch) = submit_active_prompt(tui_state, body) {
+                return KeyInputResult::Core(dispatch);
+            }
+            tui_state.clear_prompt();
+        }
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return KeyInputResult::OpenEditor;
+        }
+        KeyCode::Enter => {
+            tui_state
+                .comment_input
+                .insert(tui_state.comment_cursor, '\n');
+            tui_state.comment_cursor += 1;
+        }
+        KeyCode::Backspace => {
+            if tui_state.comment_cursor > 0 {
+                let previous =
+                    previous_char_boundary(&tui_state.comment_input, tui_state.comment_cursor);
+                tui_state
+                    .comment_input
+                    .replace_range(previous..tui_state.comment_cursor, "");
+                tui_state.comment_cursor = previous;
+            }
+        }
+        KeyCode::Delete => {
+            if tui_state.comment_cursor < tui_state.comment_input.len() {
+                let next = next_char_boundary(&tui_state.comment_input, tui_state.comment_cursor);
+                tui_state
+                    .comment_input
+                    .replace_range(tui_state.comment_cursor..next, "");
+            }
+        }
+        KeyCode::Left => {
+            tui_state.comment_cursor =
+                previous_char_boundary(&tui_state.comment_input, tui_state.comment_cursor);
+        }
+        KeyCode::Right => {
+            tui_state.comment_cursor =
+                next_char_boundary(&tui_state.comment_input, tui_state.comment_cursor);
+        }
+        KeyCode::Home => {
+            tui_state.comment_cursor =
+                line_start(&tui_state.comment_input, tui_state.comment_cursor);
+        }
+        KeyCode::End => {
+            tui_state.comment_cursor = line_end(&tui_state.comment_input, tui_state.comment_cursor);
+        }
+        KeyCode::Char(c) => {
+            tui_state.comment_input.insert(tui_state.comment_cursor, c);
+            tui_state.comment_cursor += c.len_utf8();
+        }
+        _ => {}
+    }
+    KeyInputResult::Local
+}
+
+fn line_start(text: &str, cursor: usize) -> usize {
+    text[..cursor].rfind('\n').map_or(0, |idx| idx + 1)
+}
+
+fn line_end(text: &str, cursor: usize) -> usize {
+    text[cursor..]
+        .find('\n')
+        .map_or(text.len(), |idx| cursor + idx)
+}
+
+fn previous_char_boundary(text: &str, cursor: usize) -> usize {
+    let mut index = cursor.min(text.len()).saturating_sub(1);
+    while !text.is_char_boundary(index) {
+        index = index.saturating_sub(1);
+    }
+    index
+}
+
+fn next_char_boundary(text: &str, cursor: usize) -> usize {
+    let mut index = cursor.min(text.len()).saturating_add(1);
+    while index < text.len() && !text.is_char_boundary(index) {
+        index += 1;
+    }
+    index.min(text.len())
 }
 
 #[cfg(test)]
@@ -422,6 +527,109 @@ mod tests {
                 value: "gd symbol".to_string(),
             }))
         );
+    }
+
+    #[test]
+    fn comment_prompt_supports_multiline_input_and_submit() {
+        let mut tui_state = TuiState::default();
+        tui_state.open_comment_prompt(PromptId(9), String::new());
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE),
+            ),
+            KeyInputResult::Local
+        );
+
+        let result = handle_key_event(
+            &mut tui_state,
+            CrosstermKeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        );
+
+        assert_eq!(
+            result,
+            KeyInputResult::Core(CoreInputDispatch::PromptSubmit(InputEvent::PromptSubmit {
+                id: PromptId(9),
+                value: "a\nb".to_string(),
+            }))
+        );
+    }
+
+    #[test]
+    fn comment_prompt_escape_cancels_active_prompt() {
+        let mut tui_state = TuiState::default();
+        tui_state.open_comment_prompt(PromptId(9), "draft".to_string());
+
+        let result = handle_key_event(
+            &mut tui_state,
+            CrosstermKeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        );
+
+        assert_eq!(
+            result,
+            KeyInputResult::Core(CoreInputDispatch::PromptCancel(InputEvent::PromptCancel {
+                id: PromptId(9),
+            }))
+        );
+    }
+
+    #[test]
+    fn comment_prompt_ctrl_e_requests_editor() {
+        let mut tui_state = TuiState::default();
+        tui_state.open_comment_prompt(PromptId(9), "draft".to_string());
+
+        let result = handle_key_event(
+            &mut tui_state,
+            CrosstermKeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+        );
+
+        assert_eq!(result, KeyInputResult::OpenEditor);
+    }
+
+    #[test]
+    fn comment_prompt_cursor_moves_over_multibyte_characters() {
+        let mut tui_state = TuiState::default();
+        tui_state.open_comment_prompt(PromptId(9), "éx".to_string());
+
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            ),
+            KeyInputResult::Local
+        );
+        assert_eq!(
+            handle_key_event(
+                &mut tui_state,
+                CrosstermKeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
+            ),
+            KeyInputResult::Local
+        );
+
+        assert_eq!(tui_state.comment_input, "x");
+        assert_eq!(tui_state.comment_cursor, 0);
     }
 
     #[test]

@@ -11,6 +11,8 @@ pub enum PromptKind {
     CommandLine,
     /// `/` search prompt.
     Search,
+    /// Review comment body composer.
+    Comment,
     /// Extension point for future prompts.
     Custom(String),
 }

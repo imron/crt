@@ -16,6 +16,7 @@ pub enum CoreEffect {
     ClearPrompt { id: PromptId },
     Command(CommandParse),
     DiffSearch(DiffSearchEffect),
+    Comment(CommentEffect),
     DiffCursor(DiffCursorEffect),
     VisualSelection(VisualSelectionEffect),
     SearchResults(SearchResultsEffect),
@@ -49,6 +50,12 @@ pub enum DiffSearchEffect {
     NextMatch,
     PreviousMatch,
     Clear,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommentEffect {
+    SubmitBody { body: String },
+    Cancel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +150,8 @@ pub struct InteractionContext {
     pub diff_pane_visible: bool,
     /// Whether a visual selection is active in the diff pane.
     pub visual_selection_active: bool,
+    /// Whether a comment anchor is waiting for body text.
+    pub pending_comment_anchor_active: bool,
     /// Whether the adapter still has an active quit confirmation prompt.
     pub quit_confirmation_active: bool,
     /// Word under the cursor, supplied by the adapter for commands like `gd`.
@@ -187,6 +196,23 @@ impl CoreInteractionEngine {
 
         if let InputEvent::Key(key) = &event {
             if key.kind == KeyEventKind::Press {
+                if context.visual_selection_active
+                    && context.diff_pane_visible
+                    && key.key == Key::Enter
+                    && key_has_no_modifier(key.modifiers)
+                {
+                    let id = self.next_prompt(PromptKind::Comment);
+                    return vec![
+                        CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+                        CoreEffect::RequestPrompt(PromptRequest {
+                            id,
+                            kind: PromptKind::Comment,
+                            title: "Comment".to_string(),
+                            placeholder: Some("Write a comment".to_string()),
+                            initial_value: String::new(),
+                        }),
+                    ];
+                }
                 if context.help_visible {
                     if help_dismiss_key(key) {
                         return vec![CoreEffect::DismissHelp];
@@ -207,6 +233,19 @@ impl CoreInteractionEngine {
                 }
                 if let Some(effect) = visual_selection_key_effect(key, context) {
                     return vec![CoreEffect::VisualSelection(effect)];
+                }
+                if context.pending_comment_anchor_active
+                    && key.key == Key::Enter
+                    && key_has_no_modifier(key.modifiers)
+                {
+                    let id = self.next_prompt(PromptKind::Comment);
+                    return vec![CoreEffect::RequestPrompt(PromptRequest {
+                        id,
+                        kind: PromptKind::Comment,
+                        title: "Comment".to_string(),
+                        placeholder: Some("Write a comment".to_string()),
+                        initial_value: String::new(),
+                    })];
                 }
                 if let Some(effect) = pane_key_effect(key, context.focused_pane) {
                     return vec![CoreEffect::Pane(effect)];
@@ -433,15 +472,23 @@ impl CoreInteractionEngine {
                         CoreEffect::ClearPrompt { id },
                         CoreEffect::DiffSearch(DiffSearchEffect::Submit { query: value }),
                     ],
+                    PromptKind::Comment => vec![
+                        CoreEffect::ClearPrompt { id },
+                        CoreEffect::Comment(CommentEffect::SubmitBody { body: value }),
+                    ],
                     PromptKind::Custom(_) => vec![CoreEffect::ClearPrompt { id }],
                 }
             }
             InputEvent::PromptCancel { id } => {
-                if self.take_active_prompt(id).is_some() {
-                    vec![CoreEffect::ClearPrompt { id }]
-                } else {
-                    Vec::new()
+                let Some(active) = self.take_active_prompt(id) else {
+                    return Vec::new();
+                };
+
+                let mut effects = vec![CoreEffect::ClearPrompt { id }];
+                if active.kind == PromptKind::Comment {
+                    effects.push(CoreEffect::Comment(CommentEffect::Cancel));
                 }
+                effects
             }
             _ => Vec::new(),
         }
@@ -1327,7 +1374,16 @@ mod tests {
         );
         assert_eq!(
             enter,
-            vec![CoreEffect::VisualSelection(VisualSelectionEffect::Commit)]
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+                CoreEffect::RequestPrompt(PromptRequest {
+                    id: PromptId(1),
+                    kind: PromptKind::Comment,
+                    title: "Comment".to_string(),
+                    placeholder: Some("Write a comment".to_string()),
+                    initial_value: String::new(),
+                })
+            ]
         );
     }
 
@@ -1918,6 +1974,86 @@ mod tests {
                 CoreEffect::DiffSearch(DiffSearchEffect::Submit {
                     query: "needle".to_string()
                 })
+            ]
+        );
+    }
+
+    #[test]
+    fn pending_comment_anchor_enter_requests_comment_prompt() {
+        let mut engine = CoreInteractionEngine::new();
+        let effects = engine.handle_input(
+            key_event(Key::Enter, InputModifiers::default()),
+            &InteractionContext {
+                pending_comment_anchor_active: true,
+                ..InteractionContext::default()
+            },
+        );
+
+        assert_eq!(
+            effects,
+            vec![CoreEffect::RequestPrompt(PromptRequest {
+                id: PromptId(1),
+                kind: PromptKind::Comment,
+                title: "Comment".to_string(),
+                placeholder: Some("Write a comment".to_string()),
+                initial_value: String::new(),
+            })]
+        );
+    }
+
+    #[test]
+    fn comment_prompt_submit_emits_comment_body_effect() {
+        let mut engine = CoreInteractionEngine::new();
+        let effects = engine.handle_input(
+            key_event(Key::Enter, InputModifiers::default()),
+            &InteractionContext {
+                pending_comment_anchor_active: true,
+                ..InteractionContext::default()
+            },
+        );
+        let id = requested_prompt_id(&effects);
+
+        let effects = engine.handle_input(
+            InputEvent::PromptSubmit {
+                id,
+                value: "needs work".to_string(),
+            },
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(
+            effects,
+            vec![
+                CoreEffect::ClearPrompt { id },
+                CoreEffect::Comment(CommentEffect::SubmitBody {
+                    body: "needs work".to_string(),
+                })
+            ]
+        );
+    }
+
+    #[test]
+    fn comment_prompt_cancel_emits_cancel_effect() {
+        let mut engine = CoreInteractionEngine::new();
+        let effects = engine.handle_input(
+            key_event(Key::Enter, InputModifiers::default()),
+            &InteractionContext {
+                pending_comment_anchor_active: true,
+                ..InteractionContext::default()
+            },
+        );
+        let id = requested_prompt_id(&effects);
+
+        let effects = engine.handle_input(
+            InputEvent::PromptCancel { id },
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(
+            effects,
+            vec![
+                CoreEffect::ClearPrompt { id },
+                CoreEffect::Comment(CommentEffect::Cancel)
             ]
         );
     }

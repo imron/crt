@@ -22,6 +22,9 @@ pub fn apply_core_effects(
                 PromptKind::Search => {
                     tui_state.open_diff_search_prompt(prompt.id, prompt.initial_value);
                 }
+                PromptKind::Comment => {
+                    tui_state.open_comment_prompt(prompt.id, prompt.initial_value);
+                }
                 PromptKind::Custom(_) => {}
             },
             CoreEffect::ClearPrompt { id } => {

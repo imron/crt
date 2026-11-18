@@ -18,8 +18,8 @@ use crate::core::search as core_search;
 use crate::core::{ConnectionState, InputEvent};
 use crate::protocol::NotificationKind;
 use crate::review_types::{
-    ConnectionContext, ContentMode, DefinitionLocation, FileEntry, PaneFocus, RenderVariant,
-    ReviewActionResult, ReviewStatus, SearchMatch,
+    ConnectionContext, ContentMode, CreateCommentParams, DefinitionLocation, FileEntry, PaneFocus,
+    RenderVariant, ReviewActionResult, ReviewStatus, SearchMatch,
 };
 use anyhow::{Context, Result};
 
@@ -30,6 +30,10 @@ enum AppWork {
     ToggleSelectedReview,
     ReloadFileSnapshot,
     RunCommand(Command),
+    CreateComment {
+        anchor: CommentAnchorCapture,
+        body: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -338,6 +342,9 @@ impl App {
                 AppWork::ToggleSelectedReview => self.toggle_selected_review().await,
                 AppWork::ReloadFileSnapshot => self.reload_file_snapshot().await,
                 AppWork::RunCommand(command) => self.run_command(command).await,
+                AppWork::CreateComment { anchor, body } => {
+                    self.create_comment_from_anchor(anchor, body).await
+                }
             };
             if work_status.is_some() {
                 status = work_status;
@@ -394,6 +401,10 @@ impl App {
         }
         if let Some(command) = output.take_pending_command() {
             self.pending_work.push_back(AppWork::RunCommand(command));
+        }
+        if let Some((anchor, body)) = output.take_pending_comment_create() {
+            self.pending_work
+                .push_back(AppWork::CreateComment { anchor, body });
         }
         if output.save_layout {
             self.save_layout_config();
@@ -511,6 +522,41 @@ impl App {
             | Command::Unknown { .. } => {
                 Some(StatusUpdate::Set("Unsupported pending command".to_string()))
             }
+        }
+    }
+
+    async fn create_comment_from_anchor(
+        &mut self,
+        anchor: CommentAnchorCapture,
+        body: String,
+    ) -> Option<StatusUpdate> {
+        let params = CreateCommentParams {
+            file_path: anchor.file_path,
+            line_start: anchor.line_start,
+            line_end: anchor.line_end,
+            char_start: anchor.char_start,
+            char_end: anchor.char_end,
+            anchor_text: anchor.anchor_text,
+            context_before: anchor.context_before,
+            context_after: anchor.context_after,
+            body,
+        };
+
+        let client = match self.client() {
+            Ok(client) => client,
+            Err(e) => return Some(StatusUpdate::Set(format!("Failed to create comment: {e}"))),
+        };
+
+        match client.create_comment(params).await {
+            Ok(result) => {
+                self.state.pending_comment_anchor = None;
+                self.state.mark_model_changed();
+                Some(StatusUpdate::Set(format!(
+                    "Created comment #{}",
+                    result.comment.id
+                )))
+            }
+            Err(e) => Some(StatusUpdate::Set(format!("Failed to create comment: {e}"))),
         }
     }
 
@@ -974,8 +1020,8 @@ impl AppState {
 mod tests {
     use super::*;
     use crate::core::{
-        CoreEffect, DefinitionResultsEffect, DiffCursorEffect, PaneId, SearchResultsEffect,
-        VisualSelectionEffect,
+        CommentEffect, CoreEffect, DefinitionResultsEffect, DiffCursorEffect, PaneId,
+        SearchResultsEffect, VisualSelectionEffect,
     };
     use crate::protocol::NotificationKind;
     use crate::review_types::{
@@ -1438,6 +1484,75 @@ mod tests {
 
         assert!(app.state.visual_selection.is_none());
         assert!(app.state.pending_comment_anchor.is_none());
+    }
+
+    #[test]
+    fn comment_body_submit_queues_create_work() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        let anchor = CommentAnchorCapture {
+            file_path: "src/main.rs".to_string(),
+            line_start: 1,
+            line_end: 1,
+            char_start: None,
+            char_end: None,
+            anchor_text: "fn main() {}".to_string(),
+            context_before: String::new(),
+            context_after: String::new(),
+        };
+        app.state.pending_comment_anchor = Some(anchor.clone());
+
+        let output = app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::Comment(CommentEffect::SubmitBody {
+                body: "  please fix  ".to_string(),
+            })],
+        );
+
+        assert_eq!(
+            output.status,
+            Some(StatusUpdate::Set("Creating comment...".to_string()))
+        );
+        assert_eq!(
+            app.pending_work.pop_front(),
+            Some(AppWork::CreateComment {
+                anchor,
+                body: "please fix".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn comment_body_cancel_clears_pending_anchor() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        app.state.pending_comment_anchor = Some(CommentAnchorCapture {
+            file_path: "src/main.rs".to_string(),
+            line_start: 1,
+            line_end: 1,
+            char_start: None,
+            char_end: None,
+            anchor_text: "fn main() {}".to_string(),
+            context_before: String::new(),
+            context_after: String::new(),
+        });
+
+        let output = app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::Comment(CommentEffect::Cancel)],
+        );
+
+        assert!(app.state.pending_comment_anchor.is_none());
+        assert_eq!(
+            output.status,
+            Some(StatusUpdate::Set("Comment canceled".to_string()))
+        );
     }
 
     #[test]
