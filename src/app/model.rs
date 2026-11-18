@@ -530,18 +530,14 @@ fn file_list_model(state: &AppState) -> FileList {
         .iter()
         .take(unreviewed_count)
         .enumerate()
-        .map(|(index, entry)| {
-            file_row_model(index, state.selected_file, entry, &unresolved_counts)
-        })
+        .map(|(index, entry)| file_row_model(index, state.selected_file, entry, &unresolved_counts))
         .collect();
     let reviewed_rows = state
         .files
         .iter()
         .enumerate()
         .skip(unreviewed_count)
-        .map(|(index, entry)| {
-            file_row_model(index, state.selected_file, entry, &unresolved_counts)
-        })
+        .map(|(index, entry)| file_row_model(index, state.selected_file, entry, &unresolved_counts))
         .collect();
 
     FileList {
@@ -1024,6 +1020,27 @@ mod tests {
         }
     }
 
+    fn stored_comment(id: i64, file_path: &str, resolved: bool) -> review_types::Comment {
+        review_types::Comment {
+            id,
+            merge_base: "abc123".to_string(),
+            head_ref: "feature".to_string(),
+            file_path: file_path.to_string(),
+            line_start: 2,
+            line_end: 2,
+            char_start: None,
+            char_end: None,
+            anchor_text: "anchor".to_string(),
+            context_before: String::new(),
+            context_after: String::new(),
+            body: "comment".to_string(),
+            resolved,
+            created_at: "2026-06-28T00:00:00+10:00".to_string(),
+            updated_at: "2026-06-28T00:00:00+10:00".to_string(),
+            anchor_status: AnchorStatus::Anchored,
+        }
+    }
+
     fn assert_marker(
         markers: &CommentMarkerSet,
         line: u32,
@@ -1203,6 +1220,31 @@ mod tests {
             ReviewStatus::Changed { .. }
         ));
         assert_eq!(model.file_list.sections[1].rows[0].path, "c.rs");
+    }
+
+    #[test]
+    fn model_projects_unresolved_comment_counts_for_file_indicators() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![
+                file("a.rs", review_types::ReviewStatus::Unreviewed, Vec::new()),
+                file("b.rs", review_types::ReviewStatus::Unreviewed, Vec::new()),
+            ],
+        );
+        app.state.comments = vec![
+            stored_comment(1, "a.rs", false),
+            stored_comment(2, "a.rs", true),
+            stored_comment(3, "b.rs", true),
+        ];
+
+        let model = app.model();
+        let rows = &model.file_list.sections[0].rows;
+
+        assert_eq!(rows[0].path, "a.rs");
+        assert_eq!(rows[0].unresolved_comment_count, 1);
+        assert_eq!(rows[1].path, "b.rs");
+        assert_eq!(rows[1].unresolved_comment_count, 0);
     }
 
     #[test]

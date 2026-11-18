@@ -22,7 +22,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::client::Client;
-use crate::review_types::{ActiveReviewSession, ConnectionContext, ListReposResult};
+use crate::review_types::{
+    ActiveReviewSession, AnchorStatus, Comment, ConnectionContext, ListReposResult,
+};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EmptyParams {}
@@ -80,6 +82,27 @@ pub struct FindDefinitionParams {
     pub symbol: String,
     #[schemars(description = "Optional file path relative to the worktree")]
     pub context_file: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewCommentSummary {
+    id: i64,
+    file_path: String,
+    line_start: i64,
+    line_end: i64,
+    body: String,
+    resolved: bool,
+    anchor_status: AnchorStatus,
+}
+
+#[derive(Debug, Serialize)]
+struct ListReviewCommentsSummary {
+    comments: Vec<ReviewCommentSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewCommentSummaryResult {
+    comment: ReviewCommentSummary,
 }
 
 #[derive(Clone)]
@@ -234,7 +257,7 @@ impl CrtMcp {
     }
 
     #[tool(
-        description = "List review comments in the selected review scope. Call select_review_session first. By default only unresolved comments are returned; pass include_resolved=true to include resolved comments. Optionally pass file_path to return comments for one changed file."
+        description = "List compact review comment summaries in the selected review scope: id, file_path, line_start, line_end, body, resolved, and anchor_status. Call select_review_session first. By default only unresolved comments are returned; pass include_resolved=true to include resolved comments. Optionally pass file_path to return comments for one changed file. Use get_comment_detail only when full anchor/context data is needed."
     )]
     async fn list_review_comments(
         &self,
@@ -251,7 +274,7 @@ impl CrtMcp {
             .list_comments(params.file_path.as_deref(), params.include_resolved)
             .await
         {
-            Ok(result) => to_json(&result),
+            Ok(result) => to_json(&summarize_comments(result.comments)),
             Err(e) => format!("Error listing review comments: {e:#}"),
         }
     }
@@ -285,7 +308,7 @@ impl CrtMcp {
             Err(e) => return format!("Error resolving review comment: {e:#}"),
         };
         match client.resolve_comment(params.id).await {
-            Ok(result) => to_json(&result),
+            Ok(result) => to_json(&summarize_comment_result(result.comment)),
             Err(e) => format!("Error resolving review comment: {e:#}"),
         }
     }
@@ -302,7 +325,7 @@ impl CrtMcp {
             Err(e) => return format!("Error unresolving review comment: {e:#}"),
         };
         match client.unresolve_comment(params.id).await {
-            Ok(result) => to_json(&result),
+            Ok(result) => to_json(&summarize_comment_result(result.comment)),
             Err(e) => format!("Error unresolving review comment: {e:#}"),
         }
     }
@@ -563,6 +586,30 @@ fn to_json(value: &impl Serialize) -> String {
     serde_json::to_string_pretty(value).unwrap_or_default()
 }
 
+fn summarize_comments(comments: Vec<Comment>) -> ListReviewCommentsSummary {
+    ListReviewCommentsSummary {
+        comments: comments.into_iter().map(summarize_comment).collect(),
+    }
+}
+
+fn summarize_comment_result(comment: Comment) -> ReviewCommentSummaryResult {
+    ReviewCommentSummaryResult {
+        comment: summarize_comment(comment),
+    }
+}
+
+fn summarize_comment(comment: Comment) -> ReviewCommentSummary {
+    ReviewCommentSummary {
+        id: comment.id,
+        file_path: comment.file_path,
+        line_start: comment.line_start,
+        line_end: comment.line_end,
+        body: comment.body,
+        resolved: comment.resolved,
+        anchor_status: comment.anchor_status,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -596,6 +643,28 @@ mod tests {
         let err = select_session(&params, &sessions).unwrap_err();
 
         assert!(err.to_string().contains("Multiple active review sessions"));
+    }
+
+    #[test]
+    fn comment_summary_omits_anchor_context_and_scope_fields() {
+        let summary = summarize_comments(vec![comment()]);
+        let value = serde_json::to_value(summary).unwrap();
+        let comment = &value["comments"][0];
+
+        assert_eq!(comment["id"], 7);
+        assert_eq!(comment["file_path"], "src/lib.rs");
+        assert_eq!(comment["line_start"], 12);
+        assert_eq!(comment["line_end"], 14);
+        assert_eq!(comment["body"], "Please simplify this branch.");
+        assert_eq!(comment["resolved"], false);
+        assert_eq!(comment["anchor_status"], "approximate");
+        assert!(comment.get("anchor_text").is_none());
+        assert!(comment.get("context_before").is_none());
+        assert!(comment.get("context_after").is_none());
+        assert!(comment.get("merge_base").is_none());
+        assert!(comment.get("head_ref").is_none());
+        assert!(comment.get("created_at").is_none());
+        assert!(comment.get("updated_at").is_none());
     }
 
     #[tokio::test]
@@ -664,6 +733,27 @@ mod tests {
             head_ref: "HEAD".to_string(),
             merge_base: format!("{repo_root}-{base_ref}"),
             client_count: 1,
+        }
+    }
+
+    fn comment() -> Comment {
+        Comment {
+            id: 7,
+            merge_base: "merge-base".to_string(),
+            head_ref: "HEAD".to_string(),
+            file_path: "src/lib.rs".to_string(),
+            line_start: 12,
+            line_end: 14,
+            char_start: Some(2),
+            char_end: Some(8),
+            anchor_text: "if condition {\n    do_work();\n}".to_string(),
+            context_before: "fn example() {".to_string(),
+            context_after: "}".to_string(),
+            body: "Please simplify this branch.".to_string(),
+            resolved: false,
+            created_at: "2026-07-01T00:00:00+10:00".to_string(),
+            updated_at: "2026-07-01T00:01:00+10:00".to_string(),
+            anchor_status: AnchorStatus::Approximate,
         }
     }
 }

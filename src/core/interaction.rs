@@ -394,9 +394,7 @@ impl CoreInteractionEngine {
                 vec![CoreEffect::ShowHelp]
             }
             InputEvent::Key(key)
-                if key.kind == KeyEventKind::Press
-                    && key_has_no_modifier(key.modifiers)
-                    && key.key == Key::Char('r') =>
+                if key.kind == KeyEventKind::Press && approve_review_toggle_key(&key) =>
             {
                 vec![CoreEffect::ReviewToggle]
             }
@@ -618,6 +616,14 @@ fn key_has_no_modifier(modifiers: super::input::InputModifiers) -> bool {
 
 fn key_has_control_modifier_only(modifiers: super::input::InputModifiers) -> bool {
     modifiers.ctrl && !modifiers.alt && !modifiers.shift
+}
+
+fn approve_review_toggle_key(key: &super::input::KeyEvent) -> bool {
+    match key.key {
+        Key::Char('a') => key_has_no_modifier(key.modifiers),
+        Key::Char('A') => key_has_no_command_modifier(key.modifiers),
+        _ => false,
+    }
 }
 
 fn help_dismiss_key(key: &super::input::KeyEvent) -> bool {
@@ -953,7 +959,32 @@ mod tests {
     }
 
     #[test]
-    fn r_requests_review_toggle() {
+    fn a_requests_review_toggle() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(Key::Char('a'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(effects, vec![CoreEffect::ReviewToggle]);
+    }
+
+    #[test]
+    fn shift_a_requests_review_toggle() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let shifted = InputModifiers {
+            shift: true,
+            ..Default::default()
+        };
+        let effects = engine.handle_input(key_event(Key::Char('A'), shifted), &Default::default());
+
+        assert_eq!(effects, vec![CoreEffect::ReviewToggle]);
+    }
+
+    #[test]
+    fn r_does_not_request_review_toggle() {
         let mut engine = CoreInteractionEngine::new();
 
         let effects = engine.handle_input(
@@ -961,7 +992,7 @@ mod tests {
             &InteractionContext::default(),
         );
 
-        assert_eq!(effects, vec![CoreEffect::ReviewToggle]);
+        assert!(effects.is_empty());
     }
 
     #[test]

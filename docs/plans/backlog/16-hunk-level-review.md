@@ -22,11 +22,12 @@ file.
   line range + context?
 - Should approved hunks be hidden from the diff view, collapsed, or
   shown with a visual indicator (e.g. dimmed)?
-- How does this interact with the file-level `r` key? Does `r` approve
-  all hunks at once? Does a file show as "reviewed" only when all hunks
-  are approved?
-- What key approves a single hunk? `r` scoped to the current hunk when
-  the cursor is inside one?
+- `A` approves all hunks in the current file at once. A file stays
+  `Unreviewed` until all hunks are approved.
+- What marker should show a file with some approved hunks and some
+  unapproved hunks?
+- Plain `a` is reserved for hunk-by-hunk approval when this stage is
+  implemented.
 - How does this interact with the `Changed` status? If one hunk changes,
   the file is `Changed`, but only that hunk needs re-review.
 

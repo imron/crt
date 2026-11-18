@@ -356,7 +356,7 @@ fn draw_help_overlay(frame: &mut Frame, styles: &StyleConfig) {
         Line::from("  Shift-C       Toggle comments panel"),
         Line::from("  e             Edit current comment"),
         Line::from("  r / d         Resolve or delete current comment"),
-        Line::from("  r             Toggle reviewed / unreviewed"),
+        Line::from("  A / a         Toggle approved / unapproved"),
         Line::from("  i             Toggle inline / side-by-side"),
         Line::from("  s             Cycle: diff / HEAD / base"),
         Line::from("  d             Cycle diff algorithm"),

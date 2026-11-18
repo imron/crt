@@ -1180,8 +1180,7 @@ async fn reanchor_comment(
                 return Ok(comment);
             }
 
-            let adjusted_hint =
-                compute_adjusted_hint(ctx, &comment.file_path, &comment).await;
+            let adjusted_hint = compute_adjusted_hint(ctx, &comment.file_path, &comment).await;
             resolve_anchor(&comment, &content, file_blob_sha, adjusted_hint)
         }
         None => orphaned_anchor(&comment, String::new()),
@@ -1246,10 +1245,7 @@ async fn compute_adjusted_hint(
 
 /// Translate a 0-indexed line number from the old side of a diff to the
 /// new side, accounting for insertions and deletions in earlier hunks.
-fn translate_line_through_hunks(
-    hunks: &[review_types::DiffHunk],
-    old_line: usize,
-) -> usize {
+fn translate_line_through_hunks(hunks: &[review_types::DiffHunk], old_line: usize) -> usize {
     // 1-based line number for comparison with hunk headers.
     let old_1 = (old_line + 1) as u32;
     let mut offset: i64 = 0;
@@ -1336,12 +1332,23 @@ fn resolve_anchor(
         );
     }
 
-    if let Some(index) = find_context_match(comment, &lines, span) {
+    if let Some(index) = find_multiline_line_match_nearest(&lines, &anchor_lines, hint) {
         return anchor_from_range(
             comment,
             &lines,
             index,
             span,
+            file_blob_sha,
+            review_types::AnchorStatus::Approximate,
+        );
+    }
+
+    if let Some((index, context_span)) = find_context_match(comment, &lines, span) {
+        return anchor_from_range(
+            comment,
+            &lines,
+            index,
+            context_span,
             file_blob_sha,
             review_types::AnchorStatus::Approximate,
         );
@@ -1415,19 +1422,130 @@ fn find_sequence(lines: &[&str], needle: &[&str]) -> Option<usize> {
     (0..=last_start).find(|index| matches_sequence(lines, *index, needle))
 }
 
-fn find_context_match(comment: &StoredComment, lines: &[&str], span: usize) -> Option<usize> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LineMatchCandidate {
+    start: usize,
+    matched_lines: usize,
+    unique_matched_lines: usize,
+    distance_from_hint: usize,
+}
+
+impl LineMatchCandidate {
+    fn is_preferred_to(self, other: &Self) -> bool {
+        self.matched_lines > other.matched_lines
+            || (self.matched_lines == other.matched_lines
+                && (self.unique_matched_lines > other.unique_matched_lines
+                    || (self.unique_matched_lines == other.unique_matched_lines
+                        && (self.distance_from_hint < other.distance_from_hint
+                            || (self.distance_from_hint == other.distance_from_hint
+                                && self.start < other.start)))))
+    }
+}
+
+fn find_multiline_line_match_nearest(
+    lines: &[&str],
+    needle: &[&str],
+    hint: usize,
+) -> Option<usize> {
+    if needle.len() < 2 || needle.len() > lines.len() {
+        return None;
+    }
+
+    let last_start = lines.len() - needle.len();
+    let hint = hint.min(last_start);
+    let mut best: Option<LineMatchCandidate> = None;
+
+    for start in 0..=last_start {
+        let Some(candidate) = line_match_candidate(lines, needle, start, hint) else {
+            continue;
+        };
+        if best
+            .as_ref()
+            .is_none_or(|existing| candidate.is_preferred_to(existing))
+        {
+            best = Some(candidate);
+        }
+    }
+
+    best.map(|candidate| candidate.start)
+}
+
+fn line_match_candidate(
+    lines: &[&str],
+    needle: &[&str],
+    start: usize,
+    hint: usize,
+) -> Option<LineMatchCandidate> {
+    let mut matched_lines = 0;
+    let mut unique_matched_lines = 0;
+
+    for (offset, needle_line) in needle.iter().enumerate() {
+        if needle_line.trim().is_empty() || lines[start + offset] != *needle_line {
+            continue;
+        }
+
+        matched_lines += 1;
+        if count_line_occurrences(lines, needle_line) == 1 {
+            unique_matched_lines += 1;
+        }
+    }
+
+    if matched_lines == 0 || (unique_matched_lines == 0 && matched_lines < 2) {
+        return None;
+    }
+
+    let distance_from_hint = if start >= hint {
+        start - hint
+    } else {
+        hint - start
+    };
+
+    Some(LineMatchCandidate {
+        start,
+        matched_lines,
+        unique_matched_lines,
+        distance_from_hint,
+    })
+}
+
+fn count_line_occurrences(lines: &[&str], needle: &str) -> usize {
+    lines.iter().filter(|line| **line == needle).count()
+}
+
+fn find_context_match(
+    comment: &StoredComment,
+    lines: &[&str],
+    span: usize,
+) -> Option<(usize, usize)> {
     let before = context_lines(&comment.context_before);
     let after = context_lines(&comment.context_after);
 
-    if !before.is_empty() {
+    if !before.is_empty() && !after.is_empty() {
         let mut start = 0;
         while let Some(offset) = find_sequence(&lines[start..], &before) {
             let context_start = start + offset;
             let candidate = context_start + before.len();
-            if candidate < lines.len()
-                && (after.is_empty() || matches_sequence(lines, candidate + span, &after))
-            {
-                return Some(candidate);
+            if candidate < lines.len() {
+                if let Some(after_offset) = find_sequence(&lines[candidate..], &after) {
+                    if after_offset > 0 {
+                        return Some((candidate, after_offset));
+                    }
+                }
+            }
+            start = context_start + 1;
+            if start >= lines.len() {
+                break;
+            }
+        }
+    }
+
+    if !before.is_empty() && after.is_empty() {
+        let mut start = 0;
+        while let Some(offset) = find_sequence(&lines[start..], &before) {
+            let context_start = start + offset;
+            let candidate = context_start + before.len();
+            if candidate < lines.len() {
+                return Some((candidate, span));
             }
             start = context_start + 1;
             if start >= lines.len() {
@@ -1437,7 +1555,10 @@ fn find_context_match(comment: &StoredComment, lines: &[&str], span: usize) -> O
     }
 
     if !after.is_empty() {
-        return find_sequence(lines, &after).map(|after_index| after_index.saturating_sub(span));
+        return find_sequence(lines, &after).map(|after_index| {
+            let start = after_index.saturating_sub(span);
+            (start, span)
+        });
     }
 
     None
@@ -1834,8 +1955,7 @@ mod tests {
     #[test]
     fn resolves_exact_anchor_at_stored_line() {
         let comment = stored_comment(2, "target");
-        let anchor =
-            resolve_anchor(&comment, "before\ntarget\nafter\n", "new".to_string(), None);
+        let anchor = resolve_anchor(&comment, "before\ntarget\nafter\n", "new".to_string(), None);
 
         assert_eq!(anchor.status, review_types::AnchorStatus::Anchored);
         assert_eq!(anchor.line_start, 2);
@@ -1873,10 +1993,57 @@ mod tests {
     }
 
     #[test]
+    fn approximate_anchor_spans_replacement_between_context() {
+        let comment = stored_comment(2, "old one\nold two");
+        let anchor = resolve_anchor(
+            &comment,
+            "intro\nbefore\nnew one\nnew two\nnew three\nafter\noutro\n",
+            "new".to_string(),
+            None,
+        );
+
+        assert_eq!(anchor.status, review_types::AnchorStatus::Approximate);
+        assert_eq!(anchor.line_start, 3);
+        assert_eq!(anchor.line_end, 5);
+        assert_eq!(anchor.anchor_text, "new one\nnew two\nnew three");
+    }
+
+    #[test]
+    fn approximate_anchor_uses_multiline_line_matches() {
+        let comment = stored_comment(5, "keep one\nold middle\nkeep two");
+        let anchor = resolve_anchor(
+            &comment,
+            "intro\nother\nkeep one\nnew middle\nkeep two\noutro\n",
+            "new".to_string(),
+            None,
+        );
+
+        assert_eq!(anchor.status, review_types::AnchorStatus::Approximate);
+        assert_eq!(anchor.line_start, 3);
+        assert_eq!(anchor.line_end, 5);
+        assert_eq!(anchor.anchor_text, "keep one\nnew middle\nkeep two");
+    }
+
+    #[test]
+    fn multiline_line_match_prefers_nearest_candidate() {
+        let comment = stored_comment(5, "same one\nold middle\nsame two");
+        let anchor = resolve_anchor(
+            &comment,
+            "same one\nleft\nsame two\nspacer\nsame one\nright\nsame two\n",
+            "new".to_string(),
+            None,
+        );
+
+        assert_eq!(anchor.status, review_types::AnchorStatus::Approximate);
+        assert_eq!(anchor.line_start, 5);
+        assert_eq!(anchor.line_end, 7);
+        assert_eq!(anchor.anchor_text, "same one\nright\nsame two");
+    }
+
+    #[test]
     fn marks_anchor_orphaned_when_text_and_context_do_not_match() {
         let comment = stored_comment(2, "target");
-        let anchor =
-            resolve_anchor(&comment, "unrelated\ncontent\n", "new".to_string(), None);
+        let anchor = resolve_anchor(&comment, "unrelated\ncontent\n", "new".to_string(), None);
 
         assert_eq!(anchor.status, review_types::AnchorStatus::Orphaned);
         assert_eq!(anchor.line_start, 2);
