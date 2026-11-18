@@ -102,6 +102,10 @@ impl TestRepo {
                             head_ref: "HEAD".to_string(),
                             kind: NotificationKind::ReviewChanged {
                                 file_path: file_path.to_string(),
+                                status: Some(review_types::ReviewStatus::Reviewed {
+                                    at: "2026-01-01T00:00:00Z".to_string(),
+                                    reviewed_commit: Some("deadbeef".to_string()),
+                                }),
                             },
                         },
                     };
@@ -242,7 +246,7 @@ async fn assert_notification_for_path(client: &Client, expected_path: &str) {
         if received.iter().any(|notification| {
             matches!(
                 &notification.kind,
-                NotificationKind::ReviewChanged { file_path } if file_path == expected_path
+                NotificationKind::ReviewChanged { file_path, .. } if file_path == expected_path
             )
         }) {
             return;

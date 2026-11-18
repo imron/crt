@@ -226,6 +226,7 @@ fn init_params(worktree: &Path, base_ref: &str) -> serde_json::Value {
         worktree: worktree.to_string_lossy().into_owned(),
         base_ref: base_ref.to_string(),
         root: false,
+        diff_algorithm: None,
     })
 }
 
@@ -234,6 +235,7 @@ fn init_root_params(worktree: &Path) -> serde_json::Value {
         worktree: worktree.to_string_lossy().into_owned(),
         base_ref: String::new(),
         root: true,
+        diff_algorithm: None,
     })
 }
 
@@ -651,7 +653,7 @@ async fn test_client_receives_review_notification_while_idle() {
     assert!(
         received.iter().any(|notification| matches!(
             &notification.kind,
-            NotificationKind::ReviewChanged { file_path } if file_path == "file.txt"
+            NotificationKind::ReviewChanged { file_path, .. } if file_path == "file.txt"
         )),
         "watcher did not receive review notification: {received:?}"
     );
