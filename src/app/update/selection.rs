@@ -1,6 +1,6 @@
 use super::cursor;
 use super::output::AppOutput;
-use super::viewport::AppViewport;
+use super::viewport::ViewportMetrics;
 use crate::app::document::{
     ColumnIndex, DiffDocument, Document, DocumentPosition, DocumentRow, RowIndex,
 };
@@ -29,7 +29,7 @@ struct SourceLineEntry {
 
 pub fn apply_visual_selection_effect(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     update: &mut AppOutput,
     effect: VisualSelectionEffect,
 ) {

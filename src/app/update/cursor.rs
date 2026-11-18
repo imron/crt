@@ -1,11 +1,11 @@
-use super::viewport::{AppViewport, active_diff_content_height};
+use super::viewport::{ViewportMetrics, active_diff_content_height};
 use crate::app::AppState;
 use crate::app::document::RowIndex;
 use crate::core::DiffCursorEffect;
 
 pub fn apply_diff_cursor_effect(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     effect: DiffCursorEffect,
 ) {
     match effect {
@@ -143,7 +143,7 @@ pub fn apply_diff_cursor_effect(
     state.mark_model_changed();
 }
 
-fn clamp_diff_scroll(state: &mut AppState, view: &impl AppViewport) {
+fn clamp_diff_scroll(state: &mut AppState, view: &impl ViewportMetrics) {
     let content_height = active_diff_content_height(state, view);
     if content_height == 0 {
         return;
@@ -151,7 +151,7 @@ fn clamp_diff_scroll(state: &mut AppState, view: &impl AppViewport) {
     state.diff_scroll = state.diff_scroll.min(content_height.saturating_sub(1));
 }
 
-pub fn clamp_cursor_and_scroll(state: &mut AppState, view: &impl AppViewport) {
+pub fn clamp_cursor_and_scroll(state: &mut AppState, view: &impl ViewportMetrics) {
     let content_height = active_diff_content_height(state, view);
     if content_height == 0 {
         return;
@@ -198,7 +198,7 @@ fn char_class(c: char) -> u8 {
     }
 }
 
-fn word_forward(state: &mut AppState, view: &impl AppViewport) {
+fn word_forward(state: &mut AppState, view: &impl ViewportMetrics) {
     let content = line_content(state, state.diff_line_cursor);
     let chars: Vec<char> = content.chars().collect();
     let text_len = chars.len();
@@ -249,7 +249,7 @@ fn word_forward(state: &mut AppState, view: &impl AppViewport) {
     state.diff_col_cursor = pos;
 }
 
-fn word_backward(state: &mut AppState, view: &impl AppViewport) {
+fn word_backward(state: &mut AppState, view: &impl ViewportMetrics) {
     if state.diff_col_cursor == 0 {
         if state.diff_line_cursor > 0 {
             state.diff_line_cursor -= 1;
@@ -291,7 +291,7 @@ fn word_backward(state: &mut AppState, view: &impl AppViewport) {
     state.diff_col_cursor = pos;
 }
 
-fn bigword_forward(state: &mut AppState, view: &impl AppViewport) {
+fn bigword_forward(state: &mut AppState, view: &impl ViewportMetrics) {
     let content = line_content(state, state.diff_line_cursor);
     let chars: Vec<char> = content.chars().collect();
     let text_len = chars.len();
@@ -341,7 +341,7 @@ fn bigword_forward(state: &mut AppState, view: &impl AppViewport) {
     state.diff_col_cursor = pos;
 }
 
-fn bigword_backward(state: &mut AppState, view: &impl AppViewport) {
+fn bigword_backward(state: &mut AppState, view: &impl ViewportMetrics) {
     if state.diff_col_cursor == 0 {
         if state.diff_line_cursor > 0 {
             state.diff_line_cursor -= 1;

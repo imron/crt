@@ -1,10 +1,10 @@
 use super::comments;
-use super::viewport::AppViewport;
+use super::viewport::ViewportMetrics;
 use crate::app::{AppState, FileListSectionFocus};
 use crate::core::{PaneEffect, PaneId};
 use crate::review_types::{PaneFocus, ReviewStatus};
 
-pub fn apply_pane_effect(state: &mut AppState, view: &impl AppViewport, effect: PaneEffect) {
+pub fn apply_pane_effect(state: &mut AppState, view: &impl ViewportMetrics, effect: PaneEffect) {
     match effect {
         PaneEffect::ActivateFileListSelection => {
             if state.file_list_section_focus == FileListSectionFocus::UnresolvedComments {

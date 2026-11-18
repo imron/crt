@@ -24,7 +24,7 @@ use crate::review_types::{
 };
 use anyhow::{Context, Result};
 
-pub use update::{AppOutput, AppViewport, StatusUpdate};
+pub use update::{AppOutput, StatusUpdate, ViewportMetrics};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AppWork {
@@ -477,7 +477,7 @@ impl App {
         update::interaction_context(&self.state)
     }
 
-    pub fn prompt_submit_context(&self, viewport: &impl AppViewport) -> InteractionContext {
+    pub fn prompt_submit_context(&self, viewport: &impl ViewportMetrics) -> InteractionContext {
         update::prompt_submit_context(&self.state, viewport)
     }
 
@@ -495,7 +495,7 @@ impl App {
 
     pub fn apply_core_effects(
         &mut self,
-        viewport: &impl AppViewport,
+        viewport: &impl ViewportMetrics,
         effects: Vec<CoreEffect>,
     ) -> AppOutput {
         self.state.ensure_active_document();
@@ -535,7 +535,7 @@ impl App {
 
     pub fn navigate_to_search_match(
         &mut self,
-        viewport: &impl AppViewport,
+        viewport: &impl ViewportMetrics,
         search_match: &SearchMatch,
     ) -> AppOutput {
         update::navigate_to_search_match(&mut self.state, viewport, search_match)
@@ -543,13 +543,13 @@ impl App {
 
     pub fn navigate_to_definition(
         &mut self,
-        viewport: &impl AppViewport,
+        viewport: &impl ViewportMetrics,
         definition: &DefinitionLocation,
     ) -> AppOutput {
         update::navigate_to_definition(&mut self.state, viewport, definition)
     }
 
-    pub fn refresh_active_diff_search(&mut self, viewport: &impl AppViewport) -> bool {
+    pub fn refresh_active_diff_search(&mut self, viewport: &impl ViewportMetrics) -> bool {
         update::diff_search::refresh_active_diff_search(&mut self.state, viewport)
     }
 
@@ -1557,7 +1557,7 @@ mod tests {
 
     struct EmptyViewport;
 
-    impl AppViewport for EmptyViewport {
+    impl ViewportMetrics for EmptyViewport {
         fn diff_content_height(&self) -> usize {
             0
         }
@@ -1579,7 +1579,7 @@ mod tests {
         }
     }
 
-    impl AppViewport for RenderedViewport {
+    impl ViewportMetrics for RenderedViewport {
         fn diff_content_height(&self) -> usize {
             self.lines.len()
         }

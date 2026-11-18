@@ -1,6 +1,6 @@
 use crate::app::AppState;
 
-pub fn active_diff_content_height(state: &AppState, view: &impl AppViewport) -> usize {
+pub fn active_diff_content_height(state: &AppState, view: &impl ViewportMetrics) -> usize {
     state
         .active_document
         .as_ref()
@@ -8,7 +8,7 @@ pub fn active_diff_content_height(state: &AppState, view: &impl AppViewport) -> 
         .unwrap_or_else(|| view.diff_content_height())
 }
 
-pub trait AppViewport {
+pub trait ViewportMetrics {
     fn diff_content_height(&self) -> usize;
     fn diff_view_height(&self) -> usize;
 

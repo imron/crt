@@ -1,13 +1,13 @@
 use super::cursor::clamp_cursor_and_scroll;
 use super::output::AppOutput;
-use super::viewport::AppViewport;
+use super::viewport::ViewportMetrics;
 use crate::app::AppState;
 use crate::app::document::{ColumnIndex, DocumentPosition, RowIndex};
 use crate::core::navigation::Direction;
 
 pub fn apply_diff_search(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     update: &mut AppOutput,
     query: String,
 ) {
@@ -34,7 +34,7 @@ pub fn apply_diff_search(
 
 pub fn navigate_diff_search_match(
     state: &mut AppState,
-    view: &impl AppViewport,
+    view: &impl ViewportMetrics,
     update: &mut AppOutput,
     direction: Direction,
 ) {
@@ -73,7 +73,7 @@ pub fn clear_diff_search(state: &mut AppState) {
     state.mark_model_changed();
 }
 
-pub fn refresh_active_diff_search(state: &mut AppState, view: &impl AppViewport) -> bool {
+pub fn refresh_active_diff_search(state: &mut AppState, view: &impl ViewportMetrics) -> bool {
     if state.diff_search_query.is_none() {
         return false;
     }
@@ -96,7 +96,10 @@ pub fn refresh_active_diff_search(state: &mut AppState, view: &impl AppViewport)
     changed
 }
 
-fn recompute_diff_search_matches(state: &mut AppState, view: &impl AppViewport) -> Option<String> {
+fn recompute_diff_search_matches(
+    state: &mut AppState,
+    view: &impl ViewportMetrics,
+) -> Option<String> {
     state.diff_search_matches.clear();
     state.diff_search_current = 0;
     let query = match &state.diff_search_query {
@@ -141,7 +144,7 @@ fn recompute_diff_search_matches(state: &mut AppState, view: &impl AppViewport) 
     None
 }
 
-fn diff_search_jump_to_current(state: &mut AppState, view: &impl AppViewport) {
+fn diff_search_jump_to_current(state: &mut AppState, view: &impl ViewportMetrics) {
     if state.diff_search_matches.is_empty() {
         return;
     }
@@ -155,7 +158,7 @@ fn diff_search_jump_to_current(state: &mut AppState, view: &impl AppViewport) {
     clamp_cursor_and_scroll(state, view);
 }
 
-fn set_cursor_to_match(state: &mut AppState, view: &impl AppViewport, idx: usize) {
+fn set_cursor_to_match(state: &mut AppState, view: &impl ViewportMetrics, idx: usize) {
     let Some((row, start, _)) = state.diff_search_matches.get(idx).copied() else {
         return;
     };
@@ -176,7 +179,7 @@ mod tests {
         lines: Vec<String>,
     }
 
-    impl AppViewport for View {
+    impl ViewportMetrics for View {
         fn diff_content_height(&self) -> usize {
             self.lines.len()
         }
