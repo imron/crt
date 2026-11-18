@@ -471,6 +471,61 @@ async fn test_http_client_lists_repos() {
 }
 
 #[tokio::test]
+async fn test_client_list_repos_reports_multiple_active_sessions() {
+    let server = TestServer::start().await;
+    let second_dir = tempfile::tempdir().unwrap();
+    let second_repo = second_dir.path().join("repo");
+    std::fs::create_dir_all(&second_repo).unwrap();
+    run_git(&second_repo, &["init"]);
+    run_git(&second_repo, &["config", "user.email", "test@test.com"]);
+    run_git(&second_repo, &["config", "user.name", "Test"]);
+    std::fs::write(second_repo.join("other.txt"), "hello\n").unwrap();
+    run_git(&second_repo, &["add", "-A"]);
+    run_git(&second_repo, &["commit", "-m", "initial"]);
+
+    let first = Client::connect(&server.socket_path).await.unwrap();
+    first
+        .init(&server.repo_dir.to_string_lossy(), "HEAD")
+        .await
+        .unwrap();
+    let second = Client::connect(&server.socket_path).await.unwrap();
+    second
+        .init(&second_repo.to_string_lossy(), "HEAD")
+        .await
+        .unwrap();
+    let discovery = Client::connect(&server.socket_path).await.unwrap();
+
+    let repos = discovery.list_repos().await.unwrap();
+
+    assert_eq!(repos.sessions.len(), 2);
+    assert_eq!(repos.repos.len(), 2);
+    assert!(
+        repos
+            .sessions
+            .iter()
+            .all(|session| session.base_ref == "HEAD")
+    );
+    assert!(
+        repos
+            .sessions
+            .iter()
+            .all(|session| session.client_count == 1)
+    );
+    let mut worktrees = repos
+        .sessions
+        .iter()
+        .map(|session| session.worktree.clone())
+        .collect::<Vec<_>>();
+    worktrees.sort_unstable();
+    let mut expected_worktrees = vec![
+        second_repo.to_string_lossy().into_owned(),
+        server.repo_dir.to_string_lossy().into_owned(),
+    ];
+    expected_worktrees.sort_unstable();
+    assert_eq!(worktrees, expected_worktrees);
+}
+
+#[tokio::test]
 async fn test_comment_lifecycle() {
     let server = TestServer::start().await;
     let mut conn = server.connect_and_init().await;
