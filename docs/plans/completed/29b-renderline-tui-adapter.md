@@ -2,7 +2,7 @@
 
 ## Status
 
-Backlog.
+Complete.
 
 ## Overview
 
@@ -114,11 +114,11 @@ Add renderer boundary tests for:
 
 ## Acceptance Criteria
 
-- [ ] TUI diff rendering consumes `RenderLine`.
-- [ ] Side-by-side rendering destructures `SideBySideDocument`.
-- [ ] TUI no longer reconstructs source line mappings for visible rows.
-- [ ] Existing visual output remains equivalent.
-- [ ] Existing diff, side-by-side, hunk, blame, and comment marker tests stay
+- [x] TUI diff rendering consumes `RenderLine`.
+- [x] Side-by-side rendering destructures `SideBySideDocument`.
+- [x] TUI no longer reconstructs source line mappings for visible rows.
+- [x] Existing visual output remains equivalent.
+- [x] Existing diff, side-by-side, hunk, blame, and comment marker tests stay
       green or are replaced by document-render tests.
-- [ ] The legacy renderer remains available behind the `*` toggle until 29f
+- [x] The legacy renderer remains available behind the `*` toggle until 29f
       removes it.
