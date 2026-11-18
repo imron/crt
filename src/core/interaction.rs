@@ -37,6 +37,9 @@ pub enum CoreEffect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiffSearchEffect {
     Submit { query: String },
+    NextMatch,
+    PreviousMatch,
+    Clear,
 }
 
 /// Connection lifecycle states for UI adapters.
@@ -210,6 +213,27 @@ impl CoreInteractionEngine {
                     && key.key == Key::Char('m') =>
             {
                 vec![CoreEffect::ToggleDiffBase]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_no_modifier(key.modifiers)
+                    && key.key == Key::Char('n') =>
+            {
+                vec![CoreEffect::DiffSearch(DiffSearchEffect::NextMatch)]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_no_command_modifier(key.modifiers)
+                    && key.key == Key::Char('N') =>
+            {
+                vec![CoreEffect::DiffSearch(DiffSearchEffect::PreviousMatch)]
+            }
+            InputEvent::Key(key)
+                if key.kind == KeyEventKind::Press
+                    && key_has_no_modifier(key.modifiers)
+                    && key.key == Key::Escape =>
+            {
+                vec![CoreEffect::DiffSearch(DiffSearchEffect::Clear)]
             }
             InputEvent::PromptSubmit { id, value } => {
                 let Some(active) = self.take_active_prompt(id) else {
@@ -611,6 +635,58 @@ mod tests {
         );
 
         assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn diff_search_navigation_keys_request_search_effects() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let next = engine.handle_input(
+            key_event(Key::Char('n'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+        let previous = engine.handle_input(
+            key_event(
+                Key::Char('N'),
+                InputModifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+        let clear = engine.handle_input(
+            key_event(Key::Escape, InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(
+            next,
+            vec![CoreEffect::DiffSearch(DiffSearchEffect::NextMatch)]
+        );
+        assert_eq!(
+            previous,
+            vec![CoreEffect::DiffSearch(DiffSearchEffect::PreviousMatch)]
+        );
+        assert_eq!(clear, vec![CoreEffect::DiffSearch(DiffSearchEffect::Clear)]);
+    }
+
+    #[test]
+    fn control_n_keeps_file_navigation_precedence() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(
+                Key::Char('n'),
+                InputModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+
+        assert_eq!(effects, vec![CoreEffect::NavigateFile(Direction::Next)]);
     }
 
     #[test]

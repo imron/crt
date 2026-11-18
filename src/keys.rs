@@ -131,6 +131,15 @@ fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
             CoreEffect::DiffSearch(DiffSearchEffect::Submit { query }) => {
                 apply_diff_search(state, query);
             }
+            CoreEffect::DiffSearch(DiffSearchEffect::NextMatch) => {
+                navigate_diff_search_match(state, Direction::Next);
+            }
+            CoreEffect::DiffSearch(DiffSearchEffect::PreviousMatch) => {
+                navigate_diff_search_match(state, Direction::Prev);
+            }
+            CoreEffect::DiffSearch(DiffSearchEffect::Clear) => {
+                clear_diff_search(state);
+            }
             CoreEffect::ReviewToggle => {
                 toggle_review(state);
                 state.status_message = None;
@@ -271,6 +280,40 @@ fn apply_diff_search(state: &mut AppState, query: String) {
             state.status_message = Some((format!("{cur}/{total}"), Instant::now()));
         }
     }
+}
+
+fn navigate_diff_search_match(state: &mut AppState, direction: Direction) {
+    if state.diff_search_query.is_none() || state.diff_search_matches.is_empty() {
+        return;
+    }
+
+    let cursor = state.diff_line_cursor;
+    let len = state.diff_search_matches.len();
+    let idx = match direction {
+        Direction::Next => state
+            .diff_search_matches
+            .iter()
+            .position(|(row, _, _)| *row > cursor)
+            .unwrap_or(0),
+        Direction::Prev => state
+            .diff_search_matches
+            .iter()
+            .rposition(|(row, _, _)| *row < cursor)
+            .unwrap_or(len - 1),
+    };
+
+    state.diff_search_current = idx;
+    let (row, _, _) = state.diff_search_matches[idx];
+    state.diff_line_cursor = row;
+    state.clamp_cursor_and_scroll();
+    let cur = idx + 1;
+    state.status_message = Some((format!("{cur}/{len}"), Instant::now()));
+}
+
+fn clear_diff_search(state: &mut AppState) {
+    state.diff_search_query = None;
+    state.diff_search_matches.clear();
+    state.diff_search_current = 0;
 }
 
 fn toggle_pane_focus(state: &mut AppState) {
@@ -765,40 +808,20 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
         }
         (KeyCode::Char('n'), KeyModifiers::NONE) => {
             if state.diff_search_query.is_some() && !state.diff_search_matches.is_empty() {
-                // Next match: find first match strictly after current cursor.
-                let cursor = state.diff_line_cursor;
-                let len = state.diff_search_matches.len();
-                let idx = state
-                    .diff_search_matches
-                    .iter()
-                    .position(|(row, _, _)| *row > cursor)
-                    .unwrap_or(0); // wrap to first match
-                state.diff_search_current = idx;
-                let (row, _, _) = state.diff_search_matches[idx];
-                state.diff_line_cursor = row;
-                state.clamp_cursor_and_scroll();
-                let cur = idx + 1;
-                state.status_message = Some((format!("{cur}/{len}"), Instant::now()));
+                if dispatch_core_input(state, key) {
+                    return;
+                }
+                navigate_diff_search_match(state, Direction::Next);
                 return;
             }
             // Fall through if no active search — `n` might be used elsewhere.
         }
         (KeyCode::Char('N'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
             if state.diff_search_query.is_some() && !state.diff_search_matches.is_empty() {
-                // Previous match: find last match strictly before current cursor.
-                let cursor = state.diff_line_cursor;
-                let len = state.diff_search_matches.len();
-                let idx = state
-                    .diff_search_matches
-                    .iter()
-                    .rposition(|(row, _, _)| *row < cursor)
-                    .unwrap_or(len - 1); // wrap to last match
-                state.diff_search_current = idx;
-                let (row, _, _) = state.diff_search_matches[idx];
-                state.diff_line_cursor = row;
-                state.clamp_cursor_and_scroll();
-                let cur = idx + 1;
-                state.status_message = Some((format!("{cur}/{len}"), Instant::now()));
+                if dispatch_core_input(state, key) {
+                    return;
+                }
+                navigate_diff_search_match(state, Direction::Prev);
                 return;
             }
             // Fall through if no active search.
@@ -806,9 +829,10 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
         (KeyCode::Esc, KeyModifiers::NONE) => {
             // Escape clears search highlights.
             if state.diff_search_query.is_some() {
-                state.diff_search_query = None;
-                state.diff_search_matches.clear();
-                state.diff_search_current = 0;
+                if dispatch_core_input(state, key) {
+                    return;
+                }
+                clear_diff_search(state);
                 return;
             }
         }
