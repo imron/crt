@@ -746,7 +746,11 @@ async fn test_comment_reanchors_unresolved_only() {
         .await;
     assert!(detail["error"].is_null(), "get resolved failed: {detail}");
     assert_eq!(detail["result"]["comment"]["resolved"], true);
-    assert_eq!(detail["result"]["comment"]["anchor_status"], "anchored");
+    // The comment was last reanchored as "shifted" at line 4 before
+    // being resolved.  Resolved comments are not re-anchored, and the
+    // file content was unchanged at resolve time so no new anchor
+    // version was inserted.  The stored status is preserved.
+    assert_eq!(detail["result"]["comment"]["anchor_status"], "shifted");
     assert_eq!(detail["result"]["comment"]["line_start"], 4);
 }
 
