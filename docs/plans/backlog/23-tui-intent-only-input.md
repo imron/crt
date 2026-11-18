@@ -103,6 +103,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   after routing those paths through core input.
 - Added TUI mouse-to-core input translation with pane-local positions and
   semantic pane/text hits while preserving existing mouse behavior.
+- Routed diff-pane mouse-wheel scrolling through core input as semantic cursor
+  effects.
 
 ## Acceptance Criteria
 

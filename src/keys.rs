@@ -106,7 +106,7 @@ fn cancel_active_prompt(state: &mut AppState) -> bool {
     apply_core_effects(state, effects)
 }
 
-fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
+pub(crate) fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
     let mut handled = false;
     for effect in effects {
         handled = true;
@@ -416,6 +416,22 @@ fn apply_diff_cursor_effect(state: &mut AppState, effect: DiffCursorEffect) {
             {
                 state.diff_line_cursor = state.diff_scroll + state.diff_view_height - 1;
                 state.diff_col_cursor = 0;
+            }
+        }
+        DiffCursorEffect::WheelDown => {
+            state.diff_scroll = state.diff_scroll.saturating_add(3);
+            state.clamp_diff_scroll();
+            if state.diff_line_cursor < state.diff_scroll {
+                state.diff_line_cursor = state.diff_scroll;
+            }
+        }
+        DiffCursorEffect::WheelUp => {
+            state.diff_scroll = state.diff_scroll.saturating_sub(3);
+            let bottom = state
+                .diff_scroll
+                .saturating_add(state.diff_view_height.saturating_sub(1));
+            if state.diff_line_cursor > bottom {
+                state.diff_line_cursor = bottom;
             }
         }
         DiffCursorEffect::Top => {
