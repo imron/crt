@@ -10,9 +10,11 @@ use self::model::AppModel;
 use crate::client::{Client, Notification};
 use crate::config::Config;
 use crate::core::InputEvent;
+use crate::core::command::Command;
 use crate::core::diff;
 use crate::core::interaction::{CoreEffect, CoreInteractionEngine, InteractionContext};
 use crate::core::review;
+use crate::core::search as core_search;
 use crate::protocol::NotificationKind;
 use crate::review_types::{
     ConnectionContext, ContentMode, DefinitionLocation, FileEntry, PaneFocus, RenderVariant,
@@ -22,10 +24,11 @@ use anyhow::Result;
 
 pub use update::{AppOutput, AppViewport, StatusUpdate};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum AppWork {
     ToggleSelectedReview,
     ReloadFileSnapshot,
+    RunCommand(Command),
 }
 
 // ---------------------------------------------------------------------------
@@ -45,6 +48,21 @@ pub struct JumpLocation {
     pub content_mode: ContentMode,
     /// Render variant at the time of the jump.
     pub render_variant: RenderVariant,
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchResults {
+    pub query: String,
+    pub diff_only: bool,
+    pub matches: Vec<SearchMatch>,
+    pub selected: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct DefinitionResults {
+    pub symbol: String,
+    pub definitions: Vec<DefinitionLocation>,
+    pub selected: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +181,7 @@ impl App {
             let work_status = match work {
                 AppWork::ToggleSelectedReview => self.toggle_selected_review().await,
                 AppWork::ReloadFileSnapshot => self.reload_file_snapshot().await,
+                AppWork::RunCommand(command) => self.run_command(command).await,
             };
             if work_status.is_some() {
                 status = work_status;
@@ -216,6 +235,9 @@ impl App {
         let mut output = update::apply_core_effects(&mut self.state, viewport, effects);
         if output.take_pending_review_toggle() {
             self.pending_work.push_back(AppWork::ToggleSelectedReview);
+        }
+        if let Some(command) = output.take_pending_command() {
+            self.pending_work.push_back(AppWork::RunCommand(command));
         }
         output
     }
@@ -309,6 +331,114 @@ impl App {
             review::apply_review_result(&mut self.state.files, self.state.selected_file, result);
         self.state.on_file_changed();
     }
+
+    async fn run_command(&mut self, command: Command) -> Option<StatusUpdate> {
+        match command {
+            Command::SearchAll { pattern } => self.run_search(pattern, false).await,
+            Command::SearchDiff { pattern } => self.run_search(pattern, true).await,
+            Command::FindDefinition { symbol } => self.run_definition_lookup(symbol).await,
+            Command::ViewFile { path, line_number } => Some(StatusUpdate::Set(format!(
+                "File not in diff: {path} {line_number}"
+            ))),
+            Command::Quit
+            | Command::SetBlame(_)
+            | Command::SetComments(_)
+            | Command::SetWhitespaceIgnored(_)
+            | Command::Unknown { .. } => {
+                Some(StatusUpdate::Set("Unsupported pending command".to_string()))
+            }
+        }
+    }
+
+    async fn run_search(&mut self, pattern: String, diff_only: bool) -> Option<StatusUpdate> {
+        let scope = if diff_only { "diff" } else { "all" };
+        match self.search_codebase(&pattern, scope).await {
+            Ok(result) => match core_search::search_outcome(&pattern, diff_only, result) {
+                core_search::SearchOutcome::NoMatches => {
+                    let suffix = if diff_only { " in diff" } else { "" };
+                    Some(StatusUpdate::Set(format!(
+                        "No matches for /{pattern}/{suffix}"
+                    )))
+                }
+                core_search::SearchOutcome::ShowResults {
+                    query,
+                    diff_only,
+                    matches,
+                } => {
+                    self.state.search_results = Some(SearchResults {
+                        query,
+                        diff_only,
+                        matches,
+                        selected: 0,
+                    });
+                    Some(StatusUpdate::Clear)
+                }
+            },
+            Err(e) => Some(StatusUpdate::Set(format!("Search error: {e}"))),
+        }
+    }
+
+    async fn run_definition_lookup(&mut self, symbol: String) -> Option<StatusUpdate> {
+        let context_file = self
+            .state
+            .selected_file_entry()
+            .map(|entry| entry.change.path.clone());
+        match self.find_definition(&symbol, context_file.as_deref()).await {
+            Ok(result) => {
+                match core_search::definition_outcome(&symbol, result, &self.state.files) {
+                    core_search::DefinitionOutcome::NoDefinitions => Some(StatusUpdate::Set(
+                        format!("No definitions found for '{symbol}'"),
+                    )),
+                    core_search::DefinitionOutcome::Navigate(target) => {
+                        self.navigate_to_location_target(target)
+                    }
+                    core_search::DefinitionOutcome::ShowResults {
+                        symbol,
+                        definitions,
+                    } => {
+                        self.state.definition_results = Some(DefinitionResults {
+                            symbol,
+                            definitions,
+                            selected: 0,
+                        });
+                        Some(StatusUpdate::Clear)
+                    }
+                }
+            }
+            Err(e) => Some(StatusUpdate::Set(format!("Definition error: {e}"))),
+        }
+    }
+
+    fn navigate_to_location_target(
+        &mut self,
+        target: core_search::LocationTarget,
+    ) -> Option<StatusUpdate> {
+        self.state.jump_stack.push(JumpLocation {
+            file_index: self.state.selected_file,
+            diff_scroll: self.state.diff_scroll,
+            diff_line_cursor: self.state.diff_line_cursor,
+            content_mode: self.state.content_mode,
+            render_variant: self.state.render_variant,
+        });
+
+        match target {
+            core_search::LocationTarget::InDiff {
+                file_index,
+                line_number,
+            } => {
+                self.state.selected_file = file_index;
+                self.state.on_file_changed();
+                self.state.diff_line_cursor = (line_number as usize).saturating_sub(1);
+                Some(StatusUpdate::Clear)
+            }
+            core_search::LocationTarget::External {
+                file_path,
+                line_number,
+            } => Some(StatusUpdate::Set(format!(
+                "Definition in file not in diff: {file_path}:{line_number}"
+            ))),
+        }
+    }
 }
 
 fn notification_requires_snapshot_reload(notifications: &[Notification]) -> bool {
@@ -382,6 +512,10 @@ pub struct AppState {
     /// When true, force diffs to use merge_base even for reviewed files.
     /// Toggled by the `m` keybinding.
     pub show_merge_base: bool,
+    /// Active codebase search results overlay state.
+    pub search_results: Option<SearchResults>,
+    /// Active definition lookup results overlay state.
+    pub definition_results: Option<DefinitionResults>,
     /// Core interaction entrypoint used by the TUI adapter for migrated input.
     pub core_interaction: CoreInteractionEngine,
 }
@@ -420,6 +554,8 @@ impl AppState {
             diff_search_matches: Vec::new(),
             diff_search_current: 0,
             show_merge_base: false,
+            search_results: None,
+            definition_results: None,
             core_interaction: CoreInteractionEngine::new(),
         }
     }
@@ -572,7 +708,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::CoreEffect;
+    use crate::core::{CoreEffect, DefinitionResultsEffect, SearchResultsEffect};
     use crate::protocol::NotificationKind;
     use crate::review_types::{ChangeKind, DiffContent, FileChange, FileEntry, ReviewStatus};
 
@@ -741,6 +877,81 @@ mod tests {
         assert_eq!(app.state.diff_scroll, 5);
         assert_eq!(app.state.content_mode, ContentMode::FullFile);
         assert_eq!(app.state.render_variant, RenderVariant::HeadVersion);
+    }
+
+    #[test]
+    fn app_owns_search_overlay_selection() {
+        let mut app = App::new(Config::default(), test_context(), vec![test_file("a.rs")]);
+        app.state.search_results = Some(SearchResults {
+            query: "needle".to_string(),
+            diff_only: false,
+            matches: vec![
+                SearchMatch {
+                    file_path: "a.rs".to_string(),
+                    line_number: 1,
+                    line_content: "first".to_string(),
+                },
+                SearchMatch {
+                    file_path: "b.rs".to_string(),
+                    line_number: 2,
+                    line_content: "second".to_string(),
+                },
+            ],
+            selected: 0,
+        });
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::SearchResults(SearchResultsEffect::SelectNext)],
+        );
+
+        assert_eq!(app.state.search_results.as_ref().unwrap().selected, 1);
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::SearchResults(SearchResultsEffect::Close)],
+        );
+
+        assert!(app.state.search_results.is_none());
+    }
+
+    #[test]
+    fn app_owns_definition_overlay_selection() {
+        let mut app = App::new(Config::default(), test_context(), vec![test_file("a.rs")]);
+        app.state.definition_results = Some(DefinitionResults {
+            symbol: "needle".to_string(),
+            definitions: vec![
+                DefinitionLocation {
+                    file_path: "a.rs".to_string(),
+                    line_number: 1,
+                    line_content: "first".to_string(),
+                },
+                DefinitionLocation {
+                    file_path: "b.rs".to_string(),
+                    line_number: 2,
+                    line_content: "second".to_string(),
+                },
+            ],
+            selected: 0,
+        });
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::DefinitionResults(
+                DefinitionResultsEffect::SelectNext,
+            )],
+        );
+
+        assert_eq!(app.state.definition_results.as_ref().unwrap().selected, 1);
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::DefinitionResults(
+                DefinitionResultsEffect::Close,
+            )],
+        );
+
+        assert!(app.state.definition_results.is_none());
     }
 
     #[test]

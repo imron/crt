@@ -57,7 +57,7 @@ pub struct AppOutput {
     pending_review_toggle: bool,
     pub should_suspend: bool,
     pub should_quit: bool,
-    pub pending_command: Option<Command>,
+    pending_command: Option<Command>,
     pub save_layout: bool,
     pub show_comments: Option<bool>,
 }
@@ -106,6 +106,10 @@ impl AppOutput {
         self.pending_command = Some(command);
     }
 
+    pub(super) fn take_pending_command(&mut self) -> Option<Command> {
+        self.pending_command.take()
+    }
+
     fn request_layout_save(&mut self) {
         self.save_layout = true;
     }
@@ -121,6 +125,8 @@ pub(super) fn interaction_context(state: &AppState) -> InteractionContext {
             PaneFocus::FileList => PaneId::FileList,
             PaneFocus::Diff => PaneId::Diff,
         }),
+        search_results_visible: state.search_results.is_some(),
+        definition_results_visible: state.definition_results.is_some(),
         diff_search_active: state.diff_search_query.is_some(),
         diff_search_has_matches: state.diff_search_query.is_some()
             && !state.diff_search_matches.is_empty(),
@@ -170,7 +176,12 @@ pub(super) fn apply_core_effects(
             CoreEffect::DiffCursor(effect) => {
                 apply_diff_cursor_effect(state, view, effect);
             }
-            CoreEffect::SearchResults(_) | CoreEffect::DefinitionResults(_) => {}
+            CoreEffect::SearchResults(effect) => {
+                apply_search_results_effect(state, view, &mut update, effect);
+            }
+            CoreEffect::DefinitionResults(effect) => {
+                apply_definition_results_effect(state, view, &mut update, effect);
+            }
             CoreEffect::Pane(effect) => {
                 apply_pane_effect(state, effect);
             }
@@ -221,6 +232,96 @@ pub(super) fn apply_core_effects(
         }
     }
     update
+}
+
+fn apply_search_results_effect(
+    state: &mut AppState,
+    view: &impl AppViewport,
+    update: &mut AppOutput,
+    effect: crate::core::SearchResultsEffect,
+) {
+    match effect {
+        crate::core::SearchResultsEffect::Close => {
+            state.search_results = None;
+        }
+        crate::core::SearchResultsEffect::SelectNext => {
+            let Some(results) = state.search_results.as_mut() else {
+                return;
+            };
+            if !results.matches.is_empty() {
+                results.selected = (results.selected + 1).min(results.matches.len() - 1);
+            }
+        }
+        crate::core::SearchResultsEffect::SelectPrevious => {
+            let Some(results) = state.search_results.as_mut() else {
+                return;
+            };
+            results.selected = results.selected.saturating_sub(1);
+        }
+        crate::core::SearchResultsEffect::SelectFirst => {
+            let Some(results) = state.search_results.as_mut() else {
+                return;
+            };
+            results.selected = 0;
+        }
+        crate::core::SearchResultsEffect::SelectLast => {
+            let Some(results) = state.search_results.as_mut() else {
+                return;
+            };
+            if !results.matches.is_empty() {
+                results.selected = results.matches.len() - 1;
+            }
+        }
+        crate::core::SearchResultsEffect::AcceptSelected => {
+            let selected = state
+                .search_results
+                .as_ref()
+                .and_then(|results| results.matches.get(results.selected).cloned());
+            state.search_results = None;
+            if let Some(search_match) = selected {
+                let target = core_search::resolve_search_target(&state.files, &search_match);
+                navigate_to_location_target(state, view, update, target);
+            }
+        }
+    }
+}
+
+fn apply_definition_results_effect(
+    state: &mut AppState,
+    view: &impl AppViewport,
+    update: &mut AppOutput,
+    effect: crate::core::DefinitionResultsEffect,
+) {
+    match effect {
+        crate::core::DefinitionResultsEffect::Close => {
+            state.definition_results = None;
+        }
+        crate::core::DefinitionResultsEffect::SelectNext => {
+            let Some(results) = state.definition_results.as_mut() else {
+                return;
+            };
+            if !results.definitions.is_empty() {
+                results.selected = (results.selected + 1).min(results.definitions.len() - 1);
+            }
+        }
+        crate::core::DefinitionResultsEffect::SelectPrevious => {
+            let Some(results) = state.definition_results.as_mut() else {
+                return;
+            };
+            results.selected = results.selected.saturating_sub(1);
+        }
+        crate::core::DefinitionResultsEffect::AcceptSelected => {
+            let selected = state
+                .definition_results
+                .as_ref()
+                .and_then(|results| results.definitions.get(results.selected).cloned());
+            state.definition_results = None;
+            if let Some(definition) = selected {
+                let target = core_search::resolve_definition_target(&state.files, &definition);
+                navigate_to_location_target(state, view, update, target);
+            }
+        }
+    }
 }
 
 /// Apply a parsed command emitted by the core interaction engine.

@@ -5,9 +5,8 @@ use std::time::{Duration, Instant};
 use super::render::diff_view::DiffCache;
 use crate::app::model::AppModel;
 use crate::app::{AppOutput, AppState, AppViewport, StatusUpdate};
-use crate::core::command::Command;
 use crate::core::{AppTarget, PaneId, PointerSemanticHit, PromptId, TextAnchor};
-use crate::review_types::{DefinitionLocation, PaneFocus, SearchMatch};
+use crate::review_types::PaneFocus;
 use ratatui::layout::Rect;
 
 /// Current terminal input mode.
@@ -54,32 +53,6 @@ pub struct LastPointerClick {
     pub when: Instant,
     pub pane: PaneFocus,
     pub anchor: TextAnchor,
-}
-
-/// Search results displayed in a TUI overlay.
-#[derive(Debug, Clone)]
-pub struct SearchResults {
-    /// The query that produced these results.
-    pub query: String,
-    /// Whether this was a `:grd` (diff-only) search.
-    pub diff_only: bool,
-    /// Matches from a codebase search.
-    pub matches: Vec<SearchMatch>,
-    /// Selected index in the results list.
-    pub selected: usize,
-    /// Scroll offset for the results list.
-    pub scroll: usize,
-}
-
-/// Definition lookup results displayed in a TUI overlay.
-#[derive(Debug, Clone)]
-pub struct DefinitionResults {
-    /// The symbol that was looked up.
-    pub symbol: String,
-    /// Definition locations found.
-    pub definitions: Vec<DefinitionLocation>,
-    /// Selected index.
-    pub selected: usize,
 }
 
 pub struct TuiState {
@@ -131,12 +104,8 @@ pub struct TuiState {
     pub should_suspend: bool,
     /// Set to true to exit the event loop.
     pub should_quit: bool,
-    /// Pending command to execute asynchronously in the TUI runtime.
-    pub pending_command: Option<Command>,
-    /// Active search results overlay, if any.
-    pub search_results: Option<SearchResults>,
-    /// Active definition results overlay, if any.
-    pub definition_results: Option<DefinitionResults>,
+    /// TUI scroll offset for the search results overlay.
+    pub search_results_scroll: usize,
     /// Current input mode (Normal vs Command).
     pub input_mode: InputMode,
     /// Command-mode input buffer (the text after `:`).
@@ -184,9 +153,7 @@ impl Default for TuiState {
             status_message: None,
             should_suspend: false,
             should_quit: false,
-            pending_command: None,
-            search_results: None,
-            definition_results: None,
+            search_results_scroll: 0,
             input_mode: InputMode::default(),
             command_input: String::new(),
             command_cursor: 0,
@@ -411,9 +378,6 @@ impl TuiState {
         self.apply_status_update(output.status);
         self.should_suspend |= output.should_suspend;
         self.should_quit |= output.should_quit;
-        if let Some(command) = output.pending_command {
-            self.pending_command = Some(command);
-        }
         if let Some(show_comments) = output.show_comments {
             self.show_comments = show_comments;
         }
@@ -568,9 +532,6 @@ mod tests {
         output.status = Some(StatusUpdate::Set("Searching...".to_string()));
         output.should_suspend = true;
         output.should_quit = true;
-        output.pending_command = Some(Command::SearchAll {
-            pattern: "needle".to_string(),
-        });
         output.show_comments = Some(true);
 
         state.apply_app_output(output);
@@ -579,10 +540,6 @@ mod tests {
         assert!(state.should_suspend);
         assert!(state.should_quit);
         assert!(state.show_comments);
-        assert!(matches!(
-            state.pending_command,
-            Some(Command::SearchAll { ref pattern }) if pattern == "needle"
-        ));
     }
 
     #[test]

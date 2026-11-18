@@ -2,9 +2,7 @@
 
 use super::state::TuiState;
 use crate::app::{App, AppState};
-use crate::core::{
-    CoreEffect, DefinitionResultsEffect, PaneEffect, PaneId, PromptKind, SearchResultsEffect,
-};
+use crate::core::{CoreEffect, PaneEffect, PaneId, PromptKind};
 use crate::review_types::PaneFocus;
 
 pub fn apply_core_effects(
@@ -37,12 +35,6 @@ pub fn apply_core_effects(
             }
             CoreEffect::DismissHelp => {
                 tui_state.show_help = false;
-            }
-            CoreEffect::SearchResults(effect) => {
-                apply_search_results_effect(app, tui_state, effect);
-            }
-            CoreEffect::DefinitionResults(effect) => {
-                apply_definition_results_effect(app, tui_state, effect);
             }
             CoreEffect::TogglePaneFocus => {
                 toggle_pane_focus(&mut app.state, tui_state);
@@ -106,102 +98,6 @@ fn toggle_pane_visibility(state: &mut AppState, tui_state: &mut TuiState, pane: 
                 }
             } else {
                 tui_state.show_diff_pane = true;
-            }
-        }
-    }
-}
-
-fn apply_search_results_effect(
-    app: &mut App,
-    tui_state: &mut TuiState,
-    effect: SearchResultsEffect,
-) {
-    match effect {
-        SearchResultsEffect::Close => {
-            tui_state.search_results = None;
-        }
-        SearchResultsEffect::SelectNext => {
-            let Some(results) = tui_state.search_results.as_mut() else {
-                return;
-            };
-            if !results.matches.is_empty() {
-                results.selected = (results.selected + 1).min(results.matches.len() - 1);
-                if results.selected >= results.scroll + 20 {
-                    results.scroll = results.selected.saturating_sub(19);
-                }
-            }
-        }
-        SearchResultsEffect::SelectPrevious => {
-            let Some(results) = tui_state.search_results.as_mut() else {
-                return;
-            };
-            results.selected = results.selected.saturating_sub(1);
-            if results.selected < results.scroll {
-                results.scroll = results.selected;
-            }
-        }
-        SearchResultsEffect::SelectFirst => {
-            let Some(results) = tui_state.search_results.as_mut() else {
-                return;
-            };
-            results.selected = 0;
-            results.scroll = 0;
-        }
-        SearchResultsEffect::SelectLast => {
-            let Some(results) = tui_state.search_results.as_mut() else {
-                return;
-            };
-            if !results.matches.is_empty() {
-                results.selected = results.matches.len() - 1;
-                results.scroll = results.selected.saturating_sub(19);
-            }
-        }
-        SearchResultsEffect::AcceptSelected => {
-            let selected = tui_state
-                .search_results
-                .as_ref()
-                .and_then(|results| results.matches.get(results.selected).cloned());
-            tui_state.search_results = None;
-            if let Some(search_match) = selected {
-                let output = app.navigate_to_search_match(tui_state, &search_match);
-                tui_state.apply_app_output(output);
-            }
-        }
-    }
-}
-
-fn apply_definition_results_effect(
-    app: &mut App,
-    tui_state: &mut TuiState,
-    effect: DefinitionResultsEffect,
-) {
-    match effect {
-        DefinitionResultsEffect::Close => {
-            tui_state.definition_results = None;
-        }
-        DefinitionResultsEffect::SelectNext => {
-            let Some(results) = tui_state.definition_results.as_mut() else {
-                return;
-            };
-            if !results.definitions.is_empty() {
-                results.selected = (results.selected + 1).min(results.definitions.len() - 1);
-            }
-        }
-        DefinitionResultsEffect::SelectPrevious => {
-            let Some(results) = tui_state.definition_results.as_mut() else {
-                return;
-            };
-            results.selected = results.selected.saturating_sub(1);
-        }
-        DefinitionResultsEffect::AcceptSelected => {
-            let selected = tui_state
-                .definition_results
-                .as_ref()
-                .and_then(|results| results.definitions.get(results.selected).cloned());
-            tui_state.definition_results = None;
-            if let Some(definition) = selected {
-                let output = app.navigate_to_definition(tui_state, &definition);
-                tui_state.apply_app_output(output);
             }
         }
     }

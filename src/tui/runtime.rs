@@ -18,11 +18,9 @@ use ratatui::backend::CrosstermBackend;
 
 use super::effects::apply_core_effects;
 use super::input::{CoreInputDispatch, KeyInputResult};
-use super::state::{DefinitionResults, LastPointerClick, MouseSelection, SearchResults, TuiState};
+use super::state::{LastPointerClick, MouseSelection, TuiState};
 use super::{input, render};
-use crate::app::{App, AppState, JumpLocation};
-use crate::core::command::Command;
-use crate::core::search as core_search;
+use crate::app::App;
 use crate::core::{CoreEffect, InputEvent, InteractionContext, PaneId, TextAnchor};
 use crate::review_types::PaneFocus;
 
@@ -122,11 +120,6 @@ impl Tui {
                 self.handle_event(ev);
             }
 
-            // Process pending command (search, definition, etc.).
-            if let Some(cmd) = self.tui_state.pending_command.take() {
-                self.process_pending_command(cmd).await;
-            }
-
             // Let the app drain queued work and background client updates
             // before the next render.
             let status = self.app.process_background_work().await;
@@ -213,8 +206,6 @@ impl Tui {
     fn interaction_context(&self) -> InteractionContext {
         InteractionContext {
             help_visible: self.tui_state.show_help,
-            search_results_visible: self.tui_state.search_results.is_some(),
-            definition_results_visible: self.tui_state.definition_results.is_some(),
             quit_confirmation_active: self.tui_state.quit_confirmation_active(CTRL_C_TIMEOUT),
             ..self.app.interaction_context()
         }
@@ -395,142 +386,6 @@ impl Tui {
         }
     }
 
-    /// Process a pending command set by the key handler.
-    async fn process_pending_command(&mut self, cmd: Command) {
-        match cmd {
-            Command::SearchAll { pattern } => {
-                self.tui_state.set_status_message("Searching...");
-                // Force a re-render so the user sees the searching message.
-                let _ = self.render_current_frame();
-
-                match self.app.search_codebase(&pattern, "all").await {
-                    Ok(result) => match core_search::search_outcome(&pattern, false, result) {
-                        core_search::SearchOutcome::NoMatches => {
-                            self.tui_state
-                                .set_status_message(format!("No matches for /{pattern}/"));
-                        }
-                        core_search::SearchOutcome::ShowResults {
-                            query,
-                            diff_only,
-                            matches,
-                        } => {
-                            self.tui_state.search_results = Some(SearchResults {
-                                query,
-                                diff_only,
-                                matches,
-                                selected: 0,
-                                scroll: 0,
-                            });
-                            self.tui_state.clear_status_message();
-                        }
-                    },
-                    Err(e) => {
-                        self.tui_state
-                            .set_status_message(format!("Search error: {e}"));
-                    }
-                }
-            }
-            Command::SearchDiff { pattern } => {
-                self.tui_state.set_status_message("Searching diff files...");
-                let _ = self.render_current_frame();
-
-                match self.app.search_codebase(&pattern, "diff").await {
-                    Ok(result) => match core_search::search_outcome(&pattern, true, result) {
-                        core_search::SearchOutcome::NoMatches => {
-                            self.tui_state
-                                .set_status_message(format!("No matches for /{pattern}/ in diff"));
-                        }
-                        core_search::SearchOutcome::ShowResults {
-                            query,
-                            diff_only,
-                            matches,
-                        } => {
-                            self.tui_state.search_results = Some(SearchResults {
-                                query,
-                                diff_only,
-                                matches,
-                                selected: 0,
-                                scroll: 0,
-                            });
-                            self.tui_state.clear_status_message();
-                        }
-                    },
-                    Err(e) => {
-                        self.tui_state
-                            .set_status_message(format!("Search error: {e}"));
-                    }
-                }
-            }
-            Command::FindDefinition { symbol } => {
-                self.tui_state.set_status_message("Finding definition...");
-                let _ = self.render_current_frame();
-
-                let context_file = self
-                    .app
-                    .state
-                    .selected_file_entry()
-                    .map(|e| e.change.path.clone());
-                match self
-                    .app
-                    .find_definition(&symbol, context_file.as_deref())
-                    .await
-                {
-                    Ok(result) => {
-                        match core_search::definition_outcome(
-                            &symbol,
-                            result,
-                            &self.app.state.files,
-                        ) {
-                            core_search::DefinitionOutcome::NoDefinitions => {
-                                self.tui_state.set_status_message(format!(
-                                    "No definitions found for '{symbol}'"
-                                ));
-                            }
-                            core_search::DefinitionOutcome::Navigate(target) => {
-                                self.tui_state.clear_status_message();
-                                navigate_to_location_from_tui(
-                                    &mut self.app.state,
-                                    &mut self.tui_state,
-                                    target,
-                                );
-                            }
-                            core_search::DefinitionOutcome::ShowResults {
-                                symbol,
-                                definitions,
-                            } => {
-                                self.tui_state.definition_results = Some(DefinitionResults {
-                                    symbol,
-                                    definitions,
-                                    selected: 0,
-                                });
-                                self.tui_state.clear_status_message();
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        self.tui_state
-                            .set_status_message(format!("Definition error: {e}"));
-                    }
-                }
-            }
-            Command::ViewFile { path, line_number } => {
-                // view_file <path> <line>
-                // For now, show a status message since read-only view
-                // for non-diff files would require a separate content mode.
-                self.tui_state
-                    .set_status_message(format!("File not in diff: {path} {line_number}"));
-            }
-            Command::Quit
-            | Command::SetBlame(_)
-            | Command::SetComments(_)
-            | Command::SetWhitespaceIgnored(_)
-            | Command::Unknown { .. } => {
-                self.tui_state
-                    .set_status_message("Unsupported pending command");
-            }
-        }
-    }
-
     /// Select the word under the given semantic position and copy it.
     fn select_word_at(&mut self, pane: PaneFocus, anchor: TextAnchor) -> bool {
         let (text, base_col) = match pane {
@@ -622,50 +477,6 @@ fn word_bounds_at_index(chars: &[char], click_idx: usize) -> Option<(usize, usiz
         end += 1;
     }
     Some((start, end))
-}
-
-// ---------------------------------------------------------------------------
-// Navigation helpers (used by process_pending_command)
-// ---------------------------------------------------------------------------
-
-/// Navigate to a resolved location target from the TUI runtime context without
-/// going through the key handler.
-fn navigate_to_location_from_tui(
-    state: &mut AppState,
-    tui_state: &mut TuiState,
-    target: core_search::LocationTarget,
-) {
-    match target {
-        core_search::LocationTarget::InDiff {
-            file_index,
-            line_number,
-        } => {
-            push_jump_stack_from_tui(state);
-            state.selected_file = file_index;
-            state.on_file_changed();
-            state.diff_line_cursor = (line_number as usize).saturating_sub(1);
-            tui_state.clamp_cursor_and_scroll(state);
-        }
-        core_search::LocationTarget::External {
-            file_path,
-            line_number,
-        } => {
-            push_jump_stack_from_tui(state);
-            tui_state.set_status_message(format!(
-                "Definition in file not in diff: {file_path}:{line_number}"
-            ));
-        }
-    }
-}
-
-fn push_jump_stack_from_tui(state: &mut AppState) {
-    state.jump_stack.push(JumpLocation {
-        file_index: state.selected_file,
-        diff_scroll: state.diff_scroll,
-        diff_line_cursor: state.diff_line_cursor,
-        content_mode: state.content_mode,
-        render_variant: state.render_variant,
-    });
 }
 
 // ---------------------------------------------------------------------------

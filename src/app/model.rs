@@ -19,6 +19,8 @@ pub struct AppModel {
     pub focus: PaneFocus,
     pub prompt: Option<Prompt>,
     pub overlays: Vec<Overlay>,
+    pub search_results: Option<SearchResultsOverlay>,
+    pub definition_results: Option<DefinitionResultsOverlay>,
     pub status: Option<Status>,
     pub selection: Option<SemanticSelection>,
 }
@@ -156,6 +158,37 @@ pub struct OverlayItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchResultsOverlay {
+    pub query: String,
+    pub diff_only: bool,
+    pub matches: Vec<SearchResultItem>,
+    pub selected: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchResultItem {
+    pub file_path: String,
+    pub line_number: u32,
+    pub line_content: String,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefinitionResultsOverlay {
+    pub symbol: String,
+    pub definitions: Vec<DefinitionResultItem>,
+    pub selected: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefinitionResultItem {
+    pub file_path: String,
+    pub line_number: u32,
+    pub line_content: String,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     pub text: String,
 }
@@ -176,6 +209,8 @@ impl AppModel {
             focus: state.pane_focus,
             prompt: None,
             overlays: Vec::new(),
+            search_results: search_results_model(state),
+            definition_results: definition_results_model(state),
             status: None,
             selection: None,
         }
@@ -188,6 +223,45 @@ impl AppModel {
             .map(|section| section.rows.len())
             .sum()
     }
+}
+
+fn search_results_model(state: &AppState) -> Option<SearchResultsOverlay> {
+    let results = state.search_results.as_ref()?;
+    Some(SearchResultsOverlay {
+        query: results.query.clone(),
+        diff_only: results.diff_only,
+        matches: results
+            .matches
+            .iter()
+            .enumerate()
+            .map(|(index, m)| SearchResultItem {
+                file_path: m.file_path.clone(),
+                line_number: m.line_number,
+                line_content: m.line_content.clone(),
+                selected: index == results.selected,
+            })
+            .collect(),
+        selected: results.selected,
+    })
+}
+
+fn definition_results_model(state: &AppState) -> Option<DefinitionResultsOverlay> {
+    let results = state.definition_results.as_ref()?;
+    Some(DefinitionResultsOverlay {
+        symbol: results.symbol.clone(),
+        definitions: results
+            .definitions
+            .iter()
+            .enumerate()
+            .map(|(index, definition)| DefinitionResultItem {
+                file_path: definition.file_path.clone(),
+                line_number: definition.line_number,
+                line_content: definition.line_content.clone(),
+                selected: index == results.selected,
+            })
+            .collect(),
+        selected: results.selected,
+    })
 }
 
 fn file_list_model(state: &AppState) -> FileList {
@@ -518,6 +592,61 @@ mod tests {
             ]
         );
         assert_eq!(model.diff.current_search_highlight, Some(1));
+    }
+
+    #[test]
+    fn model_projects_search_and_definition_overlays() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![file(
+                "src/main.rs",
+                review_types::ReviewStatus::Unreviewed,
+                Vec::new(),
+            )],
+        );
+        app.state.search_results = Some(crate::app::SearchResults {
+            query: "needle".to_string(),
+            diff_only: true,
+            matches: vec![
+                review_types::SearchMatch {
+                    file_path: "src/main.rs".to_string(),
+                    line_number: 10,
+                    line_content: "first needle".to_string(),
+                },
+                review_types::SearchMatch {
+                    file_path: "src/lib.rs".to_string(),
+                    line_number: 20,
+                    line_content: "second needle".to_string(),
+                },
+            ],
+            selected: 1,
+        });
+        app.state.definition_results = Some(crate::app::DefinitionResults {
+            symbol: "needle".to_string(),
+            definitions: vec![review_types::DefinitionLocation {
+                file_path: "src/main.rs".to_string(),
+                line_number: 10,
+                line_content: "fn needle()".to_string(),
+            }],
+            selected: 0,
+        });
+
+        let model = app.model();
+
+        let search = model.search_results.expect("search overlay");
+        assert_eq!(search.query, "needle");
+        assert!(search.diff_only);
+        assert_eq!(search.selected, 1);
+        assert!(!search.matches[0].selected);
+        assert!(search.matches[1].selected);
+        assert_eq!(search.matches[1].file_path, "src/lib.rs");
+
+        let definitions = model.definition_results.expect("definition overlay");
+        assert_eq!(definitions.symbol, "needle");
+        assert_eq!(definitions.selected, 0);
+        assert!(definitions.definitions[0].selected);
+        assert_eq!(definitions.definitions[0].line_content, "fn needle()");
     }
 
     #[test]
