@@ -1,6 +1,6 @@
 # Stage 13e: Comments Panel and Comment Lifecycle
 
-## Status: Not Started
+## Status: Implemented
 
 ## Order
 
@@ -63,18 +63,18 @@ blocks.
 
 ## Acceptance Criteria
 
-- [ ] `Shift-C` toggles the comments panel at the bottom of the diff view.
-- [ ] When panel is open, inline blocks are hidden (gutter markers remain).
-- [ ] Cursor on a line with a comment marker shows the comment in the panel.
-- [ ] Resolved comments appear collapsed; Enter expands them.
-- [ ] Navigation from panel jumps the cursor to the comment location.
-- [ ] Resolve, unresolve, edit, and delete work and persist.
-- [ ] { / } cycle through comments in the current file.
-- [ ] `Tab` cycles focus to the comments panel when it is open.
-- [ ] `e` edits the current comment and does nothing when no comment exists.
-- [ ] `c` opens the comment editor for the current comment context or creates
+- [x] `Shift-C` toggles the comments panel at the bottom of the diff view.
+- [x] When panel is open, inline blocks are hidden (gutter markers remain).
+- [x] Cursor on a line with a comment marker shows the comment in the panel.
+- [x] Resolved comments appear collapsed; Enter expands them.
+- [x] Navigation from panel jumps the cursor to the comment location.
+- [x] Resolve, unresolve, edit, and delete work and persist.
+- [x] { / } cycle through comments in the current file.
+- [x] `Tab` cycles focus to the comments panel when it is open.
+- [x] `e` edits the current comment and does nothing when no comment exists.
+- [x] `c` opens the comment editor for the current comment context or creates
       a new current-line comment from the diff view.
-- [ ] Live updates from other clients appear in the panel.
+- [x] Live updates from other clients appear in the panel.
 
 ## Implementation Notes
 
@@ -90,4 +90,15 @@ blocks.
 
 ## Progress
 
-- (To be filled)
+- Added a comments panel to the app model and TUI layout. `Shift-C` toggles
+  it under the diff pane, and `Tab` cycles through it when visible.
+- The panel is file-scoped for the selected file. Unresolved comments render
+  expanded, resolved comments render collapsed, and comments on the current
+  cursor line expand automatically.
+- Comment lifecycle operations route through existing server APIs: edit,
+  resolve, unresolve, and two-step delete.
+- `{` / `}` navigate between comments in the current file and jump the diff
+  cursor to the comment's HEAD-line anchor.
+- This stage still uses the existing HEAD-line-only comment anchors. Base-side
+  and deleted-line comments are tracked separately in the later base/head
+  anchor plan.

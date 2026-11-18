@@ -88,6 +88,8 @@ pub struct TuiState {
     pub file_list_area: Rect,
     /// Screen area of the diff pane.
     pub diff_area: Rect,
+    /// Screen area of the comments panel.
+    pub comments_area: Rect,
     /// Active mouse text selection, if any.
     pub mouse_selection: Option<MouseSelection>,
     /// Mouse down anchor used to start a drag selection only after the pointer
@@ -150,6 +152,7 @@ impl Default for TuiState {
             file_list_row_to_file: Vec::new(),
             file_list_area: Rect::default(),
             diff_area: Rect::default(),
+            comments_area: Rect::default(),
             mouse_selection: None,
             mouse_down_anchor: None,
             last_click: None,
@@ -240,6 +243,8 @@ impl TuiState {
     pub fn pane_at(&self, col: u16, row: u16) -> Option<PaneFocus> {
         if self.file_list_area.contains((col, row).into()) {
             Some(PaneFocus::FileList)
+        } else if self.comments_area.contains((col, row).into()) {
+            Some(PaneFocus::Comments)
         } else if self.diff_area.contains((col, row).into()) {
             Some(PaneFocus::Diff)
         } else {
@@ -251,6 +256,7 @@ impl TuiState {
         match pane {
             PaneFocus::FileList => self.file_list_area,
             PaneFocus::Diff => self.diff_area,
+            PaneFocus::Comments => self.comments_area,
         }
     }
 
@@ -264,6 +270,7 @@ impl TuiState {
         let pane_id = match pane {
             PaneFocus::FileList => PaneId::FileList,
             PaneFocus::Diff => PaneId::Diff,
+            PaneFocus::Comments => PaneId::Comments,
         };
         let text_anchor = self.pointer_text_anchor_for_pane(model, pane, column, row, false);
         let target = self.pointer_target(pane, text_anchor);
@@ -320,6 +327,10 @@ impl TuiState {
                 column: (column as usize)
                     .saturating_sub(inner_left as usize + self.diff_content_start_col()),
             }),
+            PaneFocus::Comments => Some(TextAnchor {
+                line: (row - inner_top) as usize,
+                column: column.saturating_sub(inner_left) as usize,
+            }),
         }
     }
 
@@ -334,6 +345,9 @@ impl TuiState {
                     pane_id: PaneId::FileList,
                 }),
             (PaneFocus::Diff, Some(anchor)) => AppTarget::DiffText { anchor },
+            (PaneFocus::Comments, _) => AppTarget::Pane {
+                pane_id: PaneId::Comments,
+            },
             (PaneFocus::FileList, None) => AppTarget::Pane {
                 pane_id: PaneId::FileList,
             },
@@ -358,6 +372,7 @@ impl TuiState {
                 _ => Some(format!("file-list-row:{}", anchor.line)),
             },
             PaneFocus::Diff => Some(format!("diff-line:{}", anchor.line)),
+            PaneFocus::Comments => Some(format!("comment-row:{}", anchor.line)),
         }
     }
 

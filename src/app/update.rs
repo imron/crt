@@ -5,6 +5,7 @@
 //! async work for the app loop, or report presentation updates to the UI.
 
 mod command;
+mod comments;
 mod cursor;
 pub mod diff_search;
 mod navigation;
@@ -16,7 +17,9 @@ mod viewport;
 
 use super::AppState;
 use crate::core::navigation::Direction;
-use crate::core::{CommentEffect, CoreEffect, DiffSearchEffect, InteractionContext, PaneId};
+use crate::core::{
+    CommentEffect, CoreEffect, CurrentCommentContext, DiffSearchEffect, InteractionContext, PaneId,
+};
 use crate::review_types::PaneFocus;
 
 pub use output::{AppOutput, StatusUpdate};
@@ -27,6 +30,7 @@ pub fn interaction_context(state: &AppState) -> InteractionContext {
         focused_pane: Some(match state.pane_focus {
             PaneFocus::FileList => PaneId::FileList,
             PaneFocus::Diff => PaneId::Diff,
+            PaneFocus::Comments => PaneId::Comments,
         }),
         search_results_visible: state.search_results.is_some(),
         definition_results_visible: state.definition_results.is_some(),
@@ -36,6 +40,12 @@ pub fn interaction_context(state: &AppState) -> InteractionContext {
         diff_pane_visible: state.show_diff_pane,
         visual_selection_active: state.visual_selection.is_some(),
         pending_comment_anchor_active: state.pending_comment_anchor.is_some(),
+        comments_panel_visible: state.show_comments_panel,
+        current_comment_active: comments::current_comment(state).is_some(),
+        current_comment: comments::current_comment(state).map(|comment| CurrentCommentContext {
+            id: comment.id,
+            body: comment.body.clone(),
+        }),
         ..InteractionContext::default()
     }
 }
@@ -87,6 +97,15 @@ pub fn apply_core_effects(
                     update.set_status("No comment anchor captured");
                 }
             }
+            CoreEffect::Comment(CommentEffect::SubmitEditBody { id, body }) => {
+                let body = body.trim_end().to_string();
+                if body.is_empty() {
+                    update.set_status("Empty comment ignored");
+                } else {
+                    update.request_comment_update(id, body);
+                    update.set_status(format!("Updating comment #{id}..."));
+                }
+            }
             CoreEffect::Comment(CommentEffect::Cancel) => {
                 state.pending_comment_anchor = None;
                 state.visual_selection = None;
@@ -107,6 +126,9 @@ pub fn apply_core_effects(
             }
             CoreEffect::Pane(effect) => {
                 panes::apply_pane_effect(state, effect);
+            }
+            CoreEffect::CommentsPanel(effect) => {
+                comments::apply_comments_panel_effect(state, view, &mut update, effect);
             }
             CoreEffect::Quit => {
                 update.request_quit();

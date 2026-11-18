@@ -4,6 +4,7 @@
 //! on the right, with a status bar at the bottom. Either pane can be
 //! hidden to give the other full width.
 
+mod comments_panel;
 pub mod diff_view;
 mod file_list;
 mod word_diff;
@@ -47,9 +48,9 @@ pub fn draw(frame: &mut Frame, model: &AppModel, tui_state: &mut TuiState, style
                 ])
                 .split(main_area);
             tui_state.file_list_area = panes[0];
-            tui_state.diff_area = panes[1];
+            tui_state.comments_area = Rect::default();
             file_list::draw(frame, model, tui_state, styles, panes[0]);
-            diff_view::draw(frame, model, tui_state, styles, panes[1]);
+            draw_diff_region(frame, model, tui_state, styles, panes[1]);
         }
         (true, false) => {
             tui_state.file_list_area = main_area;
@@ -58,8 +59,8 @@ pub fn draw(frame: &mut Frame, model: &AppModel, tui_state: &mut TuiState, style
         }
         (false, true) => {
             tui_state.file_list_area = Rect::default();
-            tui_state.diff_area = main_area;
-            diff_view::draw(frame, model, tui_state, styles, main_area);
+            tui_state.comments_area = Rect::default();
+            draw_diff_region(frame, model, tui_state, styles, main_area);
         }
         (false, false) => {
             // Should never happen — toggle logic prevents it.
@@ -108,6 +109,29 @@ pub fn draw(frame: &mut Frame, model: &AppModel, tui_state: &mut TuiState, style
     }
 }
 
+fn draw_diff_region(
+    frame: &mut Frame,
+    model: &AppModel,
+    tui_state: &mut TuiState,
+    styles: &StyleConfig,
+    area: Rect,
+) {
+    if model.comments_panel.visible && area.height >= 8 {
+        let panel_height = (area.height / 3).clamp(6, 12);
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(panel_height)])
+            .split(area);
+        tui_state.diff_area = chunks[0];
+        diff_view::draw(frame, model, tui_state, styles, chunks[0]);
+        comments_panel::draw(frame, model, tui_state, styles, chunks[1]);
+    } else {
+        tui_state.diff_area = area;
+        tui_state.comments_area = Rect::default();
+        diff_view::draw(frame, model, tui_state, styles, area);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Selection highlight
 // ---------------------------------------------------------------------------
@@ -125,6 +149,7 @@ fn draw_selection_highlight(
     let area = match sel.pane {
         crate::review_types::PaneFocus::FileList => tui_state.file_list_area,
         crate::review_types::PaneFocus::Diff => tui_state.diff_area,
+        crate::review_types::PaneFocus::Comments => return,
     };
     // Inner area excludes borders.
     let inner = Rect {
@@ -139,6 +164,7 @@ fn draw_selection_highlight(
         crate::review_types::PaneFocus::Diff => {
             (model.diff.scroll, tui_state.diff_content_start_col())
         }
+        crate::review_types::PaneFocus::Comments => return,
     };
 
     let visible_start_line = scroll;
@@ -325,7 +351,11 @@ fn draw_help_overlay(frame: &mut Frame, styles: &StyleConfig) {
         Line::from("  g/G H/M/L     Top/bottom; view top/mid/bottom"),
         Line::from("  0/$ w/b W/B    Line start/end; word/big-word"),
         Line::from("  ] / [         Next / previous diff hunk"),
+        Line::from("  } / {         Next / previous comment"),
         Line::from("  c             Comment current diff line"),
+        Line::from("  Shift-C       Toggle comments panel"),
+        Line::from("  e             Edit current comment"),
+        Line::from("  r / d         Resolve or delete current comment"),
         Line::from("  r             Toggle reviewed / unreviewed"),
         Line::from("  i             Toggle inline / side-by-side"),
         Line::from("  s             Cycle: diff / HEAD / base"),

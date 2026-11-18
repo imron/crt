@@ -190,6 +190,7 @@ pub struct Comment {
 pub enum PaneFocus {
     FileList,
     Diff,
+    Comments,
 }
 
 /// What content is shown in the diff pane.
