@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use crate::app::model::{BlameLine, CommentMarker, CommentMarkerKind};
 use crate::config::DiffAlgorithm;
@@ -413,6 +414,7 @@ pub struct DocumentPosition {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DocumentComments {
+    comments_by_id: BTreeMap<i64, usize>,
     comments: Vec<DocumentComment>,
     selected_comment_id: Option<i64>,
     current_comment_id: Option<i64>,
@@ -429,6 +431,11 @@ impl DocumentComments {
         cursor: Option<RowIndex>,
     ) -> Self {
         comments.sort_by_key(|comment| (comment.span.start, comment.id));
+        let comments_by_id = comments
+            .iter()
+            .enumerate()
+            .map(|(index, comment)| (comment.id, index))
+            .collect();
         let current_comment_id =
             current_comment_id_for_rows(&comments, selected_comment_id, cursor);
         for comment in &mut comments {
@@ -436,6 +443,7 @@ impl DocumentComments {
             comment.current = Some(comment.id) == current_comment_id;
         }
         Self {
+            comments_by_id,
             comments,
             selected_comment_id,
             current_comment_id,
@@ -455,10 +463,13 @@ impl DocumentComments {
     }
 
     pub fn comment_span(&self, id: i64) -> Option<RowSpan> {
-        self.comments
-            .iter()
-            .find(|comment| comment.id == id)
-            .map(|comment| comment.span)
+        self.comment_by_id(id).map(|comment| comment.span)
+    }
+
+    pub fn comment_by_id(&self, id: i64) -> Option<&DocumentComment> {
+        self.comments_by_id
+            .get(&id)
+            .and_then(|index| self.comments.get(*index))
     }
 
     pub fn current_comment_at(&self, row: RowIndex) -> Option<&DocumentComment> {
@@ -2064,6 +2075,50 @@ mod tests {
                 .next_comment(RowIndex(1), Direction::Prev)
                 .map(|comment| comment.id),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn document_comments_keep_row_order_and_index_by_id() {
+        let comments = DocumentComments::new(vec![
+            DocumentComment {
+                id: 20,
+                span: RowSpan {
+                    start: RowIndex(2),
+                    end: RowIndex(2),
+                },
+                marker_rows: MarkerRows {
+                    start: RowIndex(2),
+                    end: RowIndex(2),
+                },
+                resolved: false,
+                selected: false,
+                current: false,
+            },
+            DocumentComment {
+                id: 10,
+                span: RowSpan {
+                    start: RowIndex(0),
+                    end: RowIndex(1),
+                },
+                marker_rows: MarkerRows {
+                    start: RowIndex(0),
+                    end: RowIndex(1),
+                },
+                resolved: false,
+                selected: false,
+                current: false,
+            },
+        ]);
+
+        let ordered_ids: Vec<i64> = comments.all().iter().map(|comment| comment.id).collect();
+        assert_eq!(ordered_ids, vec![10, 20]);
+        assert_eq!(
+            comments.comment_by_id(20).map(|comment| comment.span),
+            Some(RowSpan {
+                start: RowIndex(2),
+                end: RowIndex(2)
+            })
         );
     }
 
