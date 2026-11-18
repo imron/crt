@@ -12,6 +12,7 @@
 - Stage 20 (`20-thin-client-api-contract.md`)
 - Stage 21 (`21-protocol-type-decoupling.md`)
 - Stage 23 (`23-tui-intent-only-input.md`)
+- Stage 23g (`23g-remove-app-update.md`)
 
 ## Goal
 
