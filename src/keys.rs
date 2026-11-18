@@ -10,6 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{AppState, InputMode};
 use crate::core::navigation::{self, Direction, FileNavigationScope};
+use crate::core::search as core_search;
 use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
 /// How long the "Press Ctrl-C again" prompt stays active.
@@ -344,41 +345,35 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
 
     /// Navigate to a search match result.
     fn navigate_to_search_match(state: &mut AppState, m: &crate::model::SearchMatch) {
-        // Try to find the file in the diff file list.
-        if let Some(idx) = state
-            .files
-            .iter()
-            .position(|f| f.change.path == m.file_path)
-        {
-            push_jump_stack(state);
-            state.selected_file = idx;
-            on_file_changed(state);
-            // Place cursor on the matching line.
-            state.diff_line_cursor = (m.line_number as usize).saturating_sub(1);
-            state.clamp_cursor_and_scroll();
-        } else {
-            // File not in diff — show it read-only via pending command.
-            push_jump_stack(state);
-            state.pending_command = Some(format!("view_file {} {}", m.file_path, m.line_number));
-        }
+        let target = core_search::resolve_search_target(&state.files, m);
+        navigate_to_location_target(state, target);
     }
 
     /// Navigate to a definition location.
     fn navigate_to_definition(state: &mut AppState, def: &crate::model::DefinitionLocation) {
-        if let Some(idx) = state
-            .files
-            .iter()
-            .position(|f| f.change.path == def.file_path)
-        {
-            push_jump_stack(state);
-            state.selected_file = idx;
-            on_file_changed(state);
-            state.diff_line_cursor = (def.line_number as usize).saturating_sub(1);
-            state.clamp_cursor_and_scroll();
-        } else {
-            push_jump_stack(state);
-            state.pending_command =
-                Some(format!("view_file {} {}", def.file_path, def.line_number));
+        let target = core_search::resolve_definition_target(&state.files, def);
+        navigate_to_location_target(state, target);
+    }
+
+    fn navigate_to_location_target(state: &mut AppState, target: core_search::LocationTarget) {
+        match target {
+            core_search::LocationTarget::InDiff {
+                file_index,
+                line_number,
+            } => {
+                push_jump_stack(state);
+                state.selected_file = file_index;
+                on_file_changed(state);
+                state.diff_line_cursor = (line_number as usize).saturating_sub(1);
+                state.clamp_cursor_and_scroll();
+            }
+            core_search::LocationTarget::External {
+                file_path,
+                line_number,
+            } => {
+                push_jump_stack(state);
+                state.pending_command = Some(format!("view_file {file_path} {line_number}"));
+            }
         }
     }
 

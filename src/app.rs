@@ -22,6 +22,7 @@ use crate::client::Client;
 use crate::config::StyleConfig;
 use crate::core::diff;
 use crate::core::review;
+use crate::core::search as core_search;
 use crate::keys;
 use crate::model::{
     ConnectionContext, ContentMode, DefinitionLocation, FileEntry, PaneFocus, RenderVariant,
@@ -1080,21 +1081,26 @@ impl App {
                 let _ = self.terminal.draw(|frame| ui::draw(frame, state));
 
                 match self.client.search_codebase(args, "all").await {
-                    Ok(result) => {
-                        if result.matches.is_empty() {
+                    Ok(result) => match core_search::search_outcome(args, false, result) {
+                        core_search::SearchOutcome::NoMatches => {
                             self.state.status_message =
                                 Some((format!("No matches for /{args}/"), Instant::now()));
-                        } else {
+                        }
+                        core_search::SearchOutcome::ShowResults {
+                            query,
+                            diff_only,
+                            matches,
+                        } => {
                             self.state.search_results = Some(SearchResults {
-                                query: args.to_string(),
-                                diff_only: false,
-                                matches: result.matches,
+                                query,
+                                diff_only,
+                                matches,
                                 selected: 0,
                                 scroll: 0,
                             });
                             self.state.status_message = None;
                         }
-                    }
+                    },
                     Err(e) => {
                         self.state.status_message =
                             Some((format!("Search error: {e}"), Instant::now()));
@@ -1108,21 +1114,26 @@ impl App {
                 let _ = self.terminal.draw(|frame| ui::draw(frame, state));
 
                 match self.client.search_codebase(args, "diff").await {
-                    Ok(result) => {
-                        if result.matches.is_empty() {
+                    Ok(result) => match core_search::search_outcome(args, true, result) {
+                        core_search::SearchOutcome::NoMatches => {
                             self.state.status_message =
                                 Some((format!("No matches for /{args}/ in diff"), Instant::now()));
-                        } else {
+                        }
+                        core_search::SearchOutcome::ShowResults {
+                            query,
+                            diff_only,
+                            matches,
+                        } => {
                             self.state.search_results = Some(SearchResults {
-                                query: args.to_string(),
-                                diff_only: true,
-                                matches: result.matches,
+                                query,
+                                diff_only,
+                                matches,
                                 selected: 0,
                                 scroll: 0,
                             });
                             self.state.status_message = None;
                         }
-                    }
+                    },
                     Err(e) => {
                         self.state.status_message =
                             Some((format!("Search error: {e}"), Instant::now()));
@@ -1145,24 +1156,28 @@ impl App {
                     .await
                 {
                     Ok(result) => {
-                        if result.definitions.is_empty() {
-                            self.state.status_message = Some((
-                                format!("No definitions found for '{args}'"),
-                                Instant::now(),
-                            ));
-                        } else if result.definitions.len() == 1 {
-                            // Single result: navigate directly.
-                            let def = result.definitions[0].clone();
-                            self.state.status_message = None;
-                            navigate_to_definition_from_app(&mut self.state, &def);
-                        } else {
-                            // Multiple results: show picker.
-                            self.state.definition_results = Some(DefinitionResults {
-                                symbol: args.to_string(),
-                                definitions: result.definitions,
-                                selected: 0,
-                            });
-                            self.state.status_message = None;
+                        match core_search::definition_outcome(args, result, &self.state.files) {
+                            core_search::DefinitionOutcome::NoDefinitions => {
+                                self.state.status_message = Some((
+                                    format!("No definitions found for '{args}'"),
+                                    Instant::now(),
+                                ));
+                            }
+                            core_search::DefinitionOutcome::Navigate(target) => {
+                                self.state.status_message = None;
+                                navigate_to_location_from_app(&mut self.state, target);
+                            }
+                            core_search::DefinitionOutcome::ShowResults {
+                                symbol,
+                                definitions,
+                            } => {
+                                self.state.definition_results = Some(DefinitionResults {
+                                    symbol,
+                                    definitions,
+                                    selected: 0,
+                                });
+                                self.state.status_message = None;
+                            }
                         }
                     }
                     Err(e) => {
@@ -1447,35 +1462,41 @@ fn word_bounds_at_column(row_chars: &[(u16, char)], col: u16) -> Option<(usize, 
 // Navigation helpers (used by process_pending_command)
 // ---------------------------------------------------------------------------
 
-/// Navigate to a definition location (same logic as in keys.rs but accessible
-/// from the App context without going through the key handler).
-fn navigate_to_definition_from_app(state: &mut AppState, def: &DefinitionLocation) {
-    if let Some(idx) = state
-        .files
-        .iter()
-        .position(|f| f.change.path == def.file_path)
-    {
-        state.jump_stack.push(JumpLocation {
-            file_index: state.selected_file,
-            diff_scroll: state.diff_scroll,
-            diff_line_cursor: state.diff_line_cursor,
-            content_mode: state.content_mode,
-            render_variant: state.render_variant,
-        });
-        state.selected_file = idx;
-        state.on_file_changed();
-        state.diff_line_cursor = (def.line_number as usize).saturating_sub(1);
-        state.clamp_cursor_and_scroll();
-    } else {
-        // File not in diff — show status message for now.
-        state.status_message = Some((
-            format!(
-                "Definition in file not in diff: {}:{}",
-                def.file_path, def.line_number
-            ),
-            Instant::now(),
-        ));
+/// Navigate to a resolved location target from the App context without going
+/// through the key handler.
+fn navigate_to_location_from_app(state: &mut AppState, target: core_search::LocationTarget) {
+    match target {
+        core_search::LocationTarget::InDiff {
+            file_index,
+            line_number,
+        } => {
+            push_jump_stack_from_app(state);
+            state.selected_file = file_index;
+            state.on_file_changed();
+            state.diff_line_cursor = (line_number as usize).saturating_sub(1);
+            state.clamp_cursor_and_scroll();
+        }
+        core_search::LocationTarget::External {
+            file_path,
+            line_number,
+        } => {
+            push_jump_stack_from_app(state);
+            state.status_message = Some((
+                format!("Definition in file not in diff: {file_path}:{line_number}"),
+                Instant::now(),
+            ));
+        }
     }
+}
+
+fn push_jump_stack_from_app(state: &mut AppState) {
+    state.jump_stack.push(JumpLocation {
+        file_index: state.selected_file,
+        diff_scroll: state.diff_scroll,
+        diff_line_cursor: state.diff_line_cursor,
+        content_mode: state.content_mode,
+        render_variant: state.render_variant,
+    });
 }
 
 // ---------------------------------------------------------------------------
