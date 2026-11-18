@@ -2,9 +2,11 @@
 //!
 //! Provides typed methods for all server API calls, hiding JSON-RPC details.
 
+use std::collections::HashMap;
 use std::io;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -18,7 +20,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UnixStream};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -34,6 +36,8 @@ pub type InitResult = review_types::ConnectionContext;
 
 /// A server-to-client notification.
 pub type Notification = crate::protocol::Notification;
+type PendingResponses =
+    Arc<Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, String>>>>>;
 
 const EMBEDDED_SERVER_STARTUP_DELAY: Duration = Duration::from_millis(50);
 const DEFAULT_RECONNECT_JITTER: RangeInclusive<Duration> =
@@ -73,8 +77,9 @@ enum ClientConnection {
 }
 
 struct UnixClientConnection {
-    reader: BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: tokio::net::unix::OwnedWriteHalf,
+    pending: PendingResponses,
+    _reader_task: JoinHandle<()>,
 }
 
 struct HttpClientConnection {
@@ -84,7 +89,10 @@ struct HttpClientConnection {
 }
 
 impl UnixClientConnection {
-    async fn connect(socket_path: &Path) -> Result<Self> {
+    async fn connect(
+        socket_path: &Path,
+        notify_tx: tokio::sync::mpsc::UnboundedSender<Notification>,
+    ) -> Result<Self> {
         let stream = UnixStream::connect(socket_path).await.with_context(|| {
             format!(
                 "Could not connect to server at {}. Is `crt server` running?",
@@ -93,9 +101,12 @@ impl UnixClientConnection {
         })?;
 
         let (read_half, write_half) = stream.into_split();
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let reader_task = spawn_unix_reader(read_half, Arc::clone(&pending), notify_tx);
         Ok(Self {
-            reader: BufReader::new(read_half),
             writer: write_half,
+            pending,
+            _reader_task: reader_task,
         })
     }
 }
@@ -138,7 +149,7 @@ pub struct Client {
     event_tx: tokio::sync::mpsc::UnboundedSender<ClientEvent>,
     event_rx: Mutex<tokio::sync::mpsc::UnboundedReceiver<ClientEvent>>,
     next_id: AtomicU64,
-    /// Channel for server-pushed notifications received during `call()`.
+    /// Channel for server-pushed notifications received from the Unix transport.
     notify_tx: tokio::sync::mpsc::UnboundedSender<Notification>,
     notify_rx: Mutex<tokio::sync::mpsc::UnboundedReceiver<Notification>>,
 }
@@ -146,12 +157,17 @@ pub struct Client {
 impl Client {
     /// Connect to a running server at the given socket path.
     pub async fn connect(socket_path: &Path) -> Result<Self> {
-        let connection = ClientConnection::Unix(UnixClientConnection::connect(socket_path).await?);
+        let (notify_tx, notify_rx) = tokio::sync::mpsc::unbounded_channel();
+        let connection = ClientConnection::Unix(
+            UnixClientConnection::connect(socket_path, notify_tx.clone()).await?,
+        );
         Ok(Self::new(
             Some(connection),
             None,
             None,
             ConnectionState::Connected,
+            notify_tx,
+            notify_rx,
         ))
     }
 
@@ -159,12 +175,15 @@ impl Client {
     /// transport. This is primarily for MCP hosts that sandbox Unix sockets
     /// but allow outbound localhost HTTP.
     pub async fn connect_http(host: &str, port: u16) -> Result<Self> {
+        let (notify_tx, notify_rx) = tokio::sync::mpsc::unbounded_channel();
         let connection = ClientConnection::Http(HttpClientConnection::connect(host, port).await?);
         Ok(Self::new(
             Some(connection),
             None,
             None,
             ConnectionState::Connected,
+            notify_tx,
+            notify_rx,
         ))
     }
 
@@ -213,17 +232,20 @@ impl Client {
             options,
         };
 
-        match UnixClientConnection::connect(&socket_path).await {
+        let (notify_tx, notify_rx) = tokio::sync::mpsc::unbounded_channel();
+        match UnixClientConnection::connect(&socket_path, notify_tx.clone()).await {
             Ok(connection) if !standalone => Ok(Self::new(
                 Some(ClientConnection::Unix(connection)),
                 Some(policy),
                 None,
                 ConnectionState::Connected,
+                notify_tx,
+                notify_rx,
             )),
             _ => {
                 let token = crate::server::start_embedded(&socket_path).await?;
                 tokio::time::sleep(policy.options.embedded_startup_delay).await;
-                let connection = UnixClientConnection::connect(&socket_path)
+                let connection = UnixClientConnection::connect(&socket_path, notify_tx.clone())
                     .await
                     .context("Failed to connect to embedded server")?;
                 Ok(Self::new(
@@ -231,6 +253,8 @@ impl Client {
                     Some(policy),
                     Some(token),
                     ConnectionState::Connected,
+                    notify_tx,
+                    notify_rx,
                 ))
             }
         }
@@ -241,8 +265,9 @@ impl Client {
         reconnect_policy: Option<ReconnectPolicy>,
         embedded_server: Option<CancellationToken>,
         connection_state: ConnectionState,
+        notify_tx: tokio::sync::mpsc::UnboundedSender<Notification>,
+        notify_rx: tokio::sync::mpsc::UnboundedReceiver<Notification>,
     ) -> Self {
-        let (notify_tx, notify_rx) = tokio::sync::mpsc::unbounded_channel();
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
 
         Self {
@@ -574,7 +599,7 @@ impl Client {
 
         let response = match connection {
             ClientConnection::Unix(connection) => {
-                unix_call(connection, line.as_bytes(), &self.notify_tx).await?
+                unix_call(connection, id, line.as_bytes()).await?
             }
             ClientConnection::Http(connection) => http_call(connection, &request).await?,
         };
@@ -604,7 +629,7 @@ impl Client {
         socket_path: &Path,
         init_args: &InitArgs,
     ) -> Result<()> {
-        let connection = UnixClientConnection::connect(socket_path).await?;
+        let connection = UnixClientConnection::connect(socket_path, self.notify_tx.clone()).await?;
         *self.connection.lock().await = Some(ClientConnection::Unix(connection));
         self.reinit(init_args).await?;
         Ok(())
@@ -646,45 +671,90 @@ impl Drop for Client {
 
 async fn unix_call(
     connection: &mut UnixClientConnection,
+    id: u64,
     request_line: &[u8],
-    notify_tx: &tokio::sync::mpsc::UnboundedSender<Notification>,
 ) -> Result<serde_json::Value> {
-    connection
-        .writer
-        .write_all(request_line)
-        .await
-        .context("Failed to write to server")?;
-    connection
-        .writer
-        .flush()
-        .await
-        .context("Failed to flush to server")?;
+    let (response_tx, response_rx) = oneshot::channel();
+    connection.pending.lock().await.insert(id, response_tx);
 
-    loop {
-        let mut response_line = String::new();
-        let n = connection
-            .reader
-            .read_line(&mut response_line)
-            .await
-            .context("Failed to read from server")?;
-        if n == 0 {
-            bail!("Server closed the connection");
-        }
-
-        let msg: serde_json::Value =
-            serde_json::from_str(response_line.trim()).context("Failed to parse server message")?;
-
-        if msg.get("method").is_some() && msg.get("id").is_none() {
-            if let Some(params) = msg.get("params")
-                && let Ok(notif) = serde_json::from_value::<Notification>(params.clone())
-            {
-                let _ = notify_tx.send(notif);
-            }
-            continue;
-        }
-
-        return Ok(msg);
+    if let Err(e) = connection.writer.write_all(request_line).await {
+        remove_pending_response(&connection.pending, id).await;
+        return Err(e).context("Failed to write to server");
     }
+    if let Err(e) = connection.writer.flush().await {
+        remove_pending_response(&connection.pending, id).await;
+        return Err(e).context("Failed to flush to server");
+    }
+
+    match response_rx.await {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(message)) => bail!("{message}"),
+        Err(_) => bail!("Server closed the connection"),
+    }
+}
+
+fn spawn_unix_reader(
+    read_half: tokio::net::unix::OwnedReadHalf,
+    pending: PendingResponses,
+    notify_tx: tokio::sync::mpsc::UnboundedSender<Notification>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(read_half);
+        loop {
+            let mut response_line = String::new();
+            let read = reader.read_line(&mut response_line).await;
+            let n = match read {
+                Ok(n) => n,
+                Err(e) => {
+                    fail_pending_responses(&pending, format!("Failed to read from server: {e}"))
+                        .await;
+                    break;
+                }
+            };
+            if n == 0 {
+                fail_pending_responses(&pending, "Server closed the connection".to_string()).await;
+                break;
+            }
+
+            let msg: serde_json::Value = match serde_json::from_str(response_line.trim()) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    fail_pending_responses(
+                        &pending,
+                        format!("Failed to parse server message: {e}"),
+                    )
+                    .await;
+                    break;
+                }
+            };
+
+            if msg.get("method").is_some() && msg.get("id").is_none() {
+                if let Some(params) = msg.get("params")
+                    && let Ok(notif) = serde_json::from_value::<Notification>(params.clone())
+                {
+                    let _ = notify_tx.send(notif);
+                }
+                continue;
+            }
+
+            if let Some(id) = msg.get("id").and_then(|id| id.as_u64())
+                && let Some(response_tx) = pending.lock().await.remove(&id)
+            {
+                let _ = response_tx.send(Ok(msg));
+            }
+        }
+    })
+}
+
+async fn fail_pending_responses(pending: &PendingResponses, message: String) {
+    let pending = std::mem::take(&mut *pending.lock().await);
+    for (_, response_tx) in pending {
+        let _ = response_tx.send(Err(message.clone()));
+    }
+}
+
+async fn remove_pending_response(pending: &PendingResponses, id: u64) {
+    pending.lock().await.remove(&id);
 }
 
 async fn http_call(

@@ -3,6 +3,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 use crt::client::Client;
+use crt::protocol::NotificationKind;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UnixStream};
 use tokio::task::JoinHandle;
@@ -332,6 +333,42 @@ async fn test_multiple_clients() {
     assert!(
         resp2.get("error").is_none(),
         "client 2 should have no error"
+    );
+}
+
+#[tokio::test]
+async fn test_client_receives_review_notification_while_idle() {
+    let server = TestServer::start().await;
+    std::fs::write(server.repo_dir.join("file.txt"), "changed\n").unwrap();
+
+    let watcher = Client::connect(&server.socket_path).await.unwrap();
+    watcher
+        .init(&server.repo_dir.to_string_lossy(), "HEAD")
+        .await
+        .unwrap();
+
+    let reviewer = Client::connect(&server.socket_path).await.unwrap();
+    reviewer
+        .init(&server.repo_dir.to_string_lossy(), "HEAD")
+        .await
+        .unwrap();
+    reviewer.mark_reviewed("file.txt").await.unwrap();
+
+    let mut received = Vec::new();
+    for _ in 0..50 {
+        received.extend(watcher.drain_notifications().await);
+        if !received.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    assert!(
+        received.iter().any(|notification| matches!(
+            &notification.kind,
+            NotificationKind::ReviewChanged { file_path } if file_path == "file.txt"
+        )),
+        "watcher did not receive review notification: {received:?}"
     );
 }
 
