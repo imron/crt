@@ -139,8 +139,7 @@ fn cmd_mcp_server() -> Result<()> {
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
 
     rt.block_on(async {
-        let socket_path = app::default_socket_path()?;
-        let client = client::Client::connect(&socket_path).await?;
+        let client = client::Client::connect_http_from_env().await?;
         mcp::run(client, None).await.context("MCP server error")
     })
 }

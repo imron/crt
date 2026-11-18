@@ -11,8 +11,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpStream, UnixStream};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -61,12 +61,23 @@ struct ReconnectPolicy {
     options: ReconnectOptions,
 }
 
-struct ClientConnection {
+enum ClientConnection {
+    Unix(UnixClientConnection),
+    Http(HttpClientConnection),
+}
+
+struct UnixClientConnection {
     reader: BufReader<tokio::net::unix::OwnedReadHalf>,
     writer: tokio::net::unix::OwnedWriteHalf,
 }
 
-impl ClientConnection {
+struct HttpClientConnection {
+    host: String,
+    reader: BufReader<tokio::net::tcp::OwnedReadHalf>,
+    writer: tokio::net::tcp::OwnedWriteHalf,
+}
+
+impl UnixClientConnection {
     async fn connect(socket_path: &Path) -> Result<Self> {
         let stream = UnixStream::connect(socket_path).await.with_context(|| {
             format!(
@@ -77,6 +88,22 @@ impl ClientConnection {
 
         let (read_half, write_half) = stream.into_split();
         Ok(Self {
+            reader: BufReader::new(read_half),
+            writer: write_half,
+        })
+    }
+}
+
+impl HttpClientConnection {
+    async fn connect(host: &str, port: u16) -> Result<Self> {
+        let addr = format!("{host}:{port}");
+        let stream = TcpStream::connect(&addr)
+            .await
+            .with_context(|| format!("Could not connect to crt HTTP server at {addr}"))?;
+
+        let (read_half, write_half) = stream.into_split();
+        Ok(Self {
+            host: addr,
             reader: BufReader::new(read_half),
             writer: write_half,
         })
@@ -107,13 +134,36 @@ pub struct Client {
 impl Client {
     /// Connect to a running server at the given socket path.
     pub async fn connect(socket_path: &Path) -> Result<Self> {
-        let connection = ClientConnection::connect(socket_path).await?;
+        let connection = ClientConnection::Unix(UnixClientConnection::connect(socket_path).await?);
         Ok(Self::new(
             Some(connection),
             None,
             None,
             ConnectionState::Connected,
         ))
+    }
+
+    /// Connect to a running server through the localhost HTTP JSON-RPC
+    /// transport. This is primarily for MCP hosts that sandbox Unix sockets
+    /// but allow outbound localhost HTTP.
+    pub async fn connect_http(host: &str, port: u16) -> Result<Self> {
+        let connection = ClientConnection::Http(HttpClientConnection::connect(host, port).await?);
+        Ok(Self::new(
+            Some(connection),
+            None,
+            None,
+            ConnectionState::Connected,
+        ))
+    }
+
+    pub async fn connect_http_from_env() -> Result<Self> {
+        let host = std::env::var(crate::server::ENV_HTTP_HOST)
+            .unwrap_or_else(|_| crate::server::DEFAULT_HTTP_HOST.to_string());
+        let port = std::env::var(crate::server::ENV_HTTP_PORT)
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(crate::server::DEFAULT_HTTP_PORT);
+        Self::connect_http(&host, port).await
     }
 
     /// Connect to a running server or start an embedded server if needed.
@@ -151,9 +201,9 @@ impl Client {
             options,
         };
 
-        match ClientConnection::connect(&socket_path).await {
+        match UnixClientConnection::connect(&socket_path).await {
             Ok(connection) if !standalone => Ok(Self::new(
-                Some(connection),
+                Some(ClientConnection::Unix(connection)),
                 Some(policy),
                 None,
                 ConnectionState::Connected,
@@ -161,11 +211,11 @@ impl Client {
             _ => {
                 let token = crate::server::start_embedded(&socket_path).await?;
                 tokio::time::sleep(policy.options.embedded_startup_delay).await;
-                let connection = ClientConnection::connect(&socket_path)
+                let connection = UnixClientConnection::connect(&socket_path)
                     .await
                     .context("Failed to connect to embedded server")?;
                 Ok(Self::new(
-                    Some(connection),
+                    Some(ClientConnection::Unix(connection)),
                     Some(policy),
                     Some(token),
                     ConnectionState::Connected,
@@ -510,47 +560,12 @@ impl Client {
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("Transient transport error: reconnecting"))?;
 
-        connection
-            .writer
-            .write_all(line.as_bytes())
-            .await
-            .context("Failed to write to server")?;
-        connection
-            .writer
-            .flush()
-            .await
-            .context("Failed to flush to server")?;
-
-        // Read response, routing any interleaved notifications to the
-        // notification channel.
-        let response: serde_json::Value;
-        loop {
-            let mut response_line = String::new();
-            let n = connection
-                .reader
-                .read_line(&mut response_line)
-                .await
-                .context("Failed to read from server")?;
-            if n == 0 {
-                bail!("Server closed the connection");
+        let response = match connection {
+            ClientConnection::Unix(connection) => {
+                unix_call(connection, line.as_bytes(), &self.notify_tx).await?
             }
-
-            let msg: serde_json::Value = serde_json::from_str(response_line.trim())
-                .context("Failed to parse server message")?;
-
-            // Server-pushed notification: has "method" but no "id".
-            if msg.get("method").is_some() && msg.get("id").is_none() {
-                if let Some(params) = msg.get("params") {
-                    if let Ok(notif) = serde_json::from_value::<Notification>(params.clone()) {
-                        let _ = self.notify_tx.send(notif);
-                    }
-                }
-                continue; // keep reading for the actual response
-            }
-
-            response = msg;
-            break;
-        }
+            ClientConnection::Http(connection) => http_call(connection, &request).await?,
+        };
 
         // Check for error
         if let Some(error) = response.get("error") {
@@ -577,8 +592,8 @@ impl Client {
         socket_path: &Path,
         init_args: &InitArgs,
     ) -> Result<()> {
-        let connection = ClientConnection::connect(socket_path).await?;
-        *self.connection.lock().await = Some(connection);
+        let connection = UnixClientConnection::connect(socket_path).await?;
+        *self.connection.lock().await = Some(ClientConnection::Unix(connection));
         self.reinit(init_args).await?;
         Ok(())
     }
@@ -615,6 +630,114 @@ impl Drop for Client {
             token.cancel();
         }
     }
+}
+
+async fn unix_call(
+    connection: &mut UnixClientConnection,
+    request_line: &[u8],
+    notify_tx: &tokio::sync::mpsc::UnboundedSender<Notification>,
+) -> Result<serde_json::Value> {
+    connection
+        .writer
+        .write_all(request_line)
+        .await
+        .context("Failed to write to server")?;
+    connection
+        .writer
+        .flush()
+        .await
+        .context("Failed to flush to server")?;
+
+    loop {
+        let mut response_line = String::new();
+        let n = connection
+            .reader
+            .read_line(&mut response_line)
+            .await
+            .context("Failed to read from server")?;
+        if n == 0 {
+            bail!("Server closed the connection");
+        }
+
+        let msg: serde_json::Value =
+            serde_json::from_str(response_line.trim()).context("Failed to parse server message")?;
+
+        if msg.get("method").is_some() && msg.get("id").is_none() {
+            if let Some(params) = msg.get("params")
+                && let Ok(notif) = serde_json::from_value::<Notification>(params.clone())
+            {
+                let _ = notify_tx.send(notif);
+            }
+            continue;
+        }
+
+        return Ok(msg);
+    }
+}
+
+async fn http_call(
+    connection: &mut HttpClientConnection,
+    request: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let body = serde_json::to_vec(request).context("Failed to serialize HTTP request")?;
+    let headers = format!(
+        "POST /rpc HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+        connection.host,
+        body.len()
+    );
+
+    connection
+        .writer
+        .write_all(headers.as_bytes())
+        .await
+        .context("Failed to write HTTP request headers")?;
+    connection
+        .writer
+        .write_all(&body)
+        .await
+        .context("Failed to write HTTP request body")?;
+    connection
+        .writer
+        .flush()
+        .await
+        .context("Failed to flush HTTP request")?;
+
+    read_http_response(&mut connection.reader).await
+}
+
+async fn read_http_response<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+) -> Result<serde_json::Value> {
+    let mut status = String::new();
+    if reader.read_line(&mut status).await? == 0 {
+        bail!("HTTP server closed the connection");
+    }
+    if !status.contains(" 200 ") {
+        bail!("HTTP server returned {}", status.trim());
+    }
+
+    let mut content_length = None;
+    loop {
+        let mut header = String::new();
+        let n = reader.read_line(&mut header).await?;
+        if n == 0 {
+            bail!("HTTP server closed the connection while reading headers");
+        }
+        let trimmed = header.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = trimmed.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            content_length = value.trim().parse::<usize>().ok();
+        }
+    }
+
+    let len = content_length.context("HTTP response missing Content-Length")?;
+    let mut body = vec![0; len];
+    reader.read_exact(&mut body).await?;
+    serde_json::from_slice(&body).context("Failed to parse HTTP response body")
 }
 
 fn is_transport_loss(error: &anyhow::Error) -> bool {

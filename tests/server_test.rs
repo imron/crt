@@ -1,15 +1,21 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU16, Ordering};
 
+use crt::client::Client;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+use tokio::net::{TcpStream, UnixStream};
 use tokio::task::JoinHandle;
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
+static TEST_SERVER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static NEXT_HTTP_TEST_PORT: AtomicU16 = AtomicU16::new(0);
+
 struct TestServer {
+    _server_guard: tokio::sync::MutexGuard<'static, ()>,
     _dir: tempfile::TempDir,
     socket_path: PathBuf,
     repo_dir: PathBuf,
@@ -18,6 +24,11 @@ struct TestServer {
 
 impl TestServer {
     async fn start() -> Self {
+        Self::start_with_http_port(None).await
+    }
+
+    async fn start_with_http_port(http_port: Option<u16>) -> Self {
+        let server_guard = TEST_SERVER_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("test.sock");
 
@@ -31,6 +42,12 @@ impl TestServer {
         run_git(&repo_dir, &["commit", "-m", "initial"]);
 
         let sp = socket_path.clone();
+        let previous_http_port = std::env::var_os(crt::server::ENV_HTTP_PORT);
+        if let Some(port) = http_port {
+            unsafe {
+                std::env::set_var(crt::server::ENV_HTTP_PORT, port.to_string());
+            }
+        }
         let handle = tokio::spawn(async move {
             let _ = crt::server::run_persistent(&sp).await;
         });
@@ -43,8 +60,31 @@ impl TestServer {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         assert!(socket_path.exists(), "Server socket was not created");
+        if let Some(port) = http_port {
+            let mut http_ready = false;
+            for _ in 0..50 {
+                if TcpStream::connect((crt::server::DEFAULT_HTTP_HOST, port))
+                    .await
+                    .is_ok()
+                {
+                    http_ready = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            assert!(http_ready, "Server HTTP listener was not created");
+        }
+        match previous_http_port {
+            Some(value) => unsafe {
+                std::env::set_var(crt::server::ENV_HTTP_PORT, value);
+            },
+            None => unsafe {
+                std::env::remove_var(crt::server::ENV_HTTP_PORT);
+            },
+        }
 
         Self {
+            _server_guard: server_guard,
             _dir: dir,
             socket_path,
             repo_dir,
@@ -146,6 +186,18 @@ fn git_output(path: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn unused_local_port() -> u16 {
+    let seed = NEXT_HTTP_TEST_PORT.fetch_add(1, Ordering::Relaxed);
+    let start = 20_000 + ((std::process::id() as u16).wrapping_add(seed) % 20_000);
+    for offset in 0..1000 {
+        let port = start.saturating_add(offset);
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    panic!("could not find an unused localhost port for HTTP test");
 }
 
 // ---------------------------------------------------------------------------
@@ -280,6 +332,38 @@ async fn test_multiple_clients() {
     assert!(
         resp2.get("error").is_none(),
         "client 2 should have no error"
+    );
+}
+
+#[tokio::test]
+async fn test_http_client_lists_repos() {
+    let port = unused_local_port();
+    let server = TestServer::start_with_http_port(Some(port)).await;
+
+    let client = {
+        let mut client = None;
+        for _ in 0..50 {
+            match Client::connect_http(crt::server::DEFAULT_HTTP_HOST, port).await {
+                Ok(connected) => {
+                    client = Some(connected);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
+        client.expect("HTTP client should connect")
+    };
+
+    client
+        .init(&server.repo_dir.to_string_lossy(), "HEAD")
+        .await
+        .unwrap();
+
+    let repos = client.list_repos().await.unwrap();
+    assert_eq!(repos.sessions.len(), 1);
+    assert_eq!(
+        repos.sessions[0].worktree,
+        server.repo_dir.to_string_lossy()
     );
 }
 

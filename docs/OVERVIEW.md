@@ -29,7 +29,8 @@ or as inline markers written directly into source files.
 
 All state management, git operations, and review logic live in a **server**.
 The TUI, MCP adapter, and CLI commands are all **clients** that communicate
-with the server over a Unix domain socket using JSON-RPC.
+with the server over JSON-RPC. Normal clients use the Unix domain socket;
+sandboxed MCP clients use localhost HTTP.
 
 ```
 ┌───────────────────────────────────────────────────────┐
@@ -42,8 +43,8 @@ with the server over a Unix domain socket using JSON-RPC.
 │  └──────────┘  └───────────┘  └────────────────────┘ │
 │                                                       │
 │  ┌───────────────────────────────────────────────┐   │
-│  │      JSON-RPC API (Unix Domain Socket)        │   │
-│  │      ~/.crt/server.sock                       │   │
+│  │      JSON-RPC API                             │   │
+│  │      ~/.crt/server.sock + 127.0.0.1:4768      │   │
 │  └───────────────────────────────────────────────┘   │
 └──────────────────────┬────────────────────────────────┘
                        │
@@ -62,10 +63,10 @@ with the server over a Unix domain socket using JSON-RPC.
   running, starts an embedded server in-process (transparent to the user).
   When the TUI exits, the embedded server shuts down.
 - `crt server` — starts a persistent server that listens on
-  `~/.crt/server.sock`. Stays running until stopped. Supports multiple
-  simultaneous clients.
-- `crt mcp-server` — MCP adapter. Connects to a running server and bridges
-  MCP stdio protocol to the server's JSON-RPC API.
+  `~/.crt/server.sock` and localhost HTTP JSON-RPC. Stays running until
+  stopped. Supports multiple simultaneous clients.
+- `crt mcp-server` — MCP adapter. Connects to a running server over localhost
+  HTTP and bridges MCP stdio protocol to the server's JSON-RPC API.
 - `--standalone` — starts a process-private embedded server socket under the
   system temp directory. It uses the same client/server transport without
   joining the shared `~/.crt/server.sock` session.
@@ -75,7 +76,7 @@ server is cancelled and its socket is removed on a best-effort basis. Other
 clients recover through the reconnect/failover supervisor by connecting to, or
 racing to start, a replacement embedded server. `crt server` is the only
 explicit persistent server mode. `crt mcp-server` does not start an embedded
-server; it only connects to an existing shared server.
+server; it only connects to an existing shared server over localhost HTTP.
 
 **Why client-server:**
 
@@ -595,8 +596,16 @@ crt clear-comments <base>     Remove review markers from worktree files
 
 The `crt mcp-server` subcommand starts an MCP adapter that bridges the MCP
 stdio protocol to the crt server's JSON-RPC API. It connects to an existing
-server at the shared socket and does not start an embedded server. Start a TUI
+server over localhost HTTP and does not start an embedded server. Start a TUI
 session or explicit `crt server` first.
+
+By default the server listens on `127.0.0.1:4768` for HTTP JSON-RPC. Override
+the MCP connection target by passing environment variables to `crt mcp-server`:
+
+```
+CRT_SERVER_HOST=127.0.0.1
+CRT_SERVER_PORT=4768
+```
 
 MCP starts unscoped. Use `list_review_sessions` to discover active review
 sessions registered by connected crt clients, then `select_review_session` to

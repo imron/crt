@@ -7,12 +7,13 @@
 pub mod api;
 
 use std::collections::HashMap;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
 
@@ -23,6 +24,11 @@ use crate::protocol::{
     JsonRpcRequest, JsonRpcResponse, Notification,
 };
 use crate::review_types::ActiveReviewSession;
+
+pub const DEFAULT_HTTP_HOST: &str = "127.0.0.1";
+pub const DEFAULT_HTTP_PORT: u16 = 4768;
+pub const ENV_HTTP_HOST: &str = "CRT_SERVER_HOST";
+pub const ENV_HTTP_PORT: &str = "CRT_SERVER_PORT";
 
 // ---------------------------------------------------------------------------
 // Connection state
@@ -164,6 +170,7 @@ fn session_key(ctx: &ConnectionContext) -> String {
 /// Start the persistent server, listening on the given socket path.
 pub async fn run_persistent(socket_path: &Path) -> Result<()> {
     let listener = bind_socket(socket_path, true).await?;
+    let http_listener = bind_http_listener(true).await?;
     eprintln!("crt server listening on {}", socket_path.display());
 
     let state = Arc::new(ServerState::new());
@@ -177,7 +184,7 @@ pub async fn run_persistent(socket_path: &Path) -> Result<()> {
         cancel_clone.cancel();
     });
 
-    accept_loop(listener, state, cancel, true).await;
+    accept_loop(listener, http_listener, state, cancel, true).await;
 
     let _ = std::fs::remove_file(socket_path);
     eprintln!("Server stopped.");
@@ -195,13 +202,14 @@ pub async fn run_persistent(socket_path: &Path) -> Result<()> {
 /// no stderr output. Other clients can connect to the same socket.
 pub async fn start_embedded(socket_path: &Path) -> Result<CancellationToken> {
     let listener = bind_socket(socket_path, false).await?;
+    let http_listener = bind_http_listener(false).await?;
     let state = Arc::new(ServerState::new());
     let cancel = CancellationToken::new();
     let socket_path_owned = socket_path.to_path_buf();
 
     let cancel_clone = cancel.clone();
     tokio::spawn(async move {
-        accept_loop(listener, state, cancel_clone, false).await;
+        accept_loop(listener, http_listener, state, cancel_clone, false).await;
         let _ = std::fs::remove_file(&socket_path_owned);
     });
 
@@ -244,13 +252,40 @@ async fn bind_socket(socket_path: &Path, verbose: bool) -> Result<UnixListener> 
         .with_context(|| format!("Failed to bind to {}", socket_path.display()))
 }
 
+async fn bind_http_listener(verbose: bool) -> Result<Option<TcpListener>> {
+    let host = std::env::var(ENV_HTTP_HOST).unwrap_or_else(|_| DEFAULT_HTTP_HOST.to_string());
+    let port = std::env::var(ENV_HTTP_PORT)
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_HTTP_PORT);
+    let addr = format!("{host}:{port}");
+
+    match TcpListener::bind(&addr).await {
+        Ok(listener) => {
+            if verbose {
+                eprintln!("crt HTTP JSON-RPC listening on http://{addr}");
+            }
+            Ok(Some(listener))
+        }
+        Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
+            if verbose {
+                eprintln!("crt HTTP JSON-RPC disabled; {addr} is already in use");
+            }
+            Ok(None)
+        }
+        Err(e) => Err(e).with_context(|| format!("Failed to bind HTTP JSON-RPC on {addr}")),
+    }
+}
+
 /// Core accept loop shared by persistent and embedded servers.
 async fn accept_loop(
     listener: UnixListener,
+    http_listener: Option<TcpListener>,
     state: Arc<ServerState>,
     cancel: CancellationToken,
     verbose: bool,
 ) {
+    let mut http_listener = http_listener;
     loop {
         tokio::select! {
             accept = listener.accept() => {
@@ -276,6 +311,38 @@ async fn accept_loop(
                             eprintln!("Accept error: {e}");
                         }
                     }
+                }
+            }
+            accept = async {
+                match http_listener.as_ref() {
+                    Some(listener) => Some(listener.accept().await),
+                    None => None,
+                }
+            }, if http_listener.is_some() => {
+                match accept {
+                    Some(Ok((stream, _addr))) => {
+                        if verbose {
+                            eprintln!("HTTP client connected");
+                        }
+                        let state = Arc::clone(&state);
+                        let v = verbose;
+                        tokio::spawn(async move {
+                            let result = handle_http_connection(stream, state).await;
+                            if v {
+                                if let Err(e) = result {
+                                    eprintln!("HTTP connection error: {e}");
+                                }
+                                eprintln!("HTTP client disconnected");
+                            }
+                        });
+                    }
+                    Some(Err(e)) => {
+                        if verbose {
+                            eprintln!("HTTP accept error: {e}");
+                        }
+                        http_listener = None;
+                    }
+                    None => {}
                 }
             }
             _ = cancel.cancelled() => {
@@ -386,6 +453,96 @@ async fn handle_connection(stream: UnixStream, state: Arc<ServerState>) -> Resul
     notify_cancel.cancel();
     let _ = notify_handle.await;
 
+    Ok(())
+}
+
+async fn handle_http_connection(stream: TcpStream, state: Arc<ServerState>) -> Result<()> {
+    let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    let mut conn_ctx: Option<ConnectionContext> = None;
+    let mut conn_db: Option<Arc<Mutex<Database>>> = None;
+
+    loop {
+        let Some(body) = read_http_body(&mut reader).await? else {
+            break;
+        };
+
+        let request: JsonRpcRequest = match serde_json::from_slice(&body) {
+            Ok(req) => req,
+            Err(e) => {
+                let resp = JsonRpcResponse::error(
+                    serde_json::Value::Null,
+                    ERR_PARSE,
+                    format!("Parse error: {e}"),
+                );
+                write_http_response(&mut writer, &resp).await?;
+                continue;
+            }
+        };
+
+        let id = match &request.id {
+            Some(id) => id.clone(),
+            None => continue,
+        };
+
+        let response = dispatch(&request, &id, &state, &mut conn_ctx, &mut conn_db).await;
+        write_http_response(&mut writer, &response).await?;
+    }
+
+    if let Some(ctx) = conn_ctx.as_ref() {
+        state.unregister_session(ctx).await;
+    }
+
+    Ok(())
+}
+
+async fn read_http_body<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+) -> Result<Option<Vec<u8>>> {
+    let mut request_line = String::new();
+    if reader.read_line(&mut request_line).await? == 0 {
+        return Ok(None);
+    }
+    if request_line.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let mut content_length = None;
+    loop {
+        let mut header = String::new();
+        let n = reader.read_line(&mut header).await?;
+        if n == 0 {
+            return Ok(None);
+        }
+        let trimmed = header.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = trimmed.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            content_length = value.trim().parse::<usize>().ok();
+        }
+    }
+
+    let len = content_length.context("HTTP request missing Content-Length")?;
+    let mut body = vec![0; len];
+    reader.read_exact(&mut body).await?;
+    Ok(Some(body))
+}
+
+async fn write_http_response(
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    response: &JsonRpcResponse,
+) -> Result<()> {
+    let body = serde_json::to_vec(response).context("Failed to serialize response")?;
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+        body.len()
+    );
+    writer.write_all(headers.as_bytes()).await?;
+    writer.write_all(&body).await?;
+    writer.flush().await?;
     Ok(())
 }
 
