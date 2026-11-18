@@ -1,12 +1,12 @@
 fn example() {
-    let x = 1;
-    let y = 2;
-    let z = x + y;
-    println!("{z}");
+  let x = 1;
+  let y = 2;
+  let z = x  +  y;
+  println!("{z}");
 }
 
 fn another() {
-    let a = "hello";
-    let b = "world";
-    println!("{a} {b}");
+      let a = "hello";
+      let b = "world";
+      println!("{a}  {b}");
 }
