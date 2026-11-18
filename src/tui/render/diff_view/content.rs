@@ -113,7 +113,7 @@ pub fn build_content(
     };
 
     let default_bg = *styles.bg;
-    let current_comment_fg = *styles.files.selected_fg;
+    let current_comment_fg = *styles.diff.current_comment_marker_fg;
     let comment_markers = CommentMarkerSet::new(&diff.comments, current_comment_line(diff));
     let no_comment_markers = CommentMarkerSet::new(&[], None);
 

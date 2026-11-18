@@ -4,8 +4,8 @@ use crate::app::model::CommentAttachment;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommentMarkerSet {
-    markers_by_line: BTreeMap<u32, char>,
-    current_markers_by_line: BTreeMap<u32, char>,
+    markers_by_line: BTreeMap<u32, MarkerCandidate>,
+    current_comment: Option<CurrentComment>,
     width: usize,
 }
 
@@ -56,18 +56,13 @@ impl CommentMarkerSet {
             }
         }
 
-        let markers_by_line: BTreeMap<u32, char> = marker_candidates
-            .into_iter()
-            .map(|(line, candidate)| (line, candidate.glyph()))
-            .collect();
+        let markers_by_line = marker_candidates;
         let width = if markers_by_line.is_empty() { 0 } else { 1 };
-        let current_markers_by_line = current_comment(comments, current_line)
-            .map(current_comment_markers)
-            .unwrap_or_default();
+        let current_comment = current_comment(comments, current_line);
 
         Self {
             markers_by_line,
-            current_markers_by_line,
+            current_comment,
             width,
         }
     }
@@ -80,19 +75,17 @@ impl CommentMarkerSet {
         let Some(line) = line else {
             return CommentMarker::blank(self.width);
         };
-        let (marker, current) = self
-            .current_markers_by_line
-            .get(&line)
-            .copied()
-            .map(|marker| (marker, true))
-            .or_else(|| {
-                self.markers_by_line
-                    .get(&line)
-                    .copied()
-                    .map(|marker| (marker, false))
-            })
-            .map(|(marker, current)| (String::from(marker), current))
-            .unwrap_or_else(|| (String::new(), false));
+        let (marker, current) = if let Some(current_comment) = self.current_comment {
+            if current_comment.contains(line)
+                && self.line_uses_current_marker(line, current_comment)
+            {
+                (String::from(current_comment.glyph_for_line(line)), true)
+            } else {
+                self.inactive_marker_for_line(line)
+            }
+        } else {
+            self.inactive_marker_for_line(line)
+        };
         let pad = self.width.saturating_sub(marker.chars().count());
         let mut marker = marker;
         marker.push_str(&" ".repeat(pad));
@@ -100,6 +93,25 @@ impl CommentMarkerSet {
             text: marker,
             current,
         }
+    }
+
+    fn inactive_marker_for_line(&self, line: u32) -> (String, bool) {
+        self.markers_by_line
+            .get(&line)
+            .copied()
+            .map(|marker| (String::from(marker.glyph()), false))
+            .unwrap_or_else(|| (String::new(), false))
+    }
+
+    fn line_uses_current_marker(&self, line: u32, current_comment: CurrentComment) -> bool {
+        if current_comment.is_boundary(line) {
+            return true;
+        }
+
+        !self
+            .markers_by_line
+            .get(&line)
+            .is_some_and(|marker| marker.kind.is_boundary_marker())
     }
 }
 
@@ -109,6 +121,24 @@ struct CurrentComment {
     start: u32,
     end: u32,
     resolved: bool,
+}
+
+impl CurrentComment {
+    fn contains(self, line: u32) -> bool {
+        line >= self.start && line <= self.end
+    }
+
+    fn is_boundary(self, line: u32) -> bool {
+        line == self.start || line == self.end
+    }
+
+    fn glyph_for_line(self, line: u32) -> char {
+        if self.start == self.end || self.is_boundary(line) {
+            if self.resolved { '○' } else { '●' }
+        } else {
+            '┃'
+        }
+    }
 }
 
 fn current_comment(
@@ -137,31 +167,6 @@ fn current_comment(
                 std::cmp::Reverse(comment.id),
             )
         })
-}
-
-fn current_comment_markers(comment: CurrentComment) -> BTreeMap<u32, char> {
-    let mut markers = BTreeMap::new();
-    for line in comment.start..=comment.end {
-        let kind = if comment.start == comment.end {
-            MarkerKind::SingleLine
-        } else if line == comment.start || line == comment.end {
-            MarkerKind::MultilineBoundary
-        } else {
-            MarkerKind::Continuation
-        };
-        let glyph = match kind {
-            MarkerKind::Continuation => '┃',
-            MarkerKind::MultilineBoundary | MarkerKind::SingleLine => {
-                if comment.resolved {
-                    '○'
-                } else {
-                    '●'
-                }
-            }
-        };
-        markers.insert(line, glyph);
-    }
-    markers
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,6 +230,10 @@ impl MarkerKind {
             MarkerKind::SingleLine => 1,
             MarkerKind::MultilineBoundary => 2,
         }
+    }
+
+    fn is_boundary_marker(self) -> bool {
+        matches!(self, Self::SingleLine | Self::MultilineBoundary)
     }
 }
 
@@ -335,5 +344,37 @@ mod tests {
         assert!(nested_single_line.is_current());
         assert_eq!(nested_multiline_middle.text(), "┃");
         assert!(!nested_multiline_middle.is_current());
+    }
+
+    #[test]
+    fn current_outer_comment_leaves_nested_boundaries_inactive() {
+        let markers = CommentMarkerSet::new(
+            &[
+                comment(1, 31, 41, false),
+                comment(2, 36, 40, true),
+                comment(3, 37, 37, false),
+            ],
+            Some(32),
+        );
+
+        let outer_start = markers.marker_for_line(Some(31));
+        let outer_join = markers.marker_for_line(Some(34));
+        let nested_start = markers.marker_for_line(Some(36));
+        let nested_single_line = markers.marker_for_line(Some(37));
+        let nested_end = markers.marker_for_line(Some(40));
+        let outer_end = markers.marker_for_line(Some(41));
+
+        assert_eq!(outer_start.text(), "●");
+        assert!(outer_start.is_current());
+        assert_eq!(outer_join.text(), "┃");
+        assert!(outer_join.is_current());
+        assert_eq!(nested_start.text(), "○");
+        assert!(!nested_start.is_current());
+        assert_eq!(nested_single_line.text(), "●");
+        assert!(!nested_single_line.is_current());
+        assert_eq!(nested_end.text(), "○");
+        assert!(!nested_end.is_current());
+        assert_eq!(outer_end.text(), "●");
+        assert!(outer_end.is_current());
     }
 }
