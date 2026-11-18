@@ -17,6 +17,24 @@ This stage builds the data model, the TUI interaction for creating and
 viewing comments, and the anchor resolution system. The next stages add
 the agent-facing interfaces (MCP adapter and file markers).
 
+## Implementation Plans
+
+This stage is broken into focused sub-plans. Implement in recommended order:
+
+1. 13a-selection-anchor-capture.md
+2. 13b-composer-create.md
+3. 13c-reanchor.md (can be parallel with 13a)
+4. 13d-inline-gutter-display.md
+5. 13e-panel-lifecycle.md
+6. 13f-live-polish-tests.md
+
+See the individual sub-plan files under docs/plans/backlog/ for detailed
+requirements, acceptance criteria, and notes for each slice.
+
+Keybinding decision (recorded here):
+- Use plain `}` for next comment and `{` for previous comment in the
+  current file's diff.
+
 ## Requirements
 
 ### Selection and Comment Creation
@@ -155,3 +173,7 @@ the agent-facing interfaces (MCP adapter and file markers).
   input area, or always escalate to `$EDITOR`?
 - Should gutter indicators be visible when inline comments are toggled
   off with `c`?
+
+## Progress
+
+Sub-plans created. Implementation has not yet started.
