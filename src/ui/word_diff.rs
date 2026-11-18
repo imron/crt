@@ -239,11 +239,13 @@ mod tests {
     #[test]
     fn test_dissimilar_lines() {
         // Lines that are mostly different should return None.
-        assert!(compute(
-            "/// This struct groups the reviewer identity",
-            "/// Stored in `task_reviews` table. The latest review is joined"
-        )
-        .is_none());
+        assert!(
+            compute(
+                "/// This struct groups the reviewer identity",
+                "/// Stored in `task_reviews` table. The latest review is joined"
+            )
+            .is_none()
+        );
     }
 
     #[test]

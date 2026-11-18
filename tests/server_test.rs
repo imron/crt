@@ -218,7 +218,10 @@ async fn test_stub_method() {
 
     // Use a method that is still a stub (not yet implemented).
     let resp = conn
-        .request("get_file_content", serde_json::json!({"file_path": "test.rs", "version": "HEAD"}))
+        .request(
+            "get_file_content",
+            serde_json::json!({"file_path": "test.rs", "version": "HEAD"}),
+        )
         .await;
 
     assert_eq!(resp["error"]["code"], -32001);
@@ -249,8 +252,14 @@ async fn test_multiple_clients() {
     // Both should succeed (result is present, no error).
     assert!(resp1.get("result").is_some(), "client 1 should get result");
     assert!(resp2.get("result").is_some(), "client 2 should get result");
-    assert!(resp1.get("error").is_none(), "client 1 should have no error");
-    assert!(resp2.get("error").is_none(), "client 2 should have no error");
+    assert!(
+        resp1.get("error").is_none(),
+        "client 1 should have no error"
+    );
+    assert!(
+        resp2.get("error").is_none(),
+        "client 2 should have no error"
+    );
 }
 
 #[tokio::test]

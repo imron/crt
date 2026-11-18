@@ -133,14 +133,12 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
                         state.diff_search_query = None;
                         state.status_message = Some((err, Instant::now()));
                     } else if state.diff_search_matches.is_empty() {
-                        state.status_message =
-                            Some(("No matches".to_string(), Instant::now()));
+                        state.status_message = Some(("No matches".to_string(), Instant::now()));
                     } else {
                         state.diff_search_jump_to_current();
                         let total = state.diff_search_matches.len();
                         let cur = state.diff_search_current + 1;
-                        state.status_message =
-                            Some((format!("{cur}/{total}"), Instant::now()));
+                        state.status_message = Some((format!("{cur}/{total}"), Instant::now()));
                     }
                 }
             }
@@ -233,41 +231,35 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
                     state.pending_command = Some(format!("find_definition {args}"));
                 }
             }
-            "set" => {
-                match args {
-                    "blame" => {
-                        state.show_blame = true;
-                        state.load_blame();
-                        state.status_message =
-                            Some(("Blame: shown".to_string(), Instant::now()));
-                    }
-                    "noblame" => {
-                        state.show_blame = false;
-                        state.load_blame();
-                        state.status_message =
-                            Some(("Blame: hidden".to_string(), Instant::now()));
-                    }
-                    "whitespace" => {
-                        state.ignore_whitespace = false;
-                        state.reload_current_diff();
-                        state.status_message =
-                            Some(("Whitespace: shown".to_string(), Instant::now()));
-                    }
-                    "nowhitespace" => {
-                        state.ignore_whitespace = true;
-                        state.reload_current_diff();
-                        state.status_message =
-                            Some(("Whitespace: ignored".to_string(), Instant::now()));
-                    }
-                    _ => {
-                        state.status_message = Some((
-                            "Unknown option. Use: blame, noblame, whitespace, nowhitespace"
-                                .to_string(),
-                            Instant::now(),
-                        ));
-                    }
+            "set" => match args {
+                "blame" => {
+                    state.show_blame = true;
+                    state.load_blame();
+                    state.status_message = Some(("Blame: shown".to_string(), Instant::now()));
                 }
-            }
+                "noblame" => {
+                    state.show_blame = false;
+                    state.load_blame();
+                    state.status_message = Some(("Blame: hidden".to_string(), Instant::now()));
+                }
+                "whitespace" => {
+                    state.ignore_whitespace = false;
+                    state.reload_current_diff();
+                    state.status_message = Some(("Whitespace: shown".to_string(), Instant::now()));
+                }
+                "nowhitespace" => {
+                    state.ignore_whitespace = true;
+                    state.reload_current_diff();
+                    state.status_message =
+                        Some(("Whitespace: ignored".to_string(), Instant::now()));
+                }
+                _ => {
+                    state.status_message = Some((
+                        "Unknown option. Use: blame, noblame, whitespace, nowhitespace".to_string(),
+                        Instant::now(),
+                    ));
+                }
+            },
             _ => {
                 state.status_message = Some((format!("Unknown command: {name}"), Instant::now()));
             }
@@ -474,11 +466,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             .chars()
             .take_while(|c| c.is_alphanumeric() || *c == '_')
             .collect();
-        if word.is_empty() {
-            None
-        } else {
-            Some(word)
-        }
+        if word.is_empty() { None } else { Some(word) }
     }
 
     // --- Global keys (work from any pane) ---
@@ -535,8 +523,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
                 state.diff_line_cursor = row;
                 state.clamp_cursor_and_scroll();
                 let cur = idx + 1;
-                state.status_message =
-                    Some((format!("{cur}/{len}"), Instant::now()));
+                state.status_message = Some((format!("{cur}/{len}"), Instant::now()));
                 return;
             }
             // Fall through if no active search — `n` might be used elsewhere.
@@ -556,8 +543,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
                 state.diff_line_cursor = row;
                 state.clamp_cursor_and_scroll();
                 let cur = idx + 1;
-                state.status_message =
-                    Some((format!("{cur}/{len}"), Instant::now()));
+                state.status_message = Some((format!("{cur}/{len}"), Instant::now()));
                 return;
             }
             // Fall through if no active search.
@@ -681,8 +667,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
                 };
                 state.status_message = Some((label.to_string(), Instant::now()));
             } else {
-                state.status_message =
-                    Some(("File not yet reviewed".to_string(), Instant::now()));
+                state.status_message = Some(("File not yet reviewed".to_string(), Instant::now()));
             }
             return;
         }

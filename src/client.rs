@@ -165,7 +165,8 @@ impl Client {
                 serde_json::json!({ "pattern": pattern, "scope": scope }),
             )
             .await?;
-        serde_json::from_value(value).map_err(|e| anyhow::anyhow!("Failed to parse search result: {e}"))
+        serde_json::from_value(value)
+            .map_err(|e| anyhow::anyhow!("Failed to parse search result: {e}"))
     }
 
     pub async fn find_definition(

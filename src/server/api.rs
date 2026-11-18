@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 use tokio::sync::broadcast;
 
 use super::{
-    notify, ConnectionContext, ERR_INTERNAL, ERR_INVALID_PARAMS, JsonRpcResponse, ServerState,
+    ConnectionContext, ERR_INTERNAL, ERR_INVALID_PARAMS, JsonRpcResponse, ServerState, notify,
 };
 use crate::db::Database;
 use crate::git;
@@ -216,14 +216,10 @@ pub async fn handle_list_changed_files(
                 format!("Serialization error: {e}"),
             ),
         },
-        Ok(Err(e)) => {
-            JsonRpcResponse::error(id.clone(), ERR_INTERNAL, format!("{e:#}"))
+        Ok(Err(e)) => JsonRpcResponse::error(id.clone(), ERR_INTERNAL, format!("{e:#}")),
+        Err(e) => {
+            JsonRpcResponse::error(id.clone(), ERR_INTERNAL, format!("Git task panicked: {e}"))
         }
-        Err(e) => JsonRpcResponse::error(
-            id.clone(),
-            ERR_INTERNAL,
-            format!("Git task panicked: {e}"),
-        ),
     }
 }
 
@@ -288,9 +284,7 @@ async fn try_migrate_reviews(
                 // Old reviewed_commit is resolvable.
                 // Compare blob at reviewed_commit vs blob at current HEAD.
                 let old_blob = repo.file_blob_hash(reviewed_commit, file_path)?;
-                let new_blob = repo.file_blob_hash("HEAD", file_path)
-                    .ok()
-                    .flatten();
+                let new_blob = repo.file_blob_hash("HEAD", file_path).ok().flatten();
 
                 if old_blob == new_blob {
                     // File content unchanged after rebase.
@@ -307,11 +301,7 @@ async fn try_migrate_reviews(
                     // the diff shows only what changed since the review.
                     // Recompute diff_hash against new merge_base.
                     let diff = repo.diff_file_workdir(&new_merge_base, file_path)?;
-                    migrated.push((
-                        file_path.clone(),
-                        diff.diff_hash,
-                        reviewed_commit.clone(),
-                    ));
+                    migrated.push((file_path.clone(), diff.diff_hash, reviewed_commit.clone()));
                 }
             } else {
                 // reviewed_commit is empty or GC'd.
@@ -319,11 +309,7 @@ async fn try_migrate_reviews(
                 let diff = repo.diff_file_workdir(&new_merge_base, file_path)?;
                 if diff.diff_hash == old_review.diff_hash {
                     // Diff unchanged — keep as reviewed.
-                    migrated.push((
-                        file_path.clone(),
-                        diff.diff_hash,
-                        String::new(),
-                    ));
+                    migrated.push((file_path.clone(), diff.diff_hash, String::new()));
                 }
                 // If diff_hash differs, treat as unreviewed (don't migrate).
             }
@@ -420,14 +406,10 @@ pub async fn handle_get_file_diff(
                 format!("Serialization error: {e}"),
             ),
         },
-        Ok(Err(e)) => {
-            JsonRpcResponse::error(id.clone(), ERR_INTERNAL, format!("{e:#}"))
+        Ok(Err(e)) => JsonRpcResponse::error(id.clone(), ERR_INTERNAL, format!("{e:#}")),
+        Err(e) => {
+            JsonRpcResponse::error(id.clone(), ERR_INTERNAL, format!("Git task panicked: {e}"))
         }
-        Err(e) => JsonRpcResponse::error(
-            id.clone(),
-            ERR_INTERNAL,
-            format!("Git task panicked: {e}"),
-        ),
     }
 }
 
@@ -462,14 +444,13 @@ pub async fn handle_mark_reviewed(
         let wt = worktree.clone();
         let mb = merge_base.clone();
         let fp = file_path.clone();
-        let result =
-            tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
-                let repo = git::Repo::open(&wt)?;
-                let diff = repo.diff_file_workdir(&mb, &fp)?;
-                let head_oid = repo.resolve_commit("HEAD")?;
-                Ok((diff.diff_hash, head_oid))
-            })
-            .await;
+        let result = tokio::task::spawn_blocking(move || -> anyhow::Result<(String, String)> {
+            let repo = git::Repo::open(&wt)?;
+            let diff = repo.diff_file_workdir(&mb, &fp)?;
+            let head_oid = repo.resolve_commit("HEAD")?;
+            Ok((diff.diff_hash, head_oid))
+        })
+        .await;
 
         match result {
             Ok(Ok(pair)) => pair,
@@ -708,33 +689,23 @@ pub async fn handle_search_codebase(
     // Run the search on a blocking thread to avoid stalling the runtime.
     let id_owned = id.clone();
     let result = tokio::task::spawn_blocking(move || {
-        crate::search::search_codebase(
-            &repo_root,
-            &pattern,
-            diff_files.as_deref(),
-        )
+        crate::search::search_codebase(&repo_root, &pattern, diff_files.as_deref())
     })
     .await;
 
     match result {
         Ok(Ok(search_result)) => match serde_json::to_value(search_result) {
             Ok(v) => JsonRpcResponse::success(id_owned, v),
-            Err(e) => JsonRpcResponse::error(
-                id_owned,
-                ERR_INTERNAL,
-                format!("Serialization error: {e}"),
-            ),
+            Err(e) => {
+                JsonRpcResponse::error(id_owned, ERR_INTERNAL, format!("Serialization error: {e}"))
+            }
         },
-        Ok(Err(e)) => JsonRpcResponse::error(
-            id_owned,
-            ERR_INTERNAL,
-            format!("Search failed: {e:#}"),
-        ),
-        Err(e) => JsonRpcResponse::error(
-            id_owned,
-            ERR_INTERNAL,
-            format!("Search task panicked: {e}"),
-        ),
+        Ok(Err(e)) => {
+            JsonRpcResponse::error(id_owned, ERR_INTERNAL, format!("Search failed: {e:#}"))
+        }
+        Err(e) => {
+            JsonRpcResponse::error(id_owned, ERR_INTERNAL, format!("Search task panicked: {e}"))
+        }
     }
 }
 
@@ -773,11 +744,9 @@ pub async fn handle_find_definition(
     match result {
         Ok(Ok(def_result)) => match serde_json::to_value(def_result) {
             Ok(v) => JsonRpcResponse::success(id_owned, v),
-            Err(e) => JsonRpcResponse::error(
-                id_owned,
-                ERR_INTERNAL,
-                format!("Serialization error: {e}"),
-            ),
+            Err(e) => {
+                JsonRpcResponse::error(id_owned, ERR_INTERNAL, format!("Serialization error: {e}"))
+            }
         },
         Ok(Err(e)) => JsonRpcResponse::error(
             id_owned,

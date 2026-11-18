@@ -3,11 +3,11 @@
 
 use std::collections::HashSet;
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::Frame;
 
 use crate::app::AppState;
 use crate::config::DiffStyle;
@@ -213,10 +213,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
                         .spans
                         .iter()
                         .map(|span| {
-                            Span::styled(
-                                span.content.clone(),
-                                span.style.bg(cursor_line_bg),
-                            )
+                            Span::styled(span.content.clone(), span.style.bg(cursor_line_bg))
                         })
                         .collect();
                     Line::from(spans)
@@ -241,11 +238,8 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 // Apply column cursor overlay on the cursor line.
                 if is_cursor_line {
                     let content_start = state.diff_content_start_col();
-                    result_line = apply_col_cursor(
-                        &result_line,
-                        content_start,
-                        state.diff_col_cursor,
-                    );
+                    result_line =
+                        apply_col_cursor(&result_line, content_start, state.diff_col_cursor);
                 }
 
                 result_line
@@ -281,7 +275,14 @@ struct BuiltContent {
 fn build_content(
     state: &AppState,
     inner_w: usize,
-) -> (String, Vec<Line<'static>>, Vec<usize>, Vec<usize>, Vec<usize>, usize) {
+) -> (
+    String,
+    Vec<Line<'static>>,
+    Vec<usize>,
+    Vec<usize>,
+    Vec<usize>,
+    usize,
+) {
     let ds = &state.styles.diff;
 
     let entry = match state.selected_file_entry() {
@@ -293,7 +294,7 @@ fn build_content(
                 vec![],
                 vec![],
                 0,
-            )
+            );
         }
         Some(e) => e,
     };
@@ -593,7 +594,11 @@ fn build_inline_diff(
 
         // Find the display row of the first actual change in this hunk.
         // Count leading context lines to compute the offset.
-        let leading_context = hunk.lines.iter().take_while(|l| l.kind == LineKind::Context).count();
+        let leading_context = hunk
+            .lines
+            .iter()
+            .take_while(|l| l.kind == LineKind::Context)
+            .count();
         hunk_first_changes.push(result.len() + leading_context);
 
         // Hunk lines — faint background on changed lines to delineate hunks.
@@ -978,7 +983,11 @@ fn build_side_by_side_diff(
         }
 
         hunk_starts.push(result.len());
-        let leading_context = hunk.lines.iter().take_while(|l| l.kind == LineKind::Context).count();
+        let leading_context = hunk
+            .lines
+            .iter()
+            .take_while(|l| l.kind == LineKind::Context)
+            .count();
         hunk_first_changes.push(result.len() + leading_context);
 
         // Process hunk lines: collect deletion/addition blocks and pair them.
@@ -1574,11 +1583,7 @@ fn digit_width(n: u32) -> usize {
 ///
 /// `content_start_col` is the number of fixed columns (gutter + prefix) before
 /// actual content begins. `col_cursor` is the character offset within content.
-fn apply_col_cursor(
-    line: &Line,
-    content_start_col: usize,
-    col_cursor: usize,
-) -> Line<'static> {
+fn apply_col_cursor(line: &Line, content_start_col: usize, col_cursor: usize) -> Line<'static> {
     // Compute the target character index in the flattened line text.
     // We need to count characters (not bytes) through the spans to find
     // the right position.
@@ -1627,9 +1632,7 @@ fn apply_col_cursor(
 
     // If the cursor is past the end of the line (empty line), add a block cursor.
     if !applied {
-        let cursor_style = Style::default()
-            .fg(Color::Black)
-            .bg(Color::White);
+        let cursor_style = Style::default().fg(Color::Black).bg(Color::White);
         result.push(Span::styled(" ", cursor_style));
     }
 
@@ -1683,8 +1686,7 @@ fn apply_search_highlights(
             }
 
             // Emit the match highlight.
-            let match_text =
-                &text[(overlap_start - span_start)..(overlap_end - span_start)];
+            let match_text = &text[(overlap_start - span_start)..(overlap_end - span_start)];
             let bg = if is_current { current_bg } else { match_bg };
             let style = span.style.bg(bg).fg(Color::Black);
             result.push(Span::styled(match_text.to_string(), style));

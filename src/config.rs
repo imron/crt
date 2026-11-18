@@ -289,7 +289,7 @@ impl Default for DiffStyle {
             placeholder_fg: Color::new(C::DarkGray),
             reviewed_fg: Color::new(C::Green),
             cursor_line_bg: Color::new(C::Rgb(50, 50, 65)), // #323241 — subtle highlight
-            search_match_bg: Color::new(C::Rgb(100, 90, 30)),  // #645A1E — amber highlight
+            search_match_bg: Color::new(C::Rgb(100, 90, 30)), // #645A1E — amber highlight
             search_current_match_bg: Color::new(C::Rgb(180, 140, 20)), // #B48C14 — bright amber
         }
     }

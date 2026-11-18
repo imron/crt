@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 
 // Re-export model types so existing callers (e.g. `git::ChangeKind`) still work.
@@ -305,11 +305,7 @@ impl Repo {
     }
 
     /// Compute the structured diff for a single file between base and working tree.
-    pub fn diff_file_workdir(
-        &self,
-        base_ref: &str,
-        file_path: &str,
-    ) -> Result<DiffContent> {
+    pub fn diff_file_workdir(&self, base_ref: &str, file_path: &str) -> Result<DiffContent> {
         self.diff_file_workdir_opts(
             base_ref,
             file_path,
@@ -539,10 +535,7 @@ impl Repo {
 
     /// Read the content of a file from the working tree on disk.
     pub fn file_content_workdir(&self, file_path: &str) -> Result<Option<String>> {
-        let worktree = self
-            .inner
-            .workdir()
-            .unwrap_or_else(|| self.inner.path());
+        let worktree = self.inner.workdir().unwrap_or_else(|| self.inner.path());
         let full_path = worktree.join(file_path);
         match std::fs::read(&full_path) {
             Ok(bytes) => {
