@@ -512,7 +512,7 @@ src/
   db.rs             -- SQLite operations (reviews, comments, anchoring)
   review_types.rs   -- Shared review/session data types
   search.rs         -- Codebase search (:gr) and go-to-definition (Ctrl-])
-  mcp.rs            -- MCP adapter (stdio ↔ server JSON-RPC bridge)
+  mcp.rs            -- rmcp-based MCP adapter over stdio
   markers.rs        -- Apply/clear review markers in worktree files
 ```
 
@@ -536,6 +536,7 @@ backend-specific layout and own their native hit maps.
 | `regex`          | Pattern matching for search and go-to-definition     |
 | `serde`          | Serialization for JSON-RPC messages                  |
 | `serde_json`     | JSON parsing/generation                              |
+| `rmcp`           | Model Context Protocol server/stdio adapter          |
 | `tokio`          | Async runtime (server socket handling)               |
 
 ## Data Model
