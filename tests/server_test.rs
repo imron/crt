@@ -218,7 +218,7 @@ async fn test_stub_method() {
 
     // Use a method that is still a stub (not yet implemented).
     let resp = conn
-        .request("mark_reviewed", serde_json::json!({"file_path": "test.rs"}))
+        .request("get_file_content", serde_json::json!({"file_path": "test.rs", "version": "HEAD"}))
         .await;
 
     assert_eq!(resp["error"]["code"], -32001);

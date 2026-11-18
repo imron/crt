@@ -79,7 +79,7 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             state.should_quit = true;
             return;
         }
-        (KeyCode::Tab, _) => {
+        (KeyCode::Tab, KeyModifiers::NONE | KeyModifiers::SHIFT) => {
             // Only toggle between visible panes.
             if state.show_file_list && state.show_diff_pane {
                 state.pane_focus = match state.pane_focus {
@@ -91,24 +91,12 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             return;
         }
         (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
-            // Next file.
-            if !state.files.is_empty() {
-                state.selected_file = (state.selected_file + 1) % state.files.len();
-                on_file_changed(state);
-            }
+            navigate_file(state, Direction::Next);
             state.status_message = None;
             return;
         }
         (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
-            // Previous file.
-            if !state.files.is_empty() {
-                state.selected_file = if state.selected_file == 0 {
-                    state.files.len() - 1
-                } else {
-                    state.selected_file - 1
-                };
-                on_file_changed(state);
-            }
+            navigate_file(state, Direction::Prev);
             state.status_message = None;
             return;
         }
@@ -122,15 +110,27 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             state.status_message = None;
             return;
         }
-        (KeyCode::Char('i'), KeyModifiers::CONTROL) => {
+        (KeyCode::Char(']'), KeyModifiers::NONE) => {
             // Next hunk.
             jump_to_next_hunk(state);
             state.status_message = None;
             return;
         }
-        (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
+        (KeyCode::Char('['), KeyModifiers::NONE) => {
             // Previous hunk.
             jump_to_prev_hunk(state);
+            state.status_message = None;
+            return;
+        }
+        (KeyCode::Char('i'), KeyModifiers::NONE) => {
+            // Toggle inline / side-by-side in diff mode.
+            if state.content_mode == ContentMode::Diff {
+                state.render_variant = match state.render_variant {
+                    RenderVariant::Inline => RenderVariant::SideBySide,
+                    RenderVariant::SideBySide => RenderVariant::Inline,
+                    other => other,
+                };
+            }
             state.status_message = None;
             return;
         }
@@ -140,11 +140,95 @@ pub fn handle_key_event(state: &mut AppState, key: KeyEvent) {
             cycle_view_mode(state);
             return;
         }
+        (KeyCode::Char('r'), KeyModifiers::NONE) => {
+            toggle_review(state);
+            state.status_message = None;
+            return;
+        }
+        (KeyCode::Char('b'), KeyModifiers::NONE) => {
+            state.show_blame = !state.show_blame;
+            state.load_blame();
+            let label = if state.show_blame {
+                "Blame: shown"
+            } else {
+                "Blame: hidden"
+            };
+            state.status_message = Some((label.to_string(), Instant::now()));
+            return;
+        }
+        (KeyCode::Char('d'), KeyModifiers::NONE) => {
+            state.diff_algorithm = state.diff_algorithm.next();
+            state.reload_current_diff();
+            state.status_message = Some((
+                format!("Diff algorithm: {}", state.diff_algorithm.label()),
+                Instant::now(),
+            ));
+            // Persist to config.
+            if let Some(path) = &state.config_path {
+                let layout = crate::config::LayoutConfig {
+                    file_list_width: state.file_list_width,
+                    diff_algorithm: Some(state.diff_algorithm),
+                };
+                crate::config::save_layout(path, &layout);
+            }
+            return;
+        }
+        (KeyCode::Char('w'), KeyModifiers::NONE) => {
+            state.ignore_whitespace = !state.ignore_whitespace;
+            state.reload_current_diff();
+            let label = if state.ignore_whitespace {
+                "Whitespace: ignored"
+            } else {
+                "Whitespace: shown"
+            };
+            state.status_message = Some((label.to_string(), Instant::now()));
+            return;
+        }
         _ => {}
     }
 
     // Any other key clears transient status messages.
     state.status_message = None;
+
+    // --- Diff scrolling: always controls the diff pane regardless of focus ---
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
+            state.diff_scroll = state.diff_scroll.saturating_add(1);
+            state.clamp_diff_scroll();
+            return;
+        }
+        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
+            state.diff_scroll = state.diff_scroll.saturating_sub(1);
+            return;
+        }
+        (KeyCode::Char(' '), _) => {
+            state.diff_scroll = state.diff_scroll.saturating_add(state.diff_view_height);
+            state.clamp_diff_scroll();
+            return;
+        }
+        (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
+            state.diff_scroll = state.diff_scroll.saturating_sub(state.diff_view_height);
+            return;
+        }
+        (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+            state.diff_scroll = state.diff_scroll.saturating_add(state.diff_view_height / 2);
+            state.clamp_diff_scroll();
+            return;
+        }
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+            state.diff_scroll = state.diff_scroll.saturating_sub(state.diff_view_height / 2);
+            return;
+        }
+        (KeyCode::Char('g'), KeyModifiers::NONE) => {
+            state.diff_scroll = 0;
+            return;
+        }
+        (KeyCode::Char('G'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
+            state.diff_scroll = state.max_diff_scroll();
+            return;
+        }
+        _ => {}
+    }
 
     // --- Pane-specific keys ---
     match state.pane_focus {
@@ -182,26 +266,7 @@ fn toggle_pane_visibility(state: &mut AppState, pane: PaneFocus) {
 
 /// Reset diff-related state when the selected file changes.
 fn on_file_changed(state: &mut AppState) {
-    state.reviewed_diff_expanded = false;
-    state.hunk_start_rows.clear();
-    state.hunk_end_rows.clear();
-    state.load_head_content();
-
-    // Reload base content if we're currently in base view.
-    if state.content_mode == ContentMode::FullFile
-        && state.render_variant == RenderVariant::BaseVersion
-    {
-        state.load_base_content();
-    } else {
-        state.base_content = None;
-    }
-
-    // Scroll to the first hunk (approximate: new_start - 1 unchanged lines before it).
-    state.diff_scroll = state
-        .selected_file_entry()
-        .and_then(|e| e.diff.hunks.first())
-        .map(|h| (h.new_start as usize).saturating_sub(1))
-        .unwrap_or(0);
+    state.on_file_changed();
 }
 
 /// Cycle view mode: Diff → Head → Base → Diff.
@@ -342,40 +407,78 @@ fn jump_to_prev_hunk(state: &mut AppState) {
     }
 }
 
+enum Direction {
+    Next,
+    Prev,
+}
+
+/// Navigate to the next/previous file, scoped by section.
+///
+/// - In the diff pane: cycles only through unreviewed files.
+/// - In the file list: cycles within the current section (unreviewed
+///   or reviewed) based on where the cursor currently is.
+fn navigate_file(state: &mut AppState, dir: Direction) {
+    if state.files.is_empty() {
+        return;
+    }
+
+    let unreviewed_count = state.unreviewed_count();
+    let total = state.files.len();
+
+    // Determine the range of indices to cycle within.
+    let (range_start, range_end) = if state.pane_focus == PaneFocus::Diff {
+        // Diff pane: always cycle unreviewed only.
+        if unreviewed_count == 0 {
+            (0, total)
+        } else {
+            (0, unreviewed_count)
+        }
+    } else {
+        // File list: scope to whichever section the cursor is in.
+        if state.selected_file < unreviewed_count {
+            (0, unreviewed_count.max(1))
+        } else {
+            (unreviewed_count, total)
+        }
+    };
+
+    let range_len = range_end - range_start;
+    if range_len == 0 {
+        return;
+    }
+
+    // Current position within the range.
+    let pos = state.selected_file.saturating_sub(range_start);
+
+    let new_pos = match dir {
+        Direction::Next => (pos + 1) % range_len,
+        Direction::Prev => {
+            if pos == 0 {
+                range_len - 1
+            } else {
+                pos - 1
+            }
+        }
+    };
+
+    let new_idx = range_start + new_pos;
+    if new_idx != state.selected_file {
+        state.selected_file = new_idx;
+        on_file_changed(state);
+    }
+}
+
+/// Toggle review status of the currently selected file.
+/// Sets a flag for the async event loop to process.
+fn toggle_review(state: &mut AppState) {
+    if state.files.get(state.selected_file).is_some() {
+        state.pending_review_toggle = true;
+    }
+}
+
 /// File list pane keys.
 fn handle_file_list_key(state: &mut AppState, key: KeyEvent) {
     match key.code {
-        KeyCode::Char('j') | KeyCode::Down => {
-            if !state.files.is_empty() {
-                let new = (state.selected_file + 1).min(state.files.len() - 1);
-                if new != state.selected_file {
-                    state.selected_file = new;
-                    on_file_changed(state);
-                }
-            }
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            let new = state.selected_file.saturating_sub(1);
-            if new != state.selected_file {
-                state.selected_file = new;
-                on_file_changed(state);
-            }
-        }
-        KeyCode::Char('g') => {
-            if state.selected_file != 0 {
-                state.selected_file = 0;
-                on_file_changed(state);
-            }
-        }
-        KeyCode::Char('G') => {
-            if !state.files.is_empty() {
-                let new = state.files.len() - 1;
-                if new != state.selected_file {
-                    state.selected_file = new;
-                    on_file_changed(state);
-                }
-            }
-        }
         KeyCode::Enter => {
             if state.show_diff_pane {
                 state.pane_focus = PaneFocus::Diff;
@@ -387,8 +490,8 @@ fn handle_file_list_key(state: &mut AppState, key: KeyEvent) {
 
 /// Diff pane keys.
 fn handle_diff_key(state: &mut AppState, key: KeyEvent) {
-    match (key.code, key.modifiers) {
-        (KeyCode::Enter, _) => {
+    match key.code {
+        KeyCode::Enter => {
             // Expand reviewed file diff or no-op.
             if let Some(entry) = state.selected_file_entry() {
                 if matches!(entry.status, ReviewStatus::Reviewed { .. })
@@ -398,38 +501,6 @@ fn handle_diff_key(state: &mut AppState, key: KeyEvent) {
                     state.diff_scroll = 0;
                 }
             }
-            return;
-        }
-        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
-            state.diff_scroll = state.diff_scroll.saturating_add(1);
-            state.clamp_diff_scroll();
-        }
-        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
-            state.diff_scroll = state.diff_scroll.saturating_sub(1);
-        }
-        (KeyCode::Char(' '), _) => {
-            // Page down.
-            state.diff_scroll = state.diff_scroll.saturating_add(state.diff_view_height);
-            state.clamp_diff_scroll();
-        }
-        (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
-            // Ctrl-b: page up (fallback for terminals that don't send Shift-Space).
-            state.diff_scroll = state.diff_scroll.saturating_sub(state.diff_view_height);
-        }
-        (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
-            // Half page down.
-            state.diff_scroll = state.diff_scroll.saturating_add(state.diff_view_height / 2);
-            state.clamp_diff_scroll();
-        }
-        (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-            // Half page up.
-            state.diff_scroll = state.diff_scroll.saturating_sub(state.diff_view_height / 2);
-        }
-        (KeyCode::Char('g'), KeyModifiers::NONE) => {
-            state.diff_scroll = 0;
-        }
-        (KeyCode::Char('G'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
-            state.diff_scroll = state.max_diff_scroll();
         }
         _ => {}
     }

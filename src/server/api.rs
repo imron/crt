@@ -5,7 +5,11 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use super::{ConnectionContext, ERR_INTERNAL, ERR_INVALID_PARAMS, JsonRpcResponse, ServerState};
+use tokio::sync::broadcast;
+
+use super::{
+    notify, ConnectionContext, ERR_INTERNAL, ERR_INVALID_PARAMS, JsonRpcResponse, ServerState,
+};
 use crate::db::Database;
 use crate::git;
 use crate::model;
@@ -152,7 +156,6 @@ pub async fn handle_list_changed_files(
         for change in changes {
             let diff = repo.diff_file(&merge_base, "HEAD", &change.path)?;
 
-            // Basic review status reconciliation via diff-hash comparison.
             let status = match reviews.get(&change.path) {
                 None => model::ReviewStatus::Unreviewed,
                 Some(review) if review.diff_hash == diff.diff_hash => {
@@ -243,6 +246,199 @@ pub async fn handle_get_file_diff(
             id.clone(),
             ERR_INTERNAL,
             format!("Git task panicked: {e}"),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// mark_reviewed
+// ---------------------------------------------------------------------------
+
+pub async fn handle_mark_reviewed(
+    params: &serde_json::Value,
+    id: &serde_json::Value,
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    notify_tx: &broadcast::Sender<notify::Notification>,
+) -> JsonRpcResponse {
+    let p: model::MarkReviewedParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INVALID_PARAMS,
+                format!("Invalid params: {e}"),
+            );
+        }
+    };
+
+    // Compute the current diff hash.
+    let worktree = ctx.worktree.clone();
+    let merge_base = ctx.merge_base.clone();
+    let file_path = p.file_path.clone();
+
+    let diff_hash = {
+        let wt = worktree.clone();
+        let mb = merge_base.clone();
+        let fp = file_path.clone();
+        let result = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+            let repo = git::Repo::open(&wt)?;
+            let diff = repo.diff_file(&mb, "HEAD", &fp)?;
+            Ok(diff.diff_hash)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(hash)) => hash,
+            Ok(Err(e)) => {
+                return JsonRpcResponse::error(id.clone(), ERR_INTERNAL, format!("{e:#}"));
+            }
+            Err(e) => {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INTERNAL,
+                    format!("Git task panicked: {e}"),
+                );
+            }
+        }
+    };
+
+    // Store the review in the database.
+    let reviewed_at = {
+        let db_guard = db.lock().await;
+        match db_guard.store_review(&merge_base, &ctx.head_ref, &file_path, &diff_hash) {
+            Ok(review) => review.reviewed_at,
+            Err(e) => {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INTERNAL,
+                    format!("Failed to store review: {e:#}"),
+                );
+            }
+        }
+    };
+
+    // Broadcast notification.
+    let _ = notify_tx.send(notify::Notification {
+        base_ref: merge_base,
+        head_ref: ctx.head_ref.clone(),
+        kind: notify::NotificationKind::ReviewChanged {
+            file_path: file_path.clone(),
+        },
+    });
+
+    let result = model::ReviewActionResult {
+        file_path,
+        status: model::ReviewStatus::Reviewed { at: reviewed_at },
+    };
+
+    match serde_json::to_value(result) {
+        Ok(v) => JsonRpcResponse::success(id.clone(), v),
+        Err(e) => JsonRpcResponse::error(
+            id.clone(),
+            ERR_INTERNAL,
+            format!("Serialization error: {e}"),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// unmark_reviewed
+// ---------------------------------------------------------------------------
+
+pub async fn handle_unmark_reviewed(
+    params: &serde_json::Value,
+    id: &serde_json::Value,
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    notify_tx: &broadcast::Sender<notify::Notification>,
+) -> JsonRpcResponse {
+    let p: model::UnmarkReviewedParams = match serde_json::from_value(params.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INVALID_PARAMS,
+                format!("Invalid params: {e}"),
+            );
+        }
+    };
+
+    // Remove the review from the database.
+    {
+        let db_guard = db.lock().await;
+        if let Err(e) = db_guard.remove_review(&ctx.merge_base, &ctx.head_ref, &p.file_path) {
+            return JsonRpcResponse::error(
+                id.clone(),
+                ERR_INTERNAL,
+                format!("Failed to remove review: {e:#}"),
+            );
+        }
+    }
+
+    // Broadcast notification.
+    let _ = notify_tx.send(notify::Notification {
+        base_ref: ctx.merge_base.clone(),
+        head_ref: ctx.head_ref.clone(),
+        kind: notify::NotificationKind::ReviewChanged {
+            file_path: p.file_path.clone(),
+        },
+    });
+
+    let result = model::ReviewActionResult {
+        file_path: p.file_path,
+        status: model::ReviewStatus::Unreviewed,
+    };
+
+    match serde_json::to_value(result) {
+        Ok(v) => JsonRpcResponse::success(id.clone(), v),
+        Err(e) => JsonRpcResponse::error(
+            id.clone(),
+            ERR_INTERNAL,
+            format!("Serialization error: {e}"),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// reset_reviews
+// ---------------------------------------------------------------------------
+
+pub async fn handle_reset_reviews(
+    id: &serde_json::Value,
+    ctx: &ConnectionContext,
+    db: &Arc<Mutex<Database>>,
+    notify_tx: &broadcast::Sender<notify::Notification>,
+) -> JsonRpcResponse {
+    let cleared = {
+        let db_guard = db.lock().await;
+        match db_guard.clear_reviews(&ctx.merge_base, &ctx.head_ref) {
+            Ok(n) => n,
+            Err(e) => {
+                return JsonRpcResponse::error(
+                    id.clone(),
+                    ERR_INTERNAL,
+                    format!("Failed to clear reviews: {e:#}"),
+                );
+            }
+        }
+    };
+
+    // Broadcast notification.
+    let _ = notify_tx.send(notify::Notification {
+        base_ref: ctx.merge_base.clone(),
+        head_ref: ctx.head_ref.clone(),
+        kind: notify::NotificationKind::ReviewsCleared,
+    });
+
+    let result = model::ResetReviewsResult { cleared };
+
+    match serde_json::to_value(result) {
+        Ok(v) => JsonRpcResponse::success(id.clone(), v),
+        Err(e) => JsonRpcResponse::error(
+            id.clone(),
+            ERR_INTERNAL,
+            format!("Serialization error: {e}"),
         ),
     }
 }

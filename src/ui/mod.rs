@@ -7,24 +7,27 @@
 pub mod comments;
 pub mod diff_view;
 pub mod file_list;
+pub mod word_diff;
 
 use std::time::Duration;
 
 use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::AppState;
+use crate::config::{PanelStyle, StyleConfig};
 use crate::git;
 use crate::model::ReviewStatus;
 
-/// File list pane width as a percentage of terminal width.
-const FILE_LIST_PCT: u16 = 30;
-
 /// Draw the entire UI for the current state.
 pub fn draw(frame: &mut Frame, state: &mut AppState) {
+    // Fill the entire frame with the application background color.
+    let bg_style = Style::default().bg(*state.styles.bg);
+    frame.render_widget(Block::default().style(bg_style), frame.area());
+
     // Split into main area + status bar.
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -39,10 +42,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) {
         (true, true) => {
             let panes = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Percentage(FILE_LIST_PCT),
-                    Constraint::Percentage(100 - FILE_LIST_PCT),
-                ])
+                .constraints([Constraint::Max(state.file_list_width), Constraint::Min(1)])
                 .split(main_area);
             state.file_list_area = panes[0];
             state.diff_area = panes[1];
@@ -69,12 +69,12 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) {
 
     // Render mouse selection highlight on top of everything.
     if let Some(sel) = &state.mouse_selection {
-        draw_selection_highlight(frame, sel);
+        draw_selection_highlight(frame, sel, &state.styles, state.diff_gutter_cols);
     }
 
     // Help overlay on top of everything else.
     if state.show_help {
-        draw_help_overlay(frame);
+        draw_help_overlay(frame, &state.styles);
     }
 }
 
@@ -82,7 +82,12 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) {
 // Selection highlight
 // ---------------------------------------------------------------------------
 
-fn draw_selection_highlight(frame: &mut Frame, sel: &crate::app::MouseSelection) {
+fn draw_selection_highlight(
+    frame: &mut Frame,
+    sel: &crate::app::MouseSelection,
+    styles: &StyleConfig,
+    diff_gutter_cols: usize,
+) {
     let area = sel.pane_area;
     // Inner area excludes borders.
     let inner = Rect {
@@ -92,9 +97,19 @@ fn draw_selection_highlight(frame: &mut Frame, sel: &crate::app::MouseSelection)
         height: area.height.saturating_sub(2),
     };
 
+    // In the diff pane, skip past the line-number gutters so the selection
+    // only covers the code content (prefix + text).
+    let content_left = if sel.pane == crate::model::PaneFocus::Diff && diff_gutter_cols > 0 {
+        inner.x + diff_gutter_cols as u16
+    } else {
+        inner.x
+    };
+
     let (start_col, start_row, end_col, end_row) = sel.normalized();
 
-    let highlight = Style::default().bg(Color::Indexed(238)).fg(Color::White);
+    let highlight = Style::default()
+        .bg(*styles.selection.bg)
+        .fg(*styles.selection.fg);
 
     let buf = frame.buffer_mut();
     for row in start_row..=end_row {
@@ -103,15 +118,19 @@ fn draw_selection_highlight(frame: &mut Frame, sel: &crate::app::MouseSelection)
         }
 
         let col_start = if row == start_row {
-            start_col.max(inner.x)
+            start_col.max(content_left)
         } else {
-            inner.x
+            content_left
         };
         let col_end = if row == end_row {
             end_col.min(inner.right().saturating_sub(1))
         } else {
             inner.right().saturating_sub(1)
         };
+
+        if col_start > col_end {
+            continue;
+        }
 
         for col in col_start..=col_end {
             if let Some(cell) = buf.cell_mut(Position { x: col, y: row }) {
@@ -129,6 +148,8 @@ fn draw_selection_highlight(frame: &mut Frame, sel: &crate::app::MouseSelection)
 const STATUS_MSG_TIMEOUT: Duration = Duration::from_secs(3);
 
 fn draw_status_bar(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    let ss = &state.styles.status;
+
     // Expire old status messages.
     if let Some((_, when)) = &state.status_message {
         if when.elapsed() > STATUS_MSG_TIMEOUT {
@@ -155,7 +176,7 @@ fn draw_status_bar(frame: &mut Frame, state: &mut AppState, area: Rect) {
         if msg.contains("Ctrl-C") {
             let bar = format!(" {msg} ");
             let status =
-                Paragraph::new(bar).style(Style::default().bg(Color::Red).fg(Color::White));
+                Paragraph::new(bar).style(Style::default().bg(*ss.warning_bg).fg(*ss.warning_fg));
             frame.render_widget(status, area);
             return;
         }
@@ -165,16 +186,16 @@ fn draw_status_bar(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let (right, right_style) = if let Some((msg, _)) = &state.status_message {
         (
             format!(" {msg} "),
-            Style::default().bg(Color::Yellow).fg(Color::Black),
+            Style::default().bg(*ss.message_bg).fg(*ss.message_fg),
         )
     } else {
         (
             " ? help ".to_string(),
-            Style::default().bg(Color::DarkGray).fg(Color::Gray),
+            Style::default().bg(*ss.hint_bg).fg(*ss.hint_fg),
         )
     };
 
-    let bar_style = Style::default().bg(Color::DarkGray).fg(Color::White);
+    let bar_style = Style::default().bg(*ss.bar_bg).fg(*ss.bar_fg);
 
     // Split the status bar into left and right sections.
     let right_width = right.len() as u16;
@@ -199,12 +220,13 @@ fn draw_status_bar(frame: &mut Frame, state: &mut AppState, area: Rect) {
 // Help overlay
 // ---------------------------------------------------------------------------
 
-fn draw_help_overlay(frame: &mut Frame) {
+fn draw_help_overlay(frame: &mut Frame, styles: &StyleConfig) {
+    let hs = &styles.help;
     let area = frame.area();
 
     // Center the help box, capped at reasonable dimensions.
     let help_width = 56u16.min(area.width.saturating_sub(4));
-    let help_height = 28u16.min(area.height.saturating_sub(2));
+    let help_height = 34u16.min(area.height.saturating_sub(2));
     let x = (area.width.saturating_sub(help_width)) / 2;
     let y = (area.height.saturating_sub(help_height)) / 2;
     let help_area = Rect::new(x, y, help_width, help_height);
@@ -214,7 +236,7 @@ fn draw_help_overlay(frame: &mut Frame) {
     for row in area.y..area.bottom() {
         for col in area.x..area.right() {
             if let Some(cell) = buf.cell_mut(Position { x: col, y: row }) {
-                cell.set_style(Style::default().fg(Color::DarkGray));
+                cell.set_style(Style::default().fg(*hs.dim_fg));
             }
         }
     }
@@ -223,7 +245,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         Line::from(Span::styled(
             " Keyboard Shortcuts ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(*hs.border_fg)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -236,34 +258,29 @@ fn draw_help_overlay(frame: &mut Frame) {
         Line::from("  Tab           Switch pane focus"),
         Line::from("  Ctrl-n / p    Next / previous file"),
         Line::from("  Ctrl-w h/l    Focus left / right pane"),
-        Line::from("  s             Cycle: diff / HEAD / base"),
-        Line::from("  Ctrl-i / o    Next / previous diff hunk"),
-        Line::from("  1 / 2         Toggle file list / diff pane"),
-        Line::from("  Ctrl-c        Press twice to quit"),
-        Line::from(""),
-        Line::from(Span::styled(
-            " File List",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from("  j / k         Move down / up"),
-        Line::from("  g / G         First / last file"),
-        Line::from("  Enter         Focus diff pane"),
-        Line::from(""),
-        Line::from(Span::styled(
-            " Diff View",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from("  j / k         Scroll down / up"),
+        Line::from("  j / k         Scroll diff down / up"),
         Line::from("  Space / Ctrl-b Page down / up"),
         Line::from("  Ctrl-d / u    Half page down / up"),
-        Line::from("  g / G         Top / bottom"),
-        Line::from("  Enter         Expand reviewed file diff"),
+        Line::from("  g / G         Top / bottom of diff"),
+        Line::from("  ] / [         Next / previous diff hunk"),
+        Line::from("  r             Toggle reviewed / unreviewed"),
+        Line::from("  i             Toggle inline / side-by-side"),
+        Line::from("  s             Cycle: diff / HEAD / base"),
+        Line::from("  d             Cycle diff algorithm"),
+        Line::from("  w             Toggle ignore whitespace"),
+        Line::from("  b             Toggle blame annotations"),
+        Line::from("  1 / 2         Toggle file list / diff pane"),
+        Line::from("  Ctrl-c        Press twice to quit"),
+        Line::from("  Enter         Expand reviewed / focus diff"),
         Line::from(""),
         Line::from(Span::styled(
             " Mouse",
             Style::default().add_modifier(Modifier::BOLD),
         )),
+        Line::from("  Click         Select file / set focus"),
+        Line::from("  Double-click  Select word (auto-copy)"),
         Line::from("  Drag          Select text (auto-copy)"),
+        Line::from("  Drag border   Resize file list pane"),
         Line::from("  Scroll        Scroll diff pane"),
     ];
 
@@ -274,11 +291,11 @@ fn draw_help_overlay(frame: &mut Frame) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
+                .border_style(Style::default().fg(*hs.border_fg))
                 .title(" Help ")
                 .title_bottom(" ? / q / Esc to close "),
         )
-        .style(Style::default().fg(Color::White).bg(Color::Black));
+        .style(Style::default().fg(*hs.text_fg).bg(*hs.bg));
 
     frame.render_widget(help, help_area);
 }
@@ -287,10 +304,10 @@ fn draw_help_overlay(frame: &mut Frame) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn pane_border_style(focused: bool) -> Style {
+pub fn pane_border_style(panel: &PanelStyle, focused: bool) -> Style {
     if focused {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(*panel.focused_fg)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(*panel.unfocused_fg)
     }
 }

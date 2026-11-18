@@ -276,6 +276,47 @@ async fn handle_connection(stream: UnixStream, state: Arc<ServerState>) -> Resul
     let mut conn_ctx: Option<ConnectionContext> = None;
     let mut conn_db: Option<Arc<Mutex<Database>>> = None;
 
+    // Subscribe to broadcast notifications. We subscribe early so we
+    // don't miss notifications sent between init and the first read.
+    let mut notify_rx = state.notify_tx.subscribe();
+    let notify_writer = Arc::clone(&writer);
+
+    // Token to cancel the notification forwarder when the connection ends.
+    let notify_cancel = CancellationToken::new();
+    let notify_cancel_clone = notify_cancel.clone();
+
+    // Spawn a task that forwards broadcast notifications to this client.
+    let notify_handle = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                result = notify_rx.recv() => {
+                    match result {
+                        Ok(notification) => {
+                            let msg = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "method": "notification",
+                                "params": notification,
+                            });
+                            let mut json = match serde_json::to_string(&msg) {
+                                Ok(j) => j,
+                                Err(_) => continue,
+                            };
+                            json.push('\n');
+                            let mut w = notify_writer.lock().await;
+                            if w.write_all(json.as_bytes()).await.is_err() {
+                                break;
+                            }
+                            let _ = w.flush().await;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+                _ = notify_cancel_clone.cancelled() => break,
+            }
+        }
+    });
+
     let mut line = String::new();
     loop {
         line.clear();
@@ -316,6 +357,10 @@ async fn handle_connection(stream: UnixStream, state: Arc<ServerState>) -> Resul
         let response = dispatch(&request, &id, &state, &mut conn_ctx, &mut conn_db).await;
         send_response(&writer, &response).await?;
     }
+
+    // Stop the notification forwarder.
+    notify_cancel.cancel();
+    let _ = notify_handle.await;
 
     Ok(())
 }
@@ -428,10 +473,22 @@ async fn dispatch(
             let ctx = conn_ctx.as_ref().unwrap();
             api::handle_get_file_diff(&request.params, id, ctx).await
         }
+        Method::MarkReviewed => {
+            let ctx = conn_ctx.as_ref().unwrap();
+            let db = conn_db.as_ref().unwrap();
+            api::handle_mark_reviewed(&request.params, id, ctx, db, &state.notify_tx).await
+        }
+        Method::UnmarkReviewed => {
+            let ctx = conn_ctx.as_ref().unwrap();
+            let db = conn_db.as_ref().unwrap();
+            api::handle_unmark_reviewed(&request.params, id, ctx, db, &state.notify_tx).await
+        }
+        Method::ResetReviews => {
+            let ctx = conn_ctx.as_ref().unwrap();
+            let db = conn_db.as_ref().unwrap();
+            api::handle_reset_reviews(id, ctx, db, &state.notify_tx).await
+        }
         Method::GetFileContent
-        | Method::MarkReviewed
-        | Method::UnmarkReviewed
-        | Method::ResetReviews
         | Method::CreateComment
         | Method::ListComments
         | Method::GetComment
