@@ -31,15 +31,18 @@ requirement for both TUI display and MCP consumers.
 
 ## Anchor Storage Model
 
-Comments use two tables plus a view:
+Comments use three tables plus a view:
 
 - `comments`: stable logical comment (id, scope, file_path, body,
-  resolved, timestamps).
+  timestamps).
 - `anchor_versions`: append-only. Each row captures a specific
   attachment at a point in time:
   `file_blob_sha`, line/char ranges, `anchor_text`,
   `context_before`/`context_after`, and the `AnchorStatus` at that
   time.
+- `comment_resolution_events`: append-only resolution records. A
+  comment is treated as resolved when the current resolution query finds
+  a matching event.
 - `v_current_anchors`: a view that selects the latest version per
   comment by `created_at`, using `id` as a tie-breaker when versions
   share the same timestamp.
@@ -50,7 +53,7 @@ Creation records the first `anchor_versions` row using the exact
 Re-anchoring (unresolved comments only) computes against current file
 content and `INSERT`s a new version row with fresh context; the view
 automatically reflects the latest. Resolved comments are never
-re-anchored — their last version remains the historical record.
+re-anchored; their last version remains the historical record.
 
 ### Schema (point form)
 
@@ -59,7 +62,6 @@ re-anchored — their last version remains the historical record.
   - `merge_base`, `head_ref`
   - `file_path`
   - `body`
-  - `resolved` (bool)
   - `created_at`, `updated_at`
 
 - `anchor_versions` table
@@ -72,8 +74,17 @@ re-anchored — their last version remains the historical record.
   - `status` (Anchored / Shifted / Approximate / Orphaned)
   - `created_at`
 
+- `comment_resolution_events` table
+  - `id` (PK, AUTOINCREMENT)
+  - `comment_id` (FK -> `comments.id`)
+  - `resolved_at`
+  - `resolved_commit`, `resolved_head_ref`, `resolved_merge_base`
+  - anchor snapshot fields for the resolved location
+
 - Index
   - Covering index on `anchor_versions(comment_id, created_at, id)`
+  - Covering index on
+    `comment_resolution_events(comment_id, resolved_at, id)`
 
 ## Design Decisions
 
@@ -91,6 +102,9 @@ re-anchored — their last version remains the historical record.
   guarantees that future re-anchoring runs start from the most
   recent known-good text, avoiding drift from stale original
   context. Resolved comments keep their historical snapshot forever.
+- Resolution is not stored as a mutable boolean on `comments`. It is
+  derived from `comment_resolution_events` so later work can make the
+  query range-aware across rebases and branch histories.
 - The four-step matcher and the decision to persist a new version on
   success (Anchored/Shifted/Approximate) are the only server-side
   logic required; the TUI and MCP layers simply read from the view.
@@ -113,8 +127,9 @@ re-anchored — their last version remains the historical record.
 3. The returned Comment objects carry the appropriate AnchorStatus and
    (where possible) updated line/character ranges.
 
-4. Resolved comments bypass re-anchoring entirely and retain their
-   stored location and "resolved" status.
+4. Comments treated as resolved by the resolution-event query bypass
+   re-anchoring entirely and retain their stored location and resolved
+   status.
 
 5. Re-anchoring must not silently lose comments; orphaned unresolved
    comments must still be returned with Orphaned status and their
@@ -169,6 +184,8 @@ re-anchored — their last version remains the historical record.
   append-only `anchor_versions`.
 - Added the `v_current_anchors` latest-anchor projection and migrated
   old inline-anchor comment tables when detected.
+- Added `comment_resolution_events`, migrated old resolved flags into
+  event rows, and removed `comments.resolved` from the current schema.
 - Added versioned SQL migrations under `migrations/`, included by
   `src/db.rs`, with legacy schema bootstrapping for existing DBs.
 - Creation now writes the initial anchor version with a worktree
