@@ -38,11 +38,10 @@ impl Tui {
     /// Create a terminal runtime for an already-loaded app.
     pub fn new(app: App) -> Result<Self> {
         let terminal = setup_terminal().context("Failed to set up terminal")?;
-        let file_list_width = app.config.layout.file_list_width;
 
         Ok(Self {
             app,
-            tui_state: TuiState::new(file_list_width),
+            tui_state: TuiState::new(),
             terminal,
         })
     }
@@ -231,24 +230,14 @@ impl Tui {
 
     /// Check if a mouse column is on the border between file list and diff panes.
     fn is_on_pane_border(&self, col: u16, row: u16) -> bool {
-        if !self.tui_state.show_file_list || !self.tui_state.show_diff_pane {
+        let model = self.app.model();
+        if !model.layout.file_list_visible || !model.layout.diff_visible {
             return false;
         }
         let border_col = self.tui_state.file_list_area.right().saturating_sub(1);
         col == border_col
             && row >= self.tui_state.file_list_area.y
             && row < self.tui_state.file_list_area.bottom()
-    }
-
-    /// Persist the current file list width to the config file.
-    fn save_file_list_width(&self) {
-        if let Some(path) = self.app.config_path() {
-            let layout = crate::config::LayoutConfig {
-                file_list_width: self.tui_state.file_list_width,
-                diff_algorithm: Some(self.app.state.diff_algorithm),
-            };
-            crate::config::save_layout(path, &layout);
-        }
     }
 
     /// Handle mouse events: selection, scroll wheel, border drag.
@@ -322,7 +311,7 @@ impl Tui {
                                 + self.tui_state.diff_area.width
                                 - 20;
                             let new_width = (mouse.column + 1).clamp(min_w, max_w);
-                            self.tui_state.file_list_width = new_width;
+                            self.app.set_file_list_width(new_width);
                             return;
                         }
                         let drag_content_hit = semantic_content_hit.or_else(|| {
@@ -362,7 +351,6 @@ impl Tui {
                     MouseEventKind::Up(MouseButton::Left) => {
                         if self.tui_state.dragging_border {
                             self.tui_state.dragging_border = false;
-                            self.save_file_list_width();
                             return;
                         }
                         self.tui_state.mouse_down_anchor = None;
@@ -436,8 +424,15 @@ impl Tui {
     /// Double-click in the file list: copy the full file path to the clipboard.
     fn copy_file_path_at(&mut self, row: usize) {
         if let Some(&Some(file_idx)) = self.tui_state.file_list_row_to_file.get(row) {
-            if let Some(entry) = self.app.state.files.get(file_idx) {
-                let path = &entry.change.path;
+            let model = self.app.model();
+            let path = model
+                .file_list
+                .sections
+                .iter()
+                .flat_map(|section| section.rows.iter())
+                .find(|row| row.file_index == file_idx)
+                .map(|row| row.path.as_str());
+            if let Some(path) = path {
                 copy_to_clipboard(path);
                 self.tui_state.set_status_message(format!("Copied: {path}"));
             }

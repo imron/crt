@@ -214,7 +214,14 @@ pub(super) fn apply_core_effects(
             CoreEffect::PopJumpStack => {
                 pop_jump_stack(state, view, &mut update);
             }
-            CoreEffect::TogglePaneFocus | CoreEffect::TogglePaneVisibility(_) => {}
+            CoreEffect::TogglePaneFocus => {
+                toggle_pane_focus(state);
+                update.clear_status();
+            }
+            CoreEffect::TogglePaneVisibility(pane) => {
+                toggle_pane_visibility(state, pane);
+                update.clear_status();
+            }
             CoreEffect::ToggleInlineDiff => {
                 toggle_inline_diff(state, &mut update);
             }
@@ -591,7 +598,11 @@ fn apply_diff_cursor_effect(
 
 fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
     match effect {
-        PaneEffect::ActivateFileListSelection => {}
+        PaneEffect::ActivateFileListSelection => {
+            if state.show_diff_pane {
+                state.pane_focus = PaneFocus::Diff;
+            }
+        }
         PaneEffect::ActivateDiffSelection => {
             if let Some(entry) = state.selected_file_entry() {
                 if matches!(entry.status, ReviewStatus::Reviewed { .. })
@@ -610,6 +621,42 @@ fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
                 }
             }
         }
+    }
+}
+
+fn toggle_pane_focus(state: &mut AppState) {
+    if state.show_file_list && state.show_diff_pane {
+        state.pane_focus = match state.pane_focus {
+            PaneFocus::FileList => PaneFocus::Diff,
+            PaneFocus::Diff => PaneFocus::FileList,
+        };
+    }
+}
+
+/// Toggle visibility of a pane. At least one pane must remain visible.
+fn toggle_pane_visibility(state: &mut AppState, pane: PaneId) {
+    match pane {
+        PaneId::FileList => {
+            if state.show_file_list {
+                if state.show_diff_pane {
+                    state.show_file_list = false;
+                    state.pane_focus = PaneFocus::Diff;
+                }
+            } else {
+                state.show_file_list = true;
+            }
+        }
+        PaneId::Diff => {
+            if state.show_diff_pane {
+                if state.show_file_list {
+                    state.show_diff_pane = false;
+                    state.pane_focus = PaneFocus::FileList;
+                }
+            } else {
+                state.show_diff_pane = true;
+            }
+        }
+        _ => {}
     }
 }
 
