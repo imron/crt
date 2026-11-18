@@ -122,7 +122,7 @@ impl App {
                 head_ref: init.head_ref,
                 cleared: result.cleared,
             };
-            drop(client);
+            client.shutdown().await;
             return Ok(ReviewStartup::Reset(summary));
         }
 
@@ -147,7 +147,9 @@ impl App {
     }
 
     pub async fn shutdown(mut self) {
-        self.client.take();
+        if let Some(client) = self.client.take() {
+            client.shutdown().await;
+        }
     }
 
     fn config_path(&self) -> Option<&PathBuf> {
@@ -228,6 +230,9 @@ impl App {
     pub async fn process_background_work(&mut self) -> Option<StatusUpdate> {
         let mut status = self.process_pending_work().await;
 
+        // Consume connection events emitted by foreground requests handled in
+        // the previous tick, such as a failed review/search call entering
+        // Reconnecting state.
         if let Some(connection_status) = self.process_connection_events().await {
             status = Some(connection_status);
         }
@@ -240,6 +245,9 @@ impl App {
             status = Some(notification_status);
         }
 
+        // Reconnect may emit Reconnected during this tick. Process it before
+        // returning so the snapshot resync happens before steady-state
+        // notification handling continues on the next tick.
         if let Some(connection_status) = self.process_connection_events().await {
             status = Some(connection_status);
         }

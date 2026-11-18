@@ -43,7 +43,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     reset: bool,
 
-    /// Run in standalone mode (in-process server, no socket)
+    /// Run with a private embedded server socket
     #[arg(long, global = true)]
     standalone: bool,
 }
