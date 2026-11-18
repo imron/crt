@@ -122,12 +122,7 @@ impl Tui {
         });
 
         loop {
-            // Render current state.
-            let state = &mut self.app.state;
-            let styles = &self.app.config.style;
-            let tui_state = &mut self.tui_state;
-            self.terminal
-                .draw(|frame| render::draw(frame, state, tui_state, styles))?;
+            self.render_current_frame()?;
 
             // Wait for the next terminal event, with a timeout so that
             // transient status messages get cleared by re-rendering.
@@ -226,15 +221,24 @@ impl Tui {
         apply_core_effects(&mut self.app.state, &mut self.tui_state, effects)
     }
 
+    fn render_current_frame(&mut self) -> Result<()> {
+        let model = self.app.model();
+        let styles = &self.app.config.style;
+        let tui_state = &mut self.tui_state;
+        self.terminal
+            .draw(|frame| render::draw(frame, &model, tui_state, styles))?;
+        self.tui_state.clamp_cursor_and_scroll(&mut self.app.state);
+        self.tui_state.clamp_file_list_scroll(&mut self.app.state);
+        Ok(())
+    }
+
     fn core_effects_for_input(&mut self, dispatch: CoreInputDispatch) -> Vec<CoreEffect> {
         let (event, context) = match dispatch {
             CoreInputDispatch::Interaction(event) => (event, self.interaction_context()),
-            CoreInputDispatch::PromptSubmit(event) => {
-                (
-                    event,
-                    app_update::prompt_submit_context(&self.app.state, &self.tui_state),
-                )
-            }
+            CoreInputDispatch::PromptSubmit(event) => (
+                event,
+                app_update::prompt_submit_context(&self.app.state, &self.tui_state),
+            ),
             CoreInputDispatch::PromptCancel(event) => (event, InteractionContext::default()),
         };
         self.app
@@ -467,12 +471,7 @@ impl Tui {
             Command::SearchAll { pattern } => {
                 self.tui_state.set_status_message("Searching...");
                 // Force a re-render so the user sees the searching message.
-                let state = &mut self.app.state;
-                let styles = &self.app.config.style;
-                let tui_state = &mut self.tui_state;
-                let _ = self
-                    .terminal
-                    .draw(|frame| render::draw(frame, state, tui_state, styles));
+                let _ = self.render_current_frame();
 
                 match self.client.search_codebase(&pattern, "all").await {
                     Ok(result) => match core_search::search_outcome(&pattern, false, result) {
@@ -503,12 +502,7 @@ impl Tui {
             }
             Command::SearchDiff { pattern } => {
                 self.tui_state.set_status_message("Searching diff files...");
-                let state = &mut self.app.state;
-                let styles = &self.app.config.style;
-                let tui_state = &mut self.tui_state;
-                let _ = self
-                    .terminal
-                    .draw(|frame| render::draw(frame, state, tui_state, styles));
+                let _ = self.render_current_frame();
 
                 match self.client.search_codebase(&pattern, "diff").await {
                     Ok(result) => match core_search::search_outcome(&pattern, true, result) {
@@ -539,12 +533,7 @@ impl Tui {
             }
             Command::FindDefinition { symbol } => {
                 self.tui_state.set_status_message("Finding definition...");
-                let state = &mut self.app.state;
-                let styles = &self.app.config.style;
-                let tui_state = &mut self.tui_state;
-                let _ = self
-                    .terminal
-                    .draw(|frame| render::draw(frame, state, tui_state, styles));
+                let _ = self.render_current_frame();
 
                 let context_file = self
                     .app
@@ -836,7 +825,10 @@ fn push_jump_stack_from_tui(state: &mut AppState) {
 /// Extract the selected text from the rendered content stored in TUI state.
 fn extract_selected_text(tui_state: &TuiState, sel: &MouseSelection) -> String {
     let (text, base_col) = match sel.pane {
-        PaneFocus::Diff => (&tui_state.diff_rendered_text, tui_state.diff_content_start_col()),
+        PaneFocus::Diff => (
+            &tui_state.diff_rendered_text,
+            tui_state.diff_content_start_col(),
+        ),
         PaneFocus::FileList => (&tui_state.file_list_rendered_text, 0),
     };
 
@@ -1013,7 +1005,10 @@ mod tests {
             word_selected: false,
         };
 
-        assert_eq!(extract_selected_text(&tui_state, &sel), "first line\nsecond");
+        assert_eq!(
+            extract_selected_text(&tui_state, &sel),
+            "first line\nsecond"
+        );
     }
 
     #[test]

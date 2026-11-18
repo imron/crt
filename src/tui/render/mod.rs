@@ -17,18 +17,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use super::state::{InputMode, TuiState};
-use crate::app::AppState;
+use crate::app::model::{AppModel, ReviewStatusModel};
 use crate::config::{PanelStyle, StyleConfig};
 use crate::git;
-use crate::model::ReviewStatus;
 
 /// Draw the entire UI for the current state.
-pub fn draw(
-    frame: &mut Frame,
-    state: &mut AppState,
-    tui_state: &mut TuiState,
-    styles: &StyleConfig,
-) {
+pub fn draw(frame: &mut Frame, model: &AppModel, tui_state: &mut TuiState, styles: &StyleConfig) {
     // Fill the entire frame with the application background color.
     let bg_style = Style::default().bg(*styles.bg);
     frame.render_widget(Block::default().style(bg_style), frame.area());
@@ -54,18 +48,18 @@ pub fn draw(
                 .split(main_area);
             tui_state.file_list_area = panes[0];
             tui_state.diff_area = panes[1];
-            file_list::draw(frame, state, tui_state, styles, panes[0]);
-            diff_view::draw(frame, state, tui_state, styles, panes[1]);
+            file_list::draw(frame, model, tui_state, styles, panes[0]);
+            diff_view::draw(frame, model, tui_state, styles, panes[1]);
         }
         (true, false) => {
             tui_state.file_list_area = main_area;
             tui_state.diff_area = Rect::default();
-            file_list::draw(frame, state, tui_state, styles, main_area);
+            file_list::draw(frame, model, tui_state, styles, main_area);
         }
         (false, true) => {
             tui_state.file_list_area = Rect::default();
             tui_state.diff_area = main_area;
-            diff_view::draw(frame, state, tui_state, styles, main_area);
+            diff_view::draw(frame, model, tui_state, styles, main_area);
         }
         (false, false) => {
             // Should never happen — toggle logic prevents it.
@@ -82,13 +76,13 @@ pub fn draw(
             draw_diff_search_input(frame, tui_state, styles, status_area);
         }
         InputMode::Normal => {
-            draw_status_bar(frame, state, tui_state, styles, status_area);
+            draw_status_bar(frame, model, tui_state, styles, status_area);
         }
     }
 
     // Render mouse selection highlight on top of everything.
     if tui_state.mouse_selection.is_some() {
-        draw_selection_highlight(frame, state, tui_state, styles);
+        draw_selection_highlight(frame, model, tui_state, styles);
     }
 
     // Search results overlay.
@@ -113,7 +107,7 @@ pub fn draw(
 
 fn draw_selection_highlight(
     frame: &mut Frame,
-    state: &AppState,
+    model: &AppModel,
     tui_state: &TuiState,
     styles: &StyleConfig,
 ) {
@@ -134,8 +128,8 @@ fn draw_selection_highlight(
     };
 
     let (scroll, base_col) = match sel.pane {
-        crate::model::PaneFocus::FileList => (state.file_list_scroll, 0usize),
-        crate::model::PaneFocus::Diff => (state.diff_scroll, tui_state.diff_content_start_col()),
+        crate::model::PaneFocus::FileList => (model.file_list.scroll, 0usize),
+        crate::model::PaneFocus::Diff => (model.diff.scroll, tui_state.diff_content_start_col()),
     };
 
     let visible_start_line = scroll;
@@ -197,7 +191,7 @@ const STATUS_MSG_TIMEOUT: Duration = Duration::from_secs(3);
 
 fn draw_status_bar(
     frame: &mut Frame,
-    state: &AppState,
+    model: &AppModel,
     tui_state: &mut TuiState,
     styles: &StyleConfig,
     area: Rect,
@@ -207,18 +201,20 @@ fn draw_status_bar(
 
     let ss = &styles.status;
 
-    let reviewed_count = state
-        .files
+    let reviewed_count = model
+        .file_list
+        .sections
         .iter()
-        .filter(|f| matches!(f.status, ReviewStatus::Reviewed { .. }))
+        .flat_map(|section| &section.rows)
+        .filter(|row| matches!(row.review_status, ReviewStatusModel::Reviewed { .. }))
         .count();
-    let total = state.files.len();
+    let total = model.file_list_row_count();
 
     let left = format!(
         " {} \u{2192} {} \u{2192} {} | {reviewed_count}/{total} reviewed",
-        state.context.base_ref,
-        git::short_hash(&state.context.merge_base),
-        state.context.head_ref,
+        model.context.base_ref,
+        git::short_hash(&model.context.merge_base),
+        model.context.head_ref,
     );
 
     // Ctrl-C warning takes over the full bar.

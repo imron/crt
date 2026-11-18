@@ -75,6 +75,9 @@ toolkit widgets.
   hunk row maps, gutter measurements, and file row hit maps now live in
   `TuiState`, with `app_update` using a temporary view trait until later
   AppModel slices remove the render-derived dependency.
+- Converted TUI rendering to consume `AppModel` for app content. The renderer
+  now updates only TUI-owned render caches; viewport-dependent app scroll
+  clamping happens in the TUI runtime after rendering.
 
 ## Resolved Decisions
 

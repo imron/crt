@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use super::render::diff_view::DiffCache;
 use crate::app::AppState;
 use crate::app_update::{AppUpdate, AppView, StatusUpdate};
-use crate::core::{PaneId, PointerSemanticHit, PromptId, TextAnchor};
 use crate::core::command::Command;
+use crate::core::{PaneId, PointerSemanticHit, PromptId, TextAnchor};
 use crate::model::{DefinitionLocation, PaneFocus, SearchMatch};
 use ratatui::layout::Rect;
 
@@ -221,12 +221,12 @@ impl TuiState {
         self.diff_content_height.saturating_sub(1)
     }
 
-    pub fn current_hunk_index(&self, state: &AppState) -> Option<usize> {
+    pub fn current_hunk_index_at(&self, cursor_line: usize) -> Option<usize> {
         self.hunk_start_rows
             .iter()
             .enumerate()
             .rev()
-            .find(|(_, start)| **start <= state.diff_line_cursor)
+            .find(|(_, start)| **start <= cursor_line)
             .map(|(idx, _)| idx)
     }
 
@@ -250,50 +250,28 @@ impl TuiState {
         self.clamp_diff_scroll(state);
     }
 
+    pub fn clamp_file_list_scroll(&self, state: &mut AppState) {
+        let Some(cursor_row) = self
+            .file_list_row_to_file
+            .iter()
+            .position(|file_idx| *file_idx == Some(state.selected_file))
+        else {
+            return;
+        };
+        let inner_height = self.file_list_area.height.saturating_sub(2) as usize;
+        if cursor_row < state.file_list_scroll {
+            state.file_list_scroll = cursor_row;
+        } else if cursor_row >= state.file_list_scroll + inner_height {
+            state.file_list_scroll = cursor_row.saturating_sub(inner_height) + 1;
+        }
+    }
+
     pub fn diff_content_start_col(&self) -> usize {
         if self.diff_gutter_cols > 0 {
             self.diff_gutter_cols + 3
         } else {
             0
         }
-    }
-
-    pub fn recompute_diff_search_matches(&self, state: &mut AppState) -> Option<String> {
-        state.diff_search_matches.clear();
-        state.diff_search_current = 0;
-        let query = match &state.diff_search_query {
-            Some(q) if !q.is_empty() => q.clone(),
-            _ => return None,
-        };
-        let re = match regex::RegexBuilder::new(&query)
-            .case_insensitive(true)
-            .build()
-        {
-            Ok(re) => re,
-            Err(e) => {
-                let msg = e.to_string();
-                let short = msg
-                    .lines()
-                    .next()
-                    .unwrap_or(&msg)
-                    .trim_start_matches("regex parse error:")
-                    .trim();
-                return Some(format!("Invalid regex: {short}"));
-            }
-        };
-        for (row, line) in self.diff_rendered_text.iter().enumerate() {
-            let search_start = self.diff_gutter_cols.min(line.len());
-            let content = &line[search_start..];
-            for m in re.find_iter(content) {
-                if m.start() == m.end() {
-                    continue;
-                }
-                let abs_start = search_start + m.start();
-                let abs_end = search_start + m.end();
-                state.diff_search_matches.push((row, abs_start, abs_end));
-            }
-        }
-        None
     }
 
     pub fn pane_at(&self, col: u16, row: u16) -> Option<PaneFocus> {
