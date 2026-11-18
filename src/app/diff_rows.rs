@@ -408,15 +408,14 @@ fn push_gap_rows(
     base_lines: &[&str],
     head_lines: &[&str],
 ) {
-    while (*old_cursor < hunk_old_start || *new_cursor < hunk_new_start)
-        && (*new_cursor as usize) <= head_lines.len()
-    {
-        rows.push(context_row(
+    while *old_cursor < hunk_old_start || *new_cursor < hunk_new_start {
+        push_context_row(
+            rows,
             (*old_cursor < hunk_old_start).then_some(*old_cursor),
             (*new_cursor < hunk_new_start).then_some(*new_cursor),
             base_lines,
             head_lines,
-        ));
+        );
         if *old_cursor < hunk_old_start {
             *old_cursor = (*old_cursor).saturating_add(1);
         }
@@ -433,15 +432,29 @@ fn push_remaining_rows(
     base_lines: &[&str],
     head_lines: &[&str],
 ) {
-    while (*new_cursor as usize) <= head_lines.len() {
-        rows.push(context_row(
-            Some(*old_cursor),
-            Some(*new_cursor),
-            base_lines,
-            head_lines,
-        ));
-        *old_cursor = (*old_cursor).saturating_add(1);
-        *new_cursor = (*new_cursor).saturating_add(1);
+    while (*old_cursor as usize) <= base_lines.len() || (*new_cursor as usize) <= head_lines.len() {
+        let old_lineno = ((*old_cursor as usize) <= base_lines.len()).then_some(*old_cursor);
+        let new_lineno = ((*new_cursor as usize) <= head_lines.len()).then_some(*new_cursor);
+        push_context_row(rows, old_lineno, new_lineno, base_lines, head_lines);
+        if old_lineno.is_some() {
+            *old_cursor = (*old_cursor).saturating_add(1);
+        }
+        if new_lineno.is_some() {
+            *new_cursor = (*new_cursor).saturating_add(1);
+        }
+    }
+}
+
+fn push_context_row(
+    rows: &mut Vec<SideBySideRow>,
+    old_cursor: Option<u32>,
+    new_cursor: Option<u32>,
+    base_lines: &[&str],
+    head_lines: &[&str],
+) {
+    let row = context_row(old_cursor, new_cursor, base_lines, head_lines);
+    if row.base.is_some() || row.head.is_some() {
+        rows.push(row);
     }
 }
 
@@ -452,23 +465,20 @@ fn context_row(
     head_lines: &[&str],
 ) -> SideBySideRow {
     SideBySideRow {
-        base: old_cursor.map(|lineno| {
-            cell(
-                CommentAnchorSide::Base,
-                lineno,
-                base_lines.get((lineno - 1) as usize).copied().unwrap_or(""),
-                LineKind::Context,
-            )
+        base: old_cursor.and_then(|lineno| {
+            source_line(base_lines, lineno)
+                .map(|content| cell(CommentAnchorSide::Base, lineno, content, LineKind::Context))
         }),
-        head: new_cursor.map(|lineno| {
-            cell(
-                CommentAnchorSide::Head,
-                lineno,
-                head_lines.get((lineno - 1) as usize).copied().unwrap_or(""),
-                LineKind::Context,
-            )
+        head: new_cursor.and_then(|lineno| {
+            source_line(head_lines, lineno)
+                .map(|content| cell(CommentAnchorSide::Head, lineno, content, LineKind::Context))
         }),
     }
+}
+
+fn source_line<'a>(lines: &'a [&str], lineno: u32) -> Option<&'a str> {
+    let index = lineno.checked_sub(1)? as usize;
+    lines.get(index).copied()
 }
 
 fn push_hunk_rows(
@@ -651,5 +661,83 @@ mod tests {
         let head = replacement_tail.head.as_ref().expect("head cell");
         assert_eq!(head.line_number, 28);
         assert_eq!(head.content, "new line two");
+    }
+
+    #[test]
+    fn side_by_side_rows_render_shared_tail_after_offset_hunk() {
+        let mut hunk_lines = vec![
+            diff_line(LineKind::Deletion, "old changed", Some(18), None),
+            diff_line(LineKind::Addition, "new changed", None, Some(20)),
+        ];
+        for offset in 0..8 {
+            let old_lineno = 19 + offset;
+            let new_lineno = 21 + offset;
+            hunk_lines.push(diff_line(
+                LineKind::Context,
+                &format!("context {old_lineno}/{new_lineno}"),
+                Some(old_lineno),
+                Some(new_lineno),
+            ));
+        }
+        hunk_lines.push(diff_line(
+            LineKind::Addition,
+            "new trailing addition",
+            None,
+            Some(29),
+        ));
+        let hunk = DiffHunk {
+            old_start: 18,
+            old_lines: 9,
+            new_start: 20,
+            new_lines: 10,
+            header: "@@ -18,9 +20,10 @@".to_string(),
+            lines: hunk_lines,
+        };
+        let mut base_lines: Vec<String> = (1..=90).map(|n| format!("base {n}")).collect();
+        let mut head_lines: Vec<String> = (1..=93).map(|n| format!("head {n}")).collect();
+        for base_lineno in 27..=90 {
+            let head_lineno = base_lineno + 3;
+            let content = format!("shared tail {base_lineno}/{head_lineno}");
+            base_lines[(base_lineno - 1) as usize] = content.clone();
+            head_lines[(head_lineno - 1) as usize] = content;
+        }
+        let base_content = format!("{}\n", base_lines.join("\n"));
+        let head_content = format!("{}\n", head_lines.join("\n"));
+
+        let layout = side_by_side_diff_rows(&[hunk], Some(&base_content), Some(&head_content));
+
+        let first_tail = layout
+            .rows
+            .iter()
+            .find(|row| {
+                row.base.as_ref().map(|cell| cell.line_number) == Some(27)
+                    && row.head.as_ref().map(|cell| cell.line_number) == Some(30)
+            })
+            .expect("base 27 should be paired with head 30");
+        assert_eq!(
+            first_tail.base.as_ref().map(|cell| cell.content.as_str()),
+            Some("shared tail 27/30")
+        );
+        assert_eq!(
+            first_tail.head.as_ref().map(|cell| cell.content.as_str()),
+            Some("shared tail 27/30")
+        );
+
+        let last_tail = layout
+            .rows
+            .iter()
+            .find(|row| {
+                row.base.as_ref().map(|cell| cell.line_number) == Some(90)
+                    && row.head.as_ref().map(|cell| cell.line_number) == Some(93)
+            })
+            .expect("base 90 should be paired with head 93");
+        assert_eq!(
+            last_tail.base.as_ref().map(|cell| cell.content.as_str()),
+            Some("shared tail 90/93")
+        );
+        assert_eq!(
+            last_tail.head.as_ref().map(|cell| cell.content.as_str()),
+            Some("shared tail 90/93")
+        );
     }
 }

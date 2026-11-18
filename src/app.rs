@@ -1156,9 +1156,7 @@ impl AppState {
 
         self.content_mode = position.content_mode;
         self.render_variant = position.render_variant;
-        if self.content_mode == ContentMode::FullFile
-            && self.render_variant == RenderVariant::BaseVersion
-        {
+        if self.current_view_needs_base_content() {
             self.load_base_content_raw();
         }
         self.diff_scroll = position.diff_scroll;
@@ -1312,10 +1310,8 @@ impl AppState {
         self.load_head_content_raw();
         self.load_blame_raw();
 
-        // Reload base content if we're currently in base view.
-        if self.content_mode == ContentMode::FullFile
-            && self.render_variant == RenderVariant::BaseVersion
-        {
+        // Reload base content if the current view needs it.
+        if self.current_view_needs_base_content() {
             self.load_base_content_raw();
         } else {
             self.base_content = None;
@@ -1336,6 +1332,14 @@ impl AppState {
         self.pending_delete_comment_id = None;
         self.invalidate_diff_search_matches();
         self.mark_model_changed();
+    }
+
+    fn current_view_needs_base_content(&self) -> bool {
+        matches!(
+            (self.content_mode, self.render_variant),
+            (ContentMode::Diff, RenderVariant::SideBySide)
+                | (ContentMode::FullFile, RenderVariant::BaseVersion)
+        )
     }
 
     pub fn invalidate_diff_search_matches(&mut self) {
@@ -1458,6 +1462,38 @@ mod tests {
             base_ref: "main".to_string(),
             head_ref: "feature".to_string(),
             merge_base: "abc123".to_string(),
+        }
+    }
+
+    fn setup_content_repo(path: &str, base_content: &str, head_content: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp repo");
+        run_git(dir.path(), &["init"]);
+        run_git(dir.path(), &["config", "user.email", "test@test.com"]);
+        run_git(dir.path(), &["config", "user.name", "Test"]);
+        let file_path = dir.path().join(path);
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent).expect("create parent dirs");
+        }
+        std::fs::write(&file_path, base_content).expect("write base content");
+        run_git(dir.path(), &["add", "-A"]);
+        run_git(dir.path(), &["commit", "-m", "base"]);
+        run_git(dir.path(), &["tag", "base"]);
+        std::fs::write(&file_path, head_content).expect("write head content");
+        dir
+    }
+
+    fn run_git(path: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .expect("run git");
+        if !out.status.success() {
+            panic!(
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
     }
 
@@ -1624,6 +1660,60 @@ mod tests {
                             new_lineno: Some(28),
                         },
                     ],
+                }],
+                is_binary: false,
+                diff_hash: format!("hash-{path}"),
+            },
+        }
+    }
+
+    fn test_file_with_shared_tail_offset_hunk(path: &str) -> FileEntry {
+        let mut lines = vec![
+            DiffLine {
+                kind: LineKind::Deletion,
+                content: "old changed".to_string(),
+                old_lineno: Some(18),
+                new_lineno: None,
+            },
+            DiffLine {
+                kind: LineKind::Addition,
+                content: "new changed".to_string(),
+                old_lineno: None,
+                new_lineno: Some(20),
+            },
+        ];
+        for offset in 0..8 {
+            let old_lineno = 19 + offset;
+            let new_lineno = 21 + offset;
+            lines.push(DiffLine {
+                kind: LineKind::Context,
+                content: format!("context {old_lineno}/{new_lineno}"),
+                old_lineno: Some(old_lineno),
+                new_lineno: Some(new_lineno),
+            });
+        }
+        lines.push(DiffLine {
+            kind: LineKind::Addition,
+            content: "new trailing addition".to_string(),
+            old_lineno: None,
+            new_lineno: Some(29),
+        });
+
+        FileEntry {
+            change: FileChange {
+                path: path.to_string(),
+                old_path: None,
+                kind: ChangeKind::Modified,
+            },
+            status: ReviewStatus::Unreviewed,
+            diff: DiffContent {
+                hunks: vec![DiffHunk {
+                    old_start: 18,
+                    old_lines: 9,
+                    new_start: 20,
+                    new_lines: 10,
+                    header: "@@ -18,9 +20,10 @@".to_string(),
+                    lines,
                 }],
                 is_binary: false,
                 diff_hash: format!("hash-{path}"),
@@ -2363,6 +2453,62 @@ mod tests {
         app.apply_core_effects(&EmptyViewport, vec![CoreEffect::ToggleInlineDiff]);
 
         assert_eq!(app.state.render_variant, RenderVariant::Inline);
+    }
+
+    #[test]
+    fn side_by_side_toggle_loads_base_content_for_shared_tail_rows() {
+        let path = "src/app/update/comments.rs";
+        let mut base_lines: Vec<String> = (1..=90).map(|n| format!("base {n}")).collect();
+        let mut head_lines: Vec<String> = (1..=93).map(|n| format!("head {n}")).collect();
+        for base_lineno in 27..=90 {
+            let head_lineno = base_lineno + 3;
+            let content = format!("shared tail {base_lineno}/{head_lineno}");
+            base_lines[(base_lineno - 1) as usize] = content.clone();
+            head_lines[(head_lineno - 1) as usize] = content;
+        }
+        let base_content = format!("{}\n", base_lines.join("\n"));
+        let head_content = format!("{}\n", head_lines.join("\n"));
+        let repo = setup_content_repo(path, &base_content, &head_content);
+        let context = ConnectionContext {
+            repo_root: repo.path().to_string_lossy().to_string(),
+            worktree: repo.path().to_string_lossy().to_string(),
+            base_ref: "base".to_string(),
+            head_ref: "HEAD".to_string(),
+            merge_base: "base".to_string(),
+        };
+        let mut app = App::new(
+            Config::default(),
+            context,
+            vec![test_file_with_shared_tail_offset_hunk(path)],
+        );
+
+        app.state.load_head_content();
+        assert!(app.state.head_content.is_some());
+        assert!(app.state.base_content.is_none());
+
+        app.apply_core_effects(&EmptyViewport, vec![CoreEffect::ToggleInlineDiff]);
+
+        assert_eq!(app.state.render_variant, RenderVariant::SideBySide);
+        assert!(app.state.base_content.is_some());
+        let model = app.model();
+        let first_tail = model
+            .diff
+            .side_by_side_rows
+            .rows
+            .iter()
+            .find(|row| {
+                row.base.as_ref().map(|cell| cell.line_number) == Some(27)
+                    && row.head.as_ref().map(|cell| cell.line_number) == Some(30)
+            })
+            .expect("base 27 should be paired with head 30");
+        assert_eq!(
+            first_tail.base.as_ref().map(|cell| cell.content.as_str()),
+            Some("shared tail 27/30")
+        );
+        assert_eq!(
+            first_tail.head.as_ref().map(|cell| cell.content.as_str()),
+            Some("shared tail 27/30")
+        );
     }
 
     #[test]
