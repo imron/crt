@@ -266,6 +266,8 @@ pub struct DiffStyle {
     pub placeholder_fg: Color,
     /// Reviewed file summary text.
     pub reviewed_fg: Color,
+    /// Background for the current cursor line in the diff.
+    pub cursor_line_bg: Color,
 }
 
 impl Default for DiffStyle {
@@ -282,6 +284,7 @@ impl Default for DiffStyle {
             blame_fg: Color::new(C::Rgb(140, 140, 160)), // #8C8CA0 — blue-grey
             placeholder_fg: Color::new(C::DarkGray),
             reviewed_fg: Color::new(C::Green),
+            cursor_line_bg: Color::new(C::Rgb(50, 50, 65)), // #323241 — subtle highlight
         }
     }
 }
