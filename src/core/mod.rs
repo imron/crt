@@ -18,7 +18,7 @@ pub mod world;
 
 pub use input::{
     InputEvent, InputModifiers, Key, KeyEvent, KeyEventKind, MouseButton, MouseEvent,
-    PointerSemanticHit, TextAnchor,
+    MouseEventKind, PointerSemanticHit, TextAnchor,
 };
 pub use interaction::{
     ConnectionState, CoreEffect, CoreEffects, CoreInteractionEngine, DefinitionResultsEffect,
