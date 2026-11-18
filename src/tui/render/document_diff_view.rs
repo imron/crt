@@ -406,7 +406,8 @@ fn apply_document_col_cursor(
             }
 
             let cursor_char: String = text.chars().skip(local_char_idx).take(1).collect();
-            let cursor_style = if is_search_highlight_style(span.style, styles) {
+            let cursor_style = if is_current_search_start_style(span.style, styles, local_char_idx)
+            {
                 span.style
             } else {
                 Style::default()
@@ -438,9 +439,12 @@ fn apply_document_col_cursor(
     Line::from(result)
 }
 
-fn is_search_highlight_style(style: Style, styles: &StyleConfig) -> bool {
-    style.bg == Some(*styles.diff.search_match_bg)
-        || style.bg == Some(*styles.diff.search_current_match_bg)
+fn is_current_search_start_style(
+    style: Style,
+    styles: &StyleConfig,
+    local_char_idx: usize,
+) -> bool {
+    local_char_idx == 0 && style.bg == Some(*styles.diff.search_current_match_bg)
 }
 
 fn render_single_line(
@@ -1236,7 +1240,44 @@ mod tests {
     }
 
     #[test]
-    fn cursor_overlay_preserves_current_search_background() {
+    fn cursor_overlay_preserves_current_search_background_at_match_start() {
+        let styles = StyleConfig::default();
+        let line = Line::from(vec![Span::styled(
+            "needle",
+            Style::default()
+                .fg(Color::Black)
+                .bg(*styles.diff.search_current_match_bg),
+        )]);
+
+        let line = with_column_cursor(line, &styles, 0, 0, true);
+
+        assert_eq!(line.spans[0].content.as_ref(), "n");
+        assert_eq!(
+            line.spans[0].style.bg,
+            Some(*styles.diff.search_current_match_bg)
+        );
+        assert_eq!(line.spans[0].style.fg, Some(Color::Black));
+    }
+
+    #[test]
+    fn cursor_overlay_is_visible_inside_search_match_after_start() {
+        let styles = StyleConfig::default();
+        let line = Line::from(vec![Span::styled(
+            "needle",
+            Style::default()
+                .fg(Color::Black)
+                .bg(*styles.diff.search_match_bg),
+        )]);
+
+        let line = with_column_cursor(line, &styles, 0, 2, true);
+
+        assert_eq!(line.spans[1].content.as_ref(), "e");
+        assert_eq!(line.spans[1].style.fg, Some(*styles.diff.search_match_bg));
+        assert_eq!(line.spans[1].style.bg, Some(Color::Black));
+    }
+
+    #[test]
+    fn cursor_overlay_is_visible_inside_current_search_match_after_start() {
         let styles = StyleConfig::default();
         let line = Line::from(vec![Span::styled(
             "needle",
@@ -1249,10 +1290,10 @@ mod tests {
 
         assert_eq!(line.spans[1].content.as_ref(), "e");
         assert_eq!(
-            line.spans[1].style.bg,
+            line.spans[1].style.fg,
             Some(*styles.diff.search_current_match_bg)
         );
-        assert_eq!(line.spans[1].style.fg, Some(Color::Black));
+        assert_eq!(line.spans[1].style.bg, Some(Color::Black));
     }
 
     #[test]
