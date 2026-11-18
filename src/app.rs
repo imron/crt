@@ -19,8 +19,8 @@ use crate::core::{ConnectionState, InputEvent};
 use crate::protocol::NotificationKind;
 use crate::review_types::{
     CommentAnchor, CommentAnchorSegment, ConnectionContext, ContentMode, CreateCommentParams,
-    DefinitionLocation, FileEntry, PaneFocus, RenderVariant, ReviewActionResult, ReviewStatus,
-    SearchMatch,
+    DefinitionLocation, DiffContent, FileEntry, FileStatusEntry, PaneFocus, RenderVariant,
+    ReviewActionResult, ReviewStatus, SearchMatch,
 };
 use anyhow::{Context, Result};
 
@@ -31,6 +31,9 @@ enum AppWork {
     ToggleSelectedReview,
     UndoLastAction,
     ReloadFileSnapshot,
+    /// Refresh review statuses / changed-file set without re-fetching full
+    /// diffs for every file.
+    RefreshReviewStatuses,
     RunCommand(Command),
     CreateComment {
         anchor: CommentAnchorCapture,
@@ -225,12 +228,24 @@ impl App {
     ) -> Result<ReviewStartup> {
         let socket_path = default_socket_path()?;
         let cwd = std::env::current_dir().context("Failed to determine current directory")?;
+        let config = crate::config::load();
+        let diff_algorithm =
+            diff::resolve_diff_algorithm(&cwd.to_string_lossy(), config.layout.diff_algorithm);
         let client = Client::connect_or_start(&socket_path, standalone).await?;
         let init = if root {
-            client.init_root(&cwd.to_string_lossy()).await?
+            client
+                .init_with_options(&cwd.to_string_lossy(), "", true, Some(diff_algorithm))
+                .await?
         } else {
             let base = base.context("A base ref is required unless --root is specified")?;
-            client.init(&cwd.to_string_lossy(), base).await?
+            client
+                .init_with_options(
+                    &cwd.to_string_lossy(),
+                    base,
+                    false,
+                    Some(diff_algorithm),
+                )
+                .await?
         };
 
         if reset {
@@ -244,13 +259,29 @@ impl App {
             return Ok(ReviewStartup::Reset(summary));
         }
 
-        Ok(ReviewStartup::Review(Self::load(client, init).await?))
+        Ok(ReviewStartup::Review(
+            Self::load_with_config(client, init, config).await?,
+        ))
     }
 
     pub async fn load(client: Client, context: ConnectionContext) -> Result<Self> {
         let config = crate::config::load();
-        let files = match client.list_changed_files().await {
-            Ok(result) => result.files,
+        Self::load_with_config(client, context, config).await
+    }
+
+    async fn load_with_config(
+        client: Client,
+        context: ConnectionContext,
+        config: Config,
+    ) -> Result<Self> {
+        // Prefer compact statuses for large reviews; full hunks load lazily for
+        // the selected file via on_file_changed.
+        let files = match client.list_file_statuses().await {
+            Ok(result) => result
+                .files
+                .into_iter()
+                .map(file_entry_from_status)
+                .collect(),
             Err(e) => {
                 eprintln!("Warning: could not load files: {e}");
                 Vec::new()
@@ -312,6 +343,10 @@ impl App {
 
     pub async fn list_changed_files(&self) -> Result<crate::review_types::ListChangedFilesResult> {
         self.client()?.list_changed_files().await
+    }
+
+    pub async fn list_file_statuses(&self) -> Result<crate::review_types::ListFileStatusesResult> {
+        self.client()?.list_file_statuses().await
     }
 
     pub async fn mark_reviewed(
@@ -447,6 +482,7 @@ impl App {
                 AppWork::ToggleSelectedReview => self.toggle_selected_review().await,
                 AppWork::UndoLastAction => self.undo_last_action().await,
                 AppWork::ReloadFileSnapshot => self.reload_file_snapshot().await,
+                AppWork::RefreshReviewStatuses => self.refresh_review_statuses().await,
                 AppWork::RunCommand(command) => self.run_command(command).await,
                 AppWork::CreateComment { anchor, body } => {
                     self.create_comment_from_anchor(anchor, body).await
@@ -471,6 +507,15 @@ impl App {
 
         if notification_requires_snapshot_reload(&notifications) {
             return self.reload_file_snapshot().await;
+        }
+        if notification_has_review_status_patch(&notifications) {
+            self.apply_review_change_notifications(&notifications);
+            // If any review notification lacked a status payload (older
+            // servers), fall back to a compact status refresh.
+            if notification_requires_status_refresh(&notifications) {
+                return self.refresh_review_statuses().await;
+            }
+            return None;
         }
         if notification_requires_comment_reload(&notifications) {
             return self.reload_comments().await;
@@ -497,7 +542,9 @@ impl App {
         context: &InteractionContext,
     ) -> Vec<CoreEffect> {
         if matches!(event, InputEvent::FocusGained) {
-            self.pending_work.push_back(AppWork::ReloadFileSnapshot);
+            // Cheap status refresh: detect external review/diff changes without
+            // re-diffing every file.
+            self.pending_work.push_back(AppWork::RefreshReviewStatuses);
             return Vec::new();
         }
         self.state.core_interaction.handle_input(event, context)
@@ -614,15 +661,37 @@ impl App {
     }
 
     async fn reload_file_snapshot(&mut self) -> Option<StatusUpdate> {
-        match self.list_changed_files().await {
+        match self.list_file_statuses().await {
             Ok(result) => {
-                self.replace_file_snapshot(result.files);
+                let files = result
+                    .files
+                    .into_iter()
+                    .map(file_entry_from_status)
+                    .collect();
+                self.replace_file_snapshot(files);
                 if let Some(status) = self.reload_comments().await {
                     return Some(status);
                 }
                 None
             }
             Err(e) => Some(StatusUpdate::Set(format!("Failed to reload files: {e}"))),
+        }
+    }
+
+    async fn refresh_review_statuses(&mut self) -> Option<StatusUpdate> {
+        match self.list_file_statuses().await {
+            Ok(result) => {
+                let files = result
+                    .files
+                    .into_iter()
+                    .map(file_entry_from_status)
+                    .collect();
+                self.merge_file_statuses(files);
+                None
+            }
+            Err(e) => Some(StatusUpdate::Set(format!(
+                "Failed to refresh file statuses: {e}"
+            ))),
         }
     }
 
@@ -649,6 +718,7 @@ impl App {
         let saved_content_mode = self.state.content_mode;
         let saved_render_variant = self.state.render_variant;
 
+        let files = preserve_loaded_diffs(&self.state.files, files);
         self.state.files = files;
         review::sort_files(&mut self.state.files);
         self.state.selected_file =
@@ -662,6 +732,8 @@ impl App {
                 .is_some_and(|entry| entry.change.path == path)
         });
 
+        // Load full hunks only when the selected entry still has an empty
+        // diff body (or hash changed and cache was dropped).
         self.state.refresh_current_file_diff();
         self.state.load_head_content();
         self.state.load_blame();
@@ -672,9 +744,74 @@ impl App {
             self.state.diff_line_cursor = saved_cursor;
             self.state.diff_col_cursor = saved_col;
             self.state.diff_scroll = saved_scroll;
+            self.state.rebuild_active_document();
         } else {
             self.state.on_file_changed();
         }
+        self.state.mark_model_changed();
+    }
+
+    /// Merge a compact status snapshot into the current file list, preserving
+    /// already-loaded full diffs when the hash is unchanged.
+    fn merge_file_statuses(&mut self, files: Vec<FileEntry>) {
+        let selected_path = review::selected_path(&self.state.files, self.state.selected_file);
+        let previous_hash = self
+            .state
+            .selected_file_entry()
+            .map(|entry| entry.diff.diff_hash.clone());
+
+        let files = preserve_loaded_diffs(&self.state.files, files);
+        let file_set_changed = file_path_set_changed(&self.state.files, &files);
+        self.state.files = files;
+        review::sort_files(&mut self.state.files);
+        self.state.selected_file =
+            review::restore_selection_by_path(&self.state.files, selected_path.as_deref());
+        self.state.file_list_section_focus = self.state.focus_for_file(self.state.selected_file);
+
+        let selected_hash = self
+            .state
+            .selected_file_entry()
+            .map(|entry| entry.diff.diff_hash.clone());
+        let selected_needs_diff = self
+            .state
+            .selected_file_entry()
+            .is_some_and(|entry| entry.diff.hunks.is_empty());
+
+        if file_set_changed || previous_hash != selected_hash || selected_needs_diff {
+            self.state.on_file_changed();
+        } else {
+            self.state.mark_model_changed();
+        }
+    }
+
+    fn apply_review_change_notifications(&mut self, notifications: &[crate::protocol::Notification]) {
+        let selected_path = review::selected_path(&self.state.files, self.state.selected_file);
+        let mut patched = false;
+        for notification in notifications {
+            let NotificationKind::ReviewChanged {
+                file_path,
+                status: Some(status),
+            } = &notification.kind
+            else {
+                continue;
+            };
+            if let Some(entry) = self
+                .state
+                .files
+                .iter_mut()
+                .find(|entry| entry.change.path == *file_path)
+            {
+                entry.status = status.clone();
+                patched = true;
+            }
+        }
+        if !patched {
+            return;
+        }
+        review::sort_files(&mut self.state.files);
+        self.state.selected_file =
+            review::restore_selection_by_path(&self.state.files, selected_path.as_deref());
+        self.state.file_list_section_focus = self.state.focus_for_file(self.state.selected_file);
         self.state.mark_model_changed();
     }
 
@@ -968,9 +1105,22 @@ fn notification_requires_snapshot_reload(notifications: &[Notification]) -> bool
     notifications.iter().any(|notification| {
         matches!(
             notification.kind,
-            NotificationKind::ReviewChanged { .. }
-                | NotificationKind::ReviewsCleared
-                | NotificationKind::ReviewsMigrated { .. }
+            NotificationKind::ReviewsCleared | NotificationKind::ReviewsMigrated { .. }
+        )
+    })
+}
+
+fn notification_has_review_status_patch(notifications: &[Notification]) -> bool {
+    notifications
+        .iter()
+        .any(|notification| matches!(notification.kind, NotificationKind::ReviewChanged { .. }))
+}
+
+fn notification_requires_status_refresh(notifications: &[Notification]) -> bool {
+    notifications.iter().any(|notification| {
+        matches!(
+            notification.kind,
+            NotificationKind::ReviewChanged { status: None, .. }
         )
     })
 }
@@ -979,6 +1129,46 @@ fn notification_requires_comment_reload(notifications: &[Notification]) -> bool 
     notifications
         .iter()
         .any(|notification| matches!(notification.kind, NotificationKind::CommentChanged { .. }))
+}
+
+fn file_entry_from_status(entry: FileStatusEntry) -> FileEntry {
+    FileEntry {
+        change: entry.change,
+        status: entry.status,
+        diff: DiffContent {
+            hunks: Vec::new(),
+            is_binary: entry.diff.is_binary,
+            diff_hash: entry.diff.diff_hash,
+        },
+    }
+}
+
+/// Keep previously loaded full hunk bodies when the file's hash is unchanged.
+fn preserve_loaded_diffs(previous: &[FileEntry], mut next: Vec<FileEntry>) -> Vec<FileEntry> {
+    let previous_by_path: HashMap<&str, &FileEntry> = previous
+        .iter()
+        .map(|entry| (entry.change.path.as_str(), entry))
+        .collect();
+    for entry in &mut next {
+        if !entry.diff.hunks.is_empty() {
+            continue;
+        }
+        if let Some(prev) = previous_by_path.get(entry.change.path.as_str()) {
+            if !prev.diff.hunks.is_empty() && prev.diff.diff_hash == entry.diff.diff_hash {
+                entry.diff = prev.diff.clone();
+            }
+        }
+    }
+    next
+}
+
+fn file_path_set_changed(previous: &[FileEntry], next: &[FileEntry]) -> bool {
+    if previous.len() != next.len() {
+        return true;
+    }
+    let prev: BTreeSet<&str> = previous.iter().map(|e| e.change.path.as_str()).collect();
+    let next: BTreeSet<&str> = next.iter().map(|e| e.change.path.as_str()).collect();
+    prev != next
 }
 
 fn upsert_comment(
@@ -1500,23 +1690,56 @@ impl AppState {
     }
 
     fn refresh_current_file_diff_raw(&mut self) {
-        if let Some(entry) = self.files.get(self.selected_file) {
-            let path = entry.change.path.clone();
-            let diff_base = self.effective_diff_base().to_string();
-            let merge_base = self.context.merge_base.clone();
-            if let Some(diff) = diff::diff_with_fallback(
-                &self.context.worktree,
-                &self.context.base_ref,
-                &diff_base,
-                &merge_base,
-                &path,
-                self.diff_algorithm,
-                self.ignore_whitespace,
-            ) {
-                if let Some(entry) = self.files.get_mut(self.selected_file) {
-                    entry.diff = diff;
-                }
-            }
+        // Reuse a previously loaded full diff when present. Callers that change
+        // algorithm/whitespace use reload_current_diff_raw, which always
+        // recomputes.
+        if self
+            .files
+            .get(self.selected_file)
+            .is_some_and(|entry| !entry.diff.hunks.is_empty())
+        {
+            return;
+        }
+
+        self.load_selected_file_diff(false);
+    }
+
+    /// Load the selected file's full diff from the worktree.
+    ///
+    /// When `force` is false this is only used for empty hunk bodies. The
+    /// server-provided review hash is preserved so status/cache comparisons
+    /// stay stable even when the display algorithm differs.
+    fn load_selected_file_diff(&mut self, force: bool) {
+        let Some(entry) = self.files.get(self.selected_file) else {
+            return;
+        };
+        if !force && !entry.diff.hunks.is_empty() {
+            return;
+        }
+
+        let path = entry.change.path.clone();
+        let review_hash = entry.diff.diff_hash.clone();
+        let diff_base = self.effective_diff_base().to_string();
+        let merge_base = self.context.merge_base.clone();
+        let Some(mut diff) = diff::diff_with_fallback(
+            &self.context.worktree,
+            &self.context.base_ref,
+            &diff_base,
+            &merge_base,
+            &path,
+            self.diff_algorithm,
+            self.ignore_whitespace,
+        ) else {
+            return;
+        };
+
+        // Keep the review-identity hash from the status snapshot when present.
+        if !review_hash.is_empty() {
+            diff.diff_hash = review_hash;
+        }
+
+        if let Some(entry) = self.files.get_mut(self.selected_file) {
+            entry.diff = diff;
         }
     }
 
@@ -1528,24 +1751,7 @@ impl AppState {
     }
 
     fn reload_current_diff_raw(&mut self) {
-        if let Some(entry) = self.files.get(self.selected_file) {
-            let path = entry.change.path.clone();
-            let diff_base = self.effective_diff_base().to_string();
-            let merge_base = self.context.merge_base.clone();
-            if let Some(diff) = diff::diff_with_fallback(
-                &self.context.worktree,
-                &self.context.base_ref,
-                &diff_base,
-                &merge_base,
-                &path,
-                self.diff_algorithm,
-                self.ignore_whitespace,
-            ) {
-                if let Some(entry) = self.files.get_mut(self.selected_file) {
-                    entry.diff = diff;
-                }
-            }
-        }
+        self.load_selected_file_diff(true);
         self.diff_scroll = self
             .selected_file_entry()
             .and_then(|e| e.diff.hunks.first())
@@ -2589,7 +2795,7 @@ mod tests {
     }
 
     #[test]
-    fn focus_gained_queues_snapshot_reload_in_app() {
+    fn focus_gained_queues_status_refresh_in_app() {
         let mut app = App::new(Config::default(), test_context(), vec![test_file("a.rs")]);
 
         let effects = app.handle_input(InputEvent::FocusGained, &InteractionContext::default());
@@ -2597,7 +2803,7 @@ mod tests {
         assert!(effects.is_empty());
         assert_eq!(
             app.pending_work.pop_front(),
-            Some(AppWork::ReloadFileSnapshot)
+            Some(AppWork::RefreshReviewStatuses)
         );
     }
 
@@ -5526,10 +5732,11 @@ mod tests {
     }
 
     #[test]
-    fn review_notifications_require_snapshot_reload() {
-        assert!(notification_requires_snapshot_reload(&[notification(
+    fn review_cleared_notifications_require_snapshot_reload() {
+        assert!(!notification_requires_snapshot_reload(&[notification(
             NotificationKind::ReviewChanged {
                 file_path: "a.rs".to_string(),
+                status: Some(reviewed()),
             },
         )]));
         assert!(notification_requires_snapshot_reload(&[notification(
@@ -5551,7 +5758,60 @@ mod tests {
         assert!(!notification_requires_comment_reload(&[notification(
             NotificationKind::ReviewChanged {
                 file_path: "a.rs".to_string(),
+                status: Some(reviewed()),
             },
         )]));
+    }
+
+    #[test]
+    fn review_changed_notification_without_status_needs_status_refresh() {
+        assert!(notification_requires_status_refresh(&[notification(
+            NotificationKind::ReviewChanged {
+                file_path: "a.rs".to_string(),
+                status: None,
+            },
+        )]));
+        assert!(!notification_requires_status_refresh(&[notification(
+            NotificationKind::ReviewChanged {
+                file_path: "a.rs".to_string(),
+                status: Some(reviewed()),
+            },
+        )]));
+    }
+
+    #[test]
+    fn apply_review_change_notifications_patches_status_without_full_reload() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("a.rs"), test_file("b.rs")],
+        );
+        app.apply_review_change_notifications(&[notification(NotificationKind::ReviewChanged {
+            file_path: "a.rs".to_string(),
+            status: Some(reviewed()),
+        })]);
+
+        assert!(matches!(
+            app.state
+                .files
+                .iter()
+                .find(|entry| entry.change.path == "a.rs")
+                .map(|entry| &entry.status),
+            Some(ReviewStatus::Reviewed { .. })
+        ));
+        // Selection is preserved (no auto-advance on peer/status patch).
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "a.rs");
+    }
+
+    #[test]
+    fn refresh_current_file_diff_reuses_loaded_hunks() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_hunk("a.rs")],
+        );
+        let original_header = app.state.files[0].diff.hunks[0].header.clone();
+        app.state.refresh_current_file_diff_raw();
+        assert_eq!(app.state.files[0].diff.hunks[0].header, original_header);
     }
 }
