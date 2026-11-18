@@ -2,7 +2,7 @@
 
 ## Status
 
-Backlog.
+Completed.
 
 ## Goal
 
@@ -379,14 +379,14 @@ Add tests at the lowest layer that owns the behavior:
 
 ## Acceptance Criteria
 
-- [ ] Fully deleted selected text collapses to a boundary row when context is
+- [x] Fully deleted selected text collapses to a boundary row when context is
       reliable.
-- [ ] Replaced selected text uses the current replacement/interior range.
-- [ ] Partially preserved selected text reduces to the current surviving span.
-- [ ] Exact moved selected text still wins over context collapse.
-- [ ] Ambiguous deleted selections orphan instead of false anchoring.
-- [ ] Compound base/head anchors reduce each segment independently.
-- [ ] Resolved and unresolved lifecycle states are not changed by range
+- [x] Replaced selected text uses the current replacement/interior range.
+- [x] Partially preserved selected text reduces to the current surviving span.
+- [x] Exact moved selected text still wins over context collapse.
+- [x] Ambiguous deleted selections orphan instead of false anchoring.
+- [x] Compound base/head anchors reduce each segment independently.
+- [x] Resolved and unresolved lifecycle states are not changed by range
       reduction.
-- [ ] Comment markers no longer preserve stale multiline ranges after the
+- [x] Comment markers no longer preserve stale multiline ranges after the
       selected source has been deleted or shortened.

@@ -1682,6 +1682,29 @@ fn resolve_anchor_segment(
     file_blob_sha: String,
     adjusted_hint: Option<usize>,
 ) -> NewCommentAnchorSegment {
+    resolve_anchor_segment_with_shape(segment, content, file_blob_sha, adjusted_hint).segment
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReanchoredRangeShape {
+    ExactSelection,
+    ReducedSelection,
+    ContextInterior,
+    CollapsedBoundary,
+}
+
+struct ResolvedAnchorSegment {
+    segment: NewCommentAnchorSegment,
+    #[allow(dead_code)]
+    range_shape: Option<ReanchoredRangeShape>,
+}
+
+fn resolve_anchor_segment_with_shape(
+    segment: &review_types::CommentAnchorSegment,
+    content: &str,
+    file_blob_sha: String,
+    adjusted_hint: Option<usize>,
+) -> ResolvedAnchorSegment {
     let lines = content_lines(content);
     let anchor_lines = anchor_lines(&segment.anchor_text);
     let span = anchor_lines.len().max(1);
@@ -1695,58 +1718,76 @@ fn resolve_anchor_segment(
     let try_indices: [Option<usize>; 2] = [adjusted_hint, stored_index];
     for candidate in try_indices.into_iter().flatten() {
         if matches_sequence(&lines, candidate, &anchor_lines) {
-            return anchor_segment_from_range(
-                segment,
-                &lines,
-                candidate,
-                span,
-                file_blob_sha,
-                review_types::AnchorStatus::Anchored,
-            );
+            return ResolvedAnchorSegment {
+                segment: anchor_segment_from_range(
+                    segment,
+                    &lines,
+                    candidate,
+                    span,
+                    file_blob_sha,
+                    review_types::AnchorStatus::Anchored,
+                ),
+                range_shape: Some(ReanchoredRangeShape::ExactSelection),
+            };
         }
     }
 
     let hint = adjusted_hint.or(stored_index).unwrap_or(0);
 
     if let Some(index) = find_sequence_nearest(&lines, &anchor_lines, hint) {
-        return anchor_segment_from_range(
-            segment,
-            &lines,
-            index,
-            span,
-            file_blob_sha,
-            review_types::AnchorStatus::Shifted,
-        );
+        return ResolvedAnchorSegment {
+            segment: anchor_segment_from_range(
+                segment,
+                &lines,
+                index,
+                span,
+                file_blob_sha,
+                review_types::AnchorStatus::Shifted,
+            ),
+            range_shape: Some(ReanchoredRangeShape::ExactSelection),
+        };
     }
 
-    if let Some(index) = find_multiline_line_match_nearest(&lines, &anchor_lines, hint) {
-        return anchor_segment_from_range(
-            segment,
-            &lines,
-            index,
-            span,
-            file_blob_sha,
-            review_types::AnchorStatus::Approximate,
-        );
+    if let Some((index, reduced_span)) =
+        find_reduced_selection_match_nearest(&lines, &anchor_lines, hint)
+    {
+        return ResolvedAnchorSegment {
+            segment: anchor_segment_from_range(
+                segment,
+                &lines,
+                index,
+                reduced_span,
+                file_blob_sha,
+                review_types::AnchorStatus::Approximate,
+            ),
+            range_shape: Some(ReanchoredRangeShape::ReducedSelection),
+        };
     }
 
-    if let Some((index, context_span)) = find_context_match(
+    if let Some(decision) = find_context_range_match(
         &segment.context_before,
         &segment.context_after,
         &lines,
-        span,
+        &anchor_lines,
+        hint,
     ) {
-        return anchor_segment_from_range(
-            segment,
-            &lines,
-            index,
-            context_span,
-            file_blob_sha,
-            review_types::AnchorStatus::Approximate,
-        );
+        return ResolvedAnchorSegment {
+            segment: anchor_segment_from_range(
+                segment,
+                &lines,
+                decision.start,
+                decision.span,
+                file_blob_sha,
+                review_types::AnchorStatus::Approximate,
+            ),
+            range_shape: Some(decision.shape),
+        };
     }
 
-    orphaned_anchor_segment(segment, file_blob_sha)
+    ResolvedAnchorSegment {
+        segment: orphaned_anchor_segment(segment, file_blob_sha),
+        range_shape: None,
+    }
 }
 
 fn aggregate_status_for_new_segments(
@@ -1822,17 +1863,10 @@ fn find_sequence_nearest(lines: &[&str], needle: &[&str], hint: usize) -> Option
     None
 }
 
-fn find_sequence(lines: &[&str], needle: &[&str]) -> Option<usize> {
-    if needle.is_empty() || needle.len() > lines.len() {
-        return None;
-    }
-    let last_start = lines.len() - needle.len();
-    (0..=last_start).find(|index| matches_sequence(lines, *index, needle))
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct LineMatchCandidate {
     start: usize,
+    span: usize,
     matched_lines: usize,
     unique_matched_lines: usize,
     distance_from_hint: usize,
@@ -1850,21 +1884,21 @@ impl LineMatchCandidate {
     }
 }
 
-fn find_multiline_line_match_nearest(
+fn find_reduced_selection_match_nearest(
     lines: &[&str],
     needle: &[&str],
     hint: usize,
-) -> Option<usize> {
-    if needle.len() < 2 || needle.len() > lines.len() {
+) -> Option<(usize, usize)> {
+    if needle.len() < 2 || lines.is_empty() {
         return None;
     }
 
-    let last_start = lines.len() - needle.len();
-    let hint = hint.min(last_start);
+    let hint = hint.min(lines.len().saturating_sub(1));
     let mut best: Option<LineMatchCandidate> = None;
 
-    for start in 0..=last_start {
-        let Some(candidate) = line_match_candidate(lines, needle, start, hint) else {
+    for start in 0..lines.len() {
+        let Some(candidate) = reduced_line_match_candidate(lines, needle, start, lines.len(), hint)
+        else {
             continue;
         };
         if best
@@ -1875,95 +1909,222 @@ fn find_multiline_line_match_nearest(
         }
     }
 
-    best.map(|candidate| candidate.start)
+    best.map(|candidate| (candidate.start, candidate.span))
 }
 
-fn line_match_candidate(
+fn reduced_line_match_candidate(
     lines: &[&str],
     needle: &[&str],
     start: usize,
+    end: usize,
     hint: usize,
 ) -> Option<LineMatchCandidate> {
     let mut matched_lines = 0;
     let mut unique_matched_lines = 0;
+    let mut first_match = None;
+    let mut last_match = None;
+    let mut needle_index = 0;
 
-    for (offset, needle_line) in needle.iter().enumerate() {
-        if needle_line.trim().is_empty() || lines[start + offset] != *needle_line {
-            continue;
+    for (line_index, line) in lines.iter().enumerate().take(end).skip(start) {
+        while needle_index < needle.len() && needle[needle_index].trim().is_empty() {
+            needle_index += 1;
         }
 
+        let Some(match_index) = next_matching_selected_line(needle, needle_index, line) else {
+            continue;
+        };
+
+        first_match.get_or_insert(line_index);
+        last_match = Some(line_index);
         matched_lines += 1;
-        if count_line_occurrences(lines, needle_line) == 1 {
+        if count_line_occurrences(lines, needle[match_index]) == 1 {
             unique_matched_lines += 1;
         }
+        needle_index = match_index + 1;
     }
 
     if matched_lines == 0 || (unique_matched_lines == 0 && matched_lines < 2) {
         return None;
     }
 
-    let distance_from_hint = if start >= hint {
-        start - hint
+    let first_match = first_match?;
+    let last_match = last_match?;
+    let distance_from_hint = if first_match >= hint {
+        first_match - hint
     } else {
-        hint - start
+        hint - first_match
     };
 
     Some(LineMatchCandidate {
-        start,
+        start: first_match,
+        span: last_match - first_match + 1,
         matched_lines,
         unique_matched_lines,
         distance_from_hint,
     })
 }
 
+fn next_matching_selected_line(needle: &[&str], start: usize, line: &str) -> Option<usize> {
+    needle
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find_map(|(index, needle_line)| {
+            if needle_line.trim().is_empty() {
+                None
+            } else if *needle_line == line {
+                Some(index)
+            } else {
+                None
+            }
+        })
+}
+
 fn count_line_occurrences(lines: &[&str], needle: &str) -> usize {
     lines.iter().filter(|line| **line == needle).count()
 }
 
-fn find_context_match(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReanchoredRangeDecision {
+    start: usize,
+    span: usize,
+    shape: ReanchoredRangeShape,
+}
+
+fn find_context_range_match(
     context_before: &str,
     context_after: &str,
     lines: &[&str],
-    span: usize,
-) -> Option<(usize, usize)> {
+    anchor_lines: &[&str],
+    hint: usize,
+) -> Option<ReanchoredRangeDecision> {
     let before = context_lines(context_before);
     let after = context_lines(context_after);
 
     if !before.is_empty() && !after.is_empty() {
-        let mut start = 0;
-        while let Some(offset) = find_sequence(&lines[start..], &before) {
-            let context_start = start + offset;
-            let candidate = context_start + before.len();
-            if candidate < lines.len() {
-                if let Some(after_offset) = find_sequence(&lines[candidate..], &after) {
-                    if after_offset > 0 {
-                        return Some((candidate, after_offset));
+        let mut candidates = Vec::new();
+        for context_start in find_all_sequences(lines, &before) {
+            let interior_start = context_start + before.len();
+            for after_offset in find_all_sequences(&lines[interior_start..], &after) {
+                let interior_span = after_offset;
+                let decision = if interior_span == 0 {
+                    ReanchoredRangeDecision {
+                        start: interior_start,
+                        span: 1,
+                        shape: ReanchoredRangeShape::CollapsedBoundary,
                     }
-                }
-            }
-            start = context_start + 1;
-            if start >= lines.len() {
-                break;
+                } else if let Some((start, span)) = find_reduced_selection_match_in_range(
+                    lines,
+                    anchor_lines,
+                    interior_start,
+                    interior_start + interior_span,
+                    hint,
+                ) {
+                    ReanchoredRangeDecision {
+                        start,
+                        span,
+                        shape: ReanchoredRangeShape::ReducedSelection,
+                    }
+                } else {
+                    ReanchoredRangeDecision {
+                        start: interior_start,
+                        span: interior_span,
+                        shape: ReanchoredRangeShape::ContextInterior,
+                    }
+                };
+                candidates.push(decision);
             }
         }
+        return unique_context_candidate(candidates);
     }
 
     if !before.is_empty() && after.is_empty() {
-        let mut start = 0;
-        while let Some(offset) = find_sequence(&lines[start..], &before) {
-            let context_start = start + offset;
-            let candidate = context_start + before.len();
-            if candidate < lines.len() {
-                return Some((candidate, span));
-            }
-            start = context_start + 1;
-            if start >= lines.len() {
-                break;
-            }
-        }
+        let candidates: Vec<_> = find_all_sequences(lines, &before)
+            .into_iter()
+            .filter_map(|context_start| {
+                let boundary = context_start + before.len();
+                if boundary == lines.len() && boundary > 0 {
+                    Some(ReanchoredRangeDecision {
+                        start: boundary - 1,
+                        span: 1,
+                        shape: ReanchoredRangeShape::CollapsedBoundary,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        return unique_context_candidate(candidates);
+    }
+
+    if before.is_empty() && !after.is_empty() {
+        let candidates: Vec<_> = find_all_sequences(lines, &after)
+            .into_iter()
+            .filter_map(|context_start| {
+                if context_start == 0 {
+                    Some(ReanchoredRangeDecision {
+                        start: context_start,
+                        span: 1,
+                        shape: ReanchoredRangeShape::CollapsedBoundary,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+        return unique_context_candidate(candidates);
     }
 
     None
+}
+
+fn find_reduced_selection_match_in_range(
+    lines: &[&str],
+    needle: &[&str],
+    start: usize,
+    end: usize,
+    hint: usize,
+) -> Option<(usize, usize)> {
+    if needle.len() < 2 || start >= end || end > lines.len() {
+        return None;
+    }
+
+    let mut best: Option<LineMatchCandidate> = None;
+    for candidate_start in start..end {
+        let Some(candidate) =
+            reduced_line_match_candidate(lines, needle, candidate_start, end, hint)
+        else {
+            continue;
+        };
+        if best
+            .as_ref()
+            .is_none_or(|existing| candidate.is_preferred_to(existing))
+        {
+            best = Some(candidate);
+        }
+    }
+
+    best.map(|candidate| (candidate.start, candidate.span))
+}
+
+fn find_all_sequences(lines: &[&str], needle: &[&str]) -> Vec<usize> {
+    if needle.is_empty() || needle.len() > lines.len() {
+        return Vec::new();
+    }
+
+    let last_start = lines.len() - needle.len();
+    (0..=last_start)
+        .filter(|index| matches_sequence(lines, *index, needle))
+        .collect()
+}
+
+fn unique_context_candidate(
+    candidates: Vec<ReanchoredRangeDecision>,
+) -> Option<ReanchoredRangeDecision> {
+    match candidates.as_slice() {
+        [candidate] => Some(*candidate),
+        [] | [_, ..] => None,
+    }
 }
 
 fn context_lines(context: &str) -> Vec<&str> {
@@ -2607,6 +2768,28 @@ mod tests {
         }
     }
 
+    fn multiline_anchor_segment(
+        line_start: i64,
+        line_end: i64,
+        anchor_text: &str,
+        context_before: &str,
+        context_after: &str,
+    ) -> review_types::CommentAnchorSegment {
+        review_types::CommentAnchorSegment {
+            side: review_types::CommentAnchorSide::Head,
+            file_path: "src/lib.rs".to_string(),
+            line_start,
+            line_end,
+            char_start: None,
+            char_end: None,
+            anchor_text: anchor_text.to_string(),
+            context_before: context_before.to_string(),
+            context_after: context_after.to_string(),
+            placement_status: review_types::AnchorPlacementStatus::Anchored,
+            match_method: review_types::AnchorMatchMethod::ExactAtLine,
+        }
+    }
+
     fn head_segment(anchor: &NewCommentAnchor) -> &NewCommentAnchorSegment {
         anchor
             .segments
@@ -2676,6 +2859,226 @@ mod tests {
             aggregate_status: aggregate_status_for_new_segments(&segments),
             segments,
         }
+    }
+
+    fn resolve_head_segment_with_shape(
+        segment: &review_types::CommentAnchorSegment,
+        content: &str,
+    ) -> ResolvedAnchorSegment {
+        resolve_anchor_segment_with_shape(segment, content, "new".to_string(), None)
+    }
+
+    #[test]
+    fn deleted_multiline_selection_collapses_to_after_boundary() {
+        let segment =
+            multiline_anchor_segment(2, 4, "delete a\ndelete b\ndelete c", "before", "after");
+
+        let resolved = resolve_head_segment_with_shape(&segment, "before\nafter\n");
+
+        assert_eq!(
+            resolved.range_shape,
+            Some(ReanchoredRangeShape::CollapsedBoundary)
+        );
+        assert_eq!(resolved.segment.line_start, 2);
+        assert_eq!(resolved.segment.line_end, 2);
+        assert_eq!(resolved.segment.anchor_text, "after");
+        assert_eq!(
+            resolved.segment.match_method,
+            review_types::AnchorMatchMethod::Context
+        );
+    }
+
+    #[test]
+    fn deleted_multiline_selection_at_end_collapses_to_before_boundary() {
+        let segment = multiline_anchor_segment(2, 3, "delete a\ndelete b", "before", "");
+
+        let resolved = resolve_head_segment_with_shape(&segment, "before\n");
+
+        assert_eq!(
+            resolved.range_shape,
+            Some(ReanchoredRangeShape::CollapsedBoundary)
+        );
+        assert_eq!(resolved.segment.line_start, 1);
+        assert_eq!(resolved.segment.line_end, 1);
+        assert_eq!(resolved.segment.anchor_text, "before");
+    }
+
+    #[test]
+    fn deleted_multiline_selection_at_start_collapses_to_after_boundary() {
+        let segment = multiline_anchor_segment(1, 2, "delete a\ndelete b", "", "after");
+
+        let resolved = resolve_head_segment_with_shape(&segment, "after\n");
+
+        assert_eq!(
+            resolved.range_shape,
+            Some(ReanchoredRangeShape::CollapsedBoundary)
+        );
+        assert_eq!(resolved.segment.line_start, 1);
+        assert_eq!(resolved.segment.line_end, 1);
+        assert_eq!(resolved.segment.anchor_text, "after");
+    }
+
+    #[test]
+    fn replaced_multiline_selection_uses_current_interior_range() {
+        let segment = multiline_anchor_segment(2, 4, "old a\nold b\nold c", "before", "after");
+
+        let resolved = resolve_head_segment_with_shape(&segment, "before\nreplacement\nafter\n");
+
+        assert_eq!(
+            resolved.range_shape,
+            Some(ReanchoredRangeShape::ContextInterior)
+        );
+        assert_eq!(resolved.segment.line_start, 2);
+        assert_eq!(resolved.segment.line_end, 2);
+        assert_eq!(resolved.segment.anchor_text, "replacement");
+    }
+
+    #[test]
+    fn replaced_multiline_selection_can_shrink_or_grow_to_current_interior() {
+        let segment =
+            multiline_anchor_segment(2, 6, "old a\nold b\nold c\nold d\nold e", "before", "after");
+
+        let shrunk = resolve_head_segment_with_shape(&segment, "before\nnew a\nnew b\nafter\n");
+
+        assert_eq!(
+            shrunk.range_shape,
+            Some(ReanchoredRangeShape::ContextInterior)
+        );
+        assert_eq!(shrunk.segment.line_start, 2);
+        assert_eq!(shrunk.segment.line_end, 3);
+        assert_eq!(shrunk.segment.anchor_text, "new a\nnew b");
+
+        let segment = multiline_anchor_segment(2, 3, "old a\nold b", "before", "after");
+
+        let grown = resolve_head_segment_with_shape(
+            &segment,
+            "before\nnew a\nnew b\nnew c\nnew d\nnew e\nafter\n",
+        );
+
+        assert_eq!(
+            grown.range_shape,
+            Some(ReanchoredRangeShape::ContextInterior)
+        );
+        assert_eq!(grown.segment.line_start, 2);
+        assert_eq!(grown.segment.line_end, 6);
+        assert_eq!(
+            grown.segment.anchor_text,
+            "new a\nnew b\nnew c\nnew d\nnew e"
+        );
+    }
+
+    #[test]
+    fn partially_deleted_selection_reduces_to_surviving_span() {
+        let segment = multiline_anchor_segment(2, 4, "keep a\ndelete b\nkeep c", "before", "after");
+
+        let resolved = resolve_head_segment_with_shape(&segment, "before\nkeep a\nkeep c\nafter\n");
+
+        assert_eq!(
+            resolved.range_shape,
+            Some(ReanchoredRangeShape::ReducedSelection)
+        );
+        assert_eq!(resolved.segment.line_start, 2);
+        assert_eq!(resolved.segment.line_end, 3);
+        assert_eq!(resolved.segment.anchor_text, "keep a\nkeep c");
+    }
+
+    #[test]
+    fn moved_exact_selected_text_wins_over_context_collapse() {
+        let segment = multiline_anchor_segment(2, 3, "target a\ntarget b", "before", "after");
+
+        let resolved = resolve_head_segment_with_shape(
+            &segment,
+            "before\nafter\nintro\ntarget a\ntarget b\noutro\n",
+        );
+
+        assert_eq!(
+            resolved.range_shape,
+            Some(ReanchoredRangeShape::ExactSelection)
+        );
+        assert_eq!(
+            resolved.segment.match_method,
+            review_types::AnchorMatchMethod::ExactElsewhere
+        );
+        assert_eq!(resolved.segment.line_start, 4);
+        assert_eq!(resolved.segment.line_end, 5);
+    }
+
+    #[test]
+    fn duplicate_context_deleted_selection_orphans() {
+        let segment = multiline_anchor_segment(2, 3, "delete a\ndelete b", "before", "after");
+
+        let resolved = resolve_head_segment_with_shape(&segment, "before\nafter\nbefore\nafter\n");
+
+        assert_eq!(resolved.range_shape, None);
+        assert_eq!(
+            resolved.segment.placement_status,
+            review_types::AnchorPlacementStatus::Orphaned
+        );
+        assert_eq!(resolved.segment.anchor_text, "delete a\ndelete b");
+    }
+
+    #[test]
+    fn compound_segments_reduce_independently() {
+        let mut base = multiline_anchor_segment(2, 3, "old base a\nold base b", "base before", "");
+        base.side = review_types::CommentAnchorSide::Base;
+        let head = multiline_anchor_segment(
+            2,
+            4,
+            "keep head\nold head\nend head",
+            "head before",
+            "head after",
+        );
+        let comment = compound_comment_with_segments(vec![base, head]);
+
+        let anchor = resolve_anchor_with_side_content(
+            &comment,
+            Some("base before\n"),
+            Some("head before\nkeep head\nend head\nhead after\n"),
+        );
+
+        assert_eq!(
+            anchor.aggregate_status,
+            review_types::AnchorAggregateStatus::Anchored
+        );
+        let base = segment_for_side(&anchor, review_types::CommentAnchorSide::Base);
+        let head = segment_for_side(&anchor, review_types::CommentAnchorSide::Head);
+        assert_eq!(base.line_start, 1);
+        assert_eq!(base.line_end, 1);
+        assert_eq!(base.anchor_text, "base before");
+        assert_eq!(head.line_start, 2);
+        assert_eq!(head.line_end, 3);
+        assert_eq!(head.anchor_text, "keep head\nend head");
+    }
+
+    #[test]
+    fn range_reduction_does_not_change_comment_lifecycle_state() {
+        let mut comment = stored_comment(2, "delete a\ndelete b");
+        comment.line_end = 3;
+        comment.anchor = review_types::CommentAnchor {
+            segments: vec![multiline_anchor_segment(
+                2,
+                3,
+                "delete a\ndelete b",
+                "before",
+                "after",
+            )],
+            aggregate_status: review_types::AnchorAggregateStatus::Anchored,
+        };
+        comment.resolved = true;
+        let anchor = resolve_anchor(&comment, "before\nafter\n", "new".to_string(), None);
+
+        let resolved_comment = apply_anchor(comment.clone(), &anchor);
+
+        assert!(resolved_comment.resolved);
+        assert_eq!(resolved_comment.line_start, 2);
+        assert_eq!(resolved_comment.line_end, 2);
+
+        comment.resolved = false;
+        let unresolved_comment = apply_anchor(comment, &anchor);
+
+        assert!(!unresolved_comment.resolved);
+        assert_eq!(unresolved_comment.line_start, 2);
+        assert_eq!(unresolved_comment.line_end, 2);
     }
 
     fn test_server_context() -> ConnectionContext {

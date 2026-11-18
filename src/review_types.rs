@@ -4,6 +4,7 @@
 //! module, server, client, and UI. Each module can produce or consume these
 //! types without importing another module's internals.
 
+use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -338,7 +339,7 @@ impl CommentAnchor {
 }
 
 /// A review comment attached to a specific location in a diff.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Comment {
     pub id: i64,
     pub merge_base: String,
@@ -351,6 +352,34 @@ pub struct Comment {
     pub updated_at: String,
     /// How well the anchor was resolved (computed at runtime).
     anchor_status: AnchorStatus,
+}
+
+impl Serialize for Comment {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("Comment", 18)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("merge_base", &self.merge_base)?;
+        state.serialize_field("head_ref", &self.head_ref)?;
+        state.serialize_field("created_head_commit", &self.created_head_commit)?;
+        state.serialize_field("file_path", self.file_path())?;
+        state.serialize_field("line_start", &self.line_start())?;
+        state.serialize_field("line_end", &self.line_end())?;
+        state.serialize_field("char_start", &self.char_start())?;
+        state.serialize_field("char_end", &self.char_end())?;
+        state.serialize_field("anchor_text", self.anchor_text())?;
+        state.serialize_field("context_before", self.context_before())?;
+        state.serialize_field("context_after", self.context_after())?;
+        state.serialize_field("anchor", &self.anchor)?;
+        state.serialize_field("body", &self.body)?;
+        state.serialize_field("resolved", &self.resolved)?;
+        state.serialize_field("created_at", &self.created_at)?;
+        state.serialize_field("updated_at", &self.updated_at)?;
+        state.serialize_field("anchor_status", &self.anchor_status)?;
+        state.end()
+    }
 }
 
 /// Construction data for a review comment.
