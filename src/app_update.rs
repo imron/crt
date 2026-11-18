@@ -18,6 +18,10 @@ use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 pub struct AppUpdate {
     pub handled: bool,
     pub status: Option<StatusUpdate>,
+    pub pending_review_toggle: bool,
+    pub should_suspend: bool,
+    pub should_quit: bool,
+    pub pending_command: Option<Command>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,7 +34,7 @@ impl AppUpdate {
     fn handled() -> Self {
         Self {
             handled: true,
-            status: None,
+            ..Self::default()
         }
     }
 
@@ -40,6 +44,22 @@ impl AppUpdate {
 
     fn clear_status(&mut self) {
         self.status = Some(StatusUpdate::Clear);
+    }
+
+    fn request_review_toggle(&mut self) {
+        self.pending_review_toggle = true;
+    }
+
+    fn request_suspend(&mut self) {
+        self.should_suspend = true;
+    }
+
+    fn request_quit(&mut self) {
+        self.should_quit = true;
+    }
+
+    fn request_command(&mut self, command: Command) {
+        self.pending_command = Some(command);
     }
 }
 
@@ -94,23 +114,23 @@ pub fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> App
                 apply_diff_cursor_effect(state, effect);
             }
             CoreEffect::SearchResults(effect) => {
-                apply_search_results_effect(state, effect);
+                apply_search_results_effect(state, &mut update, effect);
             }
             CoreEffect::DefinitionResults(effect) => {
-                apply_definition_results_effect(state, effect);
+                apply_definition_results_effect(state, &mut update, effect);
             }
             CoreEffect::Pane(effect) => {
                 apply_pane_effect(state, effect);
             }
             CoreEffect::Quit => {
-                state.should_quit = true;
+                update.request_quit();
             }
             CoreEffect::Suspend => {
-                state.should_suspend = true;
+                update.request_suspend();
             }
             CoreEffect::ShowHelp | CoreEffect::DismissHelp => {}
             CoreEffect::ReviewToggle => {
-                toggle_review(state);
+                toggle_review(state, &mut update);
                 update.clear_status();
             }
             CoreEffect::NavigateFile(direction) => {
@@ -189,14 +209,14 @@ fn apply_command(state: &mut AppState, update: &mut AppUpdate, command: CommandP
             update.set_status(usage);
         }
         CommandParse::Parsed(Command::Quit) => {
-            state.should_quit = true;
+            update.request_quit();
         }
         CommandParse::Parsed(
             cmd @ (Command::SearchAll { .. }
             | Command::SearchDiff { .. }
             | Command::FindDefinition { .. }),
         ) => {
-            state.pending_command = Some(cmd);
+            update.request_command(cmd);
         }
         CommandParse::Parsed(Command::SetBlame(true)) => {
             state.show_blame = true;
@@ -432,7 +452,11 @@ fn apply_diff_cursor_effect(state: &mut AppState, effect: DiffCursorEffect) {
     }
 }
 
-fn apply_search_results_effect(state: &mut AppState, effect: SearchResultsEffect) {
+fn apply_search_results_effect(
+    state: &mut AppState,
+    update: &mut AppUpdate,
+    effect: SearchResultsEffect,
+) {
     match effect {
         SearchResultsEffect::Close => {
             state.search_results = None;
@@ -480,13 +504,17 @@ fn apply_search_results_effect(state: &mut AppState, effect: SearchResultsEffect
                 .and_then(|results| results.matches.get(results.selected).cloned());
             state.search_results = None;
             if let Some(search_match) = selected {
-                navigate_to_search_match(state, &search_match);
+                navigate_to_search_match(state, update, &search_match);
             }
         }
     }
 }
 
-fn apply_definition_results_effect(state: &mut AppState, effect: DefinitionResultsEffect) {
+fn apply_definition_results_effect(
+    state: &mut AppState,
+    update: &mut AppUpdate,
+    effect: DefinitionResultsEffect,
+) {
     match effect {
         DefinitionResultsEffect::Close => {
             state.definition_results = None;
@@ -512,7 +540,7 @@ fn apply_definition_results_effect(state: &mut AppState, effect: DefinitionResul
                 .and_then(|results| results.definitions.get(results.selected).cloned());
             state.definition_results = None;
             if let Some(definition) = selected {
-                navigate_to_definition(state, &definition);
+                navigate_to_definition(state, update, &definition);
             }
         }
     }
@@ -546,17 +574,29 @@ fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
     }
 }
 
-fn navigate_to_search_match(state: &mut AppState, m: &crate::model::SearchMatch) {
+fn navigate_to_search_match(
+    state: &mut AppState,
+    update: &mut AppUpdate,
+    m: &crate::model::SearchMatch,
+) {
     let target = core_search::resolve_search_target(&state.files, m);
-    navigate_to_location_target(state, target);
+    navigate_to_location_target(state, update, target);
 }
 
-fn navigate_to_definition(state: &mut AppState, def: &crate::model::DefinitionLocation) {
+fn navigate_to_definition(
+    state: &mut AppState,
+    update: &mut AppUpdate,
+    def: &crate::model::DefinitionLocation,
+) {
     let target = core_search::resolve_definition_target(&state.files, def);
-    navigate_to_location_target(state, target);
+    navigate_to_location_target(state, update, target);
 }
 
-fn navigate_to_location_target(state: &mut AppState, target: core_search::LocationTarget) {
+fn navigate_to_location_target(
+    state: &mut AppState,
+    update: &mut AppUpdate,
+    target: core_search::LocationTarget,
+) {
     match target {
         core_search::LocationTarget::InDiff {
             file_index,
@@ -573,7 +613,7 @@ fn navigate_to_location_target(state: &mut AppState, target: core_search::Locati
             line_number,
         } => {
             push_jump_stack(state);
-            state.pending_command = Some(Command::ViewFile {
+            update.request_command(Command::ViewFile {
                 path: file_path,
                 line_number,
             });
@@ -675,7 +715,7 @@ fn request_go_to_definition(state: &mut AppState, update: &mut AppUpdate) {
         if word.is_empty() {
             update.set_status("No word under cursor");
         } else {
-            state.pending_command = Some(Command::FindDefinition { symbol: word });
+            update.request_command(Command::FindDefinition { symbol: word });
         }
     } else {
         update.set_status("No word under cursor");
@@ -1078,9 +1118,9 @@ fn navigate_file(state: &mut AppState, dir: Direction) {
     }
 }
 
-fn toggle_review(state: &mut AppState) {
+fn toggle_review(state: &AppState, update: &mut AppUpdate) {
     if state.files.get(state.selected_file).is_some() {
-        state.pending_review_toggle = true;
+        update.request_review_toggle();
     }
 }
 

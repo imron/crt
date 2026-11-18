@@ -4,7 +4,6 @@ use crossterm::event::{self, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
 use crate::config::StyleConfig;
-use crate::core::command::Command;
 use crate::core::diff;
 use crate::core::interaction::CoreInteractionEngine;
 use crate::core::review;
@@ -155,25 +154,12 @@ pub struct AppState {
     pub head_blame: Vec<crate::git::BlameLine>,
     /// Blame data for the base version of the current file.
     pub base_blame: Vec<crate::git::BlameLine>,
-    /// Set by the key handler when `r` is pressed. The async event loop
-    /// picks this up and calls the server.
-    pub pending_review_toggle: bool,
-    /// Set to true to suspend the process (Ctrl-Z).
-    pub should_suspend: bool,
-    /// Set to true to exit the event loop.
-    pub should_quit: bool,
-    /// Set to true when the terminal regains focus — triggers a full
-    /// file list reload on the next event loop iteration.
-    pub pending_refresh: bool,
     /// Active search results overlay, if any.
     pub search_results: Option<SearchResults>,
     /// Active definition results overlay, if any.
     pub definition_results: Option<DefinitionResults>,
     /// Jump stack for Ctrl-] / Ctrl-t navigation.
     pub jump_stack: Vec<JumpLocation>,
-    /// Pending command to execute asynchronously (set by key handler,
-    /// processed by async event loop).
-    pub pending_command: Option<Command>,
     /// Active diff search query (the confirmed search term).
     pub diff_search_query: Option<String>,
     /// Cached match positions: (display_row, byte_start, byte_end) relative
@@ -237,14 +223,9 @@ impl AppState {
             show_blame: false,
             head_blame: Vec::new(),
             base_blame: Vec::new(),
-            pending_review_toggle: false,
-            should_suspend: false,
-            should_quit: false,
-            pending_refresh: false,
             search_results: None,
             definition_results: None,
             jump_stack: Vec::new(),
-            pending_command: None,
             diff_search_query: None,
             diff_search_matches: Vec::new(),
             diff_search_current: 0,

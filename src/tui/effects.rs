@@ -41,6 +41,7 @@ pub fn apply_core_effects(
     }
 
     let app_update = app_update::apply_core_effects(state, app_effects);
-    tui_state.apply_status_update(app_update.status);
-    app_update.handled || handled
+    let app_handled = app_update.handled;
+    tui_state.apply_app_update(app_update);
+    app_handled || handled
 }

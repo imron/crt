@@ -144,7 +144,7 @@ fn handle_command_input(state: &mut AppState, tui_state: &mut TuiState, key: Cro
             if !submit_active_prompt(state, tui_state, cmd.clone()) {
                 tui_state.clear_prompt();
                 let update = app_update::apply_unscoped_command_prompt(state, cmd);
-                tui_state.apply_status_update(update.status);
+                tui_state.apply_app_update(update);
             }
         }
         KeyCode::Backspace => {
@@ -201,7 +201,7 @@ fn handle_diff_search_input(
             if !submit_active_prompt(state, tui_state, query.clone()) {
                 tui_state.clear_prompt();
                 let update = app_update::apply_unscoped_diff_search_prompt(state, query);
-                tui_state.apply_status_update(update.status);
+                tui_state.apply_app_update(update);
             }
         }
         KeyCode::Backspace => {
