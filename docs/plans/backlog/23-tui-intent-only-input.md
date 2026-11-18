@@ -88,6 +88,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   algorithm, and diff-base toggles through core input as typed effects.
 - Routed active diff-search next, previous, and clear actions through core
   input as typed search effects.
+- Routed quit, suspend, help open, and help dismiss keys through core input as
+  typed app/session effects.
 
 ## Acceptance Criteria
 

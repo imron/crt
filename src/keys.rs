@@ -60,9 +60,13 @@ fn dispatch_core_input(state: &mut AppState, key: CrosstermKeyEvent) -> bool {
     let Some(event) = input_event_from_key(key) else {
         return false;
     };
-    let effects = state
-        .core_interaction
-        .handle_input(event, &InteractionContext::default());
+    let effects = state.core_interaction.handle_input(
+        event,
+        &InteractionContext {
+            help_visible: state.show_help,
+            ..InteractionContext::default()
+        },
+    );
     apply_core_effects(state, effects)
 }
 
@@ -139,6 +143,18 @@ fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
             }
             CoreEffect::DiffSearch(DiffSearchEffect::Clear) => {
                 clear_diff_search(state);
+            }
+            CoreEffect::Quit => {
+                state.should_quit = true;
+            }
+            CoreEffect::Suspend => {
+                state.should_suspend = true;
+            }
+            CoreEffect::ShowHelp => {
+                state.show_help = true;
+            }
+            CoreEffect::DismissHelp => {
+                state.show_help = false;
             }
             CoreEffect::ReviewToggle => {
                 toggle_review(state);
@@ -506,7 +522,9 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
     if state.show_help {
         match key.code {
             KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Esc => {
-                state.show_help = false;
+                if !dispatch_core_input(state, key) {
+                    state.show_help = false;
+                }
             }
             _ => {}
         }
@@ -777,14 +795,23 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
             return;
         }
         (KeyCode::Char('z'), KeyModifiers::CONTROL) => {
+            if dispatch_core_input(state, key) {
+                return;
+            }
             state.should_suspend = true;
             return;
         }
         (KeyCode::Char('?'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            if dispatch_core_input(state, key) {
+                return;
+            }
             state.show_help = true;
             return;
         }
         (KeyCode::Char('q'), KeyModifiers::NONE) => {
+            if dispatch_core_input(state, key) {
+                return;
+            }
             state.should_quit = true;
             return;
         }
