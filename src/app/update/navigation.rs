@@ -3,6 +3,7 @@ use super::cursor::clamp_cursor_and_scroll;
 use super::output::AppOutput;
 use super::viewport::AppViewport;
 use crate::app::diff_rows::{inline_diff_rows, side_by_side_diff_rows};
+use crate::app::document::RowIndex;
 use crate::app::model::CommentProjection;
 use crate::app::{AppState, FileListSectionFocus, JumpLocation};
 use crate::core::command::Command;
@@ -486,6 +487,22 @@ pub fn navigate_unresolved_comment_from_cursor(
         return false;
     }
 
+    state.ensure_active_document();
+    if let Some(comment_id) = state
+        .active_document
+        .as_ref()
+        .and_then(|document| {
+            document
+                .diff
+                .next_unresolved_comment(RowIndex(state.diff_line_cursor), dir)
+        })
+        .map(|comment| comment.id)
+        .filter(|comment_id| Some(*comment_id) != state.selected_comment_id)
+    {
+        activate_unresolved_comment(state, view, comment_id);
+        return true;
+    }
+
     let cursor_line = CommentProjection::current_head_line_for_navigation(state)
         .map(i64::from)
         .or_else(|| {
@@ -500,10 +517,7 @@ pub fn navigate_unresolved_comment_from_cursor(
         .selected_comment_id
         .and_then(|id| {
             targets.iter().position(|target| {
-                target.comment_id == id
-                    && target.file_index == Some(state.selected_file)
-                    && target.line_start <= cursor_line
-                    && target.line_end >= cursor_line
+                target.comment_id == id && target.file_index == Some(state.selected_file)
             })
         })
         .or_else(|| {
@@ -559,28 +573,10 @@ pub fn selected_comment_visible_in_current_view(state: &AppState) -> bool {
     let Some(id) = state.selected_comment_id else {
         return true;
     };
-    let Some(comment) = state.comments.iter().find(|comment| comment.id == id) else {
-        return true;
-    };
-    match (state.content_mode, state.render_variant) {
-        (
-            crate::review_types::ContentMode::FullFile,
-            crate::review_types::RenderVariant::BaseVersion,
-        ) => comment
-            .anchor()
-            .segments
-            .iter()
-            .any(|segment| segment.side == crate::review_types::CommentAnchorSide::Base),
-        (
-            crate::review_types::ContentMode::FullFile,
-            crate::review_types::RenderVariant::HeadVersion,
-        ) => comment
-            .anchor()
-            .segments
-            .iter()
-            .any(|segment| segment.side == crate::review_types::CommentAnchorSide::Head),
-        _ => true,
-    }
+    state
+        .active_document
+        .as_ref()
+        .is_none_or(|document| document.diff.comment_span(id).is_some())
 }
 
 fn activate_unresolved_comment(state: &mut AppState, view: &impl AppViewport, comment_id: i64) {

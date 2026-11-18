@@ -62,6 +62,7 @@ pub fn apply_core_effects(
     view: &impl AppViewport,
     effects: Vec<CoreEffect>,
 ) -> AppOutput {
+    state.ensure_active_document();
     let mut update = AppOutput::default();
     for effect in effects {
         update.handled = true;

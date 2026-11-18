@@ -1637,7 +1637,21 @@ fn comments_panel_model(state: &AppState) -> CommentsPanel {
     let selected_path = state
         .selected_file_entry()
         .map(|entry| entry.change.path.as_str());
-    let current_line = current_visible_line(state).map(i64::from);
+    let active_document_comment_id = state
+        .active_document
+        .as_ref()
+        .and_then(|document| document.diff.current_comment_id());
+    let current_line = active_document_comment_id
+        .is_none()
+        .then(|| current_visible_line(state).map(i64::from))
+        .flatten();
+    let current_comment_id = active_document_comment_id.or_else(|| {
+        current_line.and_then(|line| {
+            selected_path.and_then(|path| {
+                current_comment_id_for_line(&state.comments, path, line, state.selected_comment_id)
+            })
+        })
+    });
     let mut file_comments: Vec<&review_types::Comment> = state
         .comments
         .iter()
@@ -1652,11 +1666,7 @@ fn comments_panel_model(state: &AppState) -> CommentsPanel {
     let detail_id = if state.pane_focus == PaneFocus::Comments {
         state.selected_comment_id
     } else {
-        current_line.and_then(|line| {
-            selected_path.and_then(|path| {
-                current_comment_id_for_line(&state.comments, path, line, state.selected_comment_id)
-            })
-        })
+        current_comment_id
     };
     let selected_comment_out_of_range = state.selected_comment_id.and_then(|id| {
         state
@@ -1674,11 +1684,7 @@ fn comments_panel_model(state: &AppState) -> CommentsPanel {
         .map(|comment| {
             let (line_start, line_end) = logical_comment_line_range(comment)
                 .unwrap_or((comment.line_start(), comment.line_end()));
-            let current = selected_path.is_some_and(|path| comment.file_path() == path)
-                && current_line.is_some_and(|line| {
-                    logical_comment_line_range(comment)
-                        .is_some_and(|(start, end)| start <= line && end >= line)
-                });
+            let current = current_comment_id == Some(comment.id);
             let expanded =
                 !comment.resolved || current || state.expanded_comment_ids.contains(&comment.id);
             vec![CommentItem {

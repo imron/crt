@@ -1,9 +1,11 @@
 use super::cursor::clamp_cursor_and_scroll;
 use super::output::AppOutput;
 use super::viewport::AppViewport;
+use crate::app::document::{RowIndex, RowSpan};
 use crate::app::model::CommentProjection;
 use crate::app::{AppState, FileListSectionFocus};
 use crate::core::CommentsPanelEffect;
+use crate::core::navigation::Direction;
 use crate::review_types::{Comment, PaneFocus};
 
 pub fn current_comment(state: &AppState) -> Option<&Comment> {
@@ -15,15 +17,25 @@ pub fn current_comment(state: &AppState) -> Option<&Comment> {
         }
     }
 
-    let path = selected_path(state)?;
-    let line = CommentProjection::current_visible_line(state)?;
-    CommentProjection::current_comment_for_line(
-        &state.comments,
-        path,
-        i64::from(line),
-        CommentProjection::current_comment_side(state),
-        state.selected_comment_id,
-    )
+    let comment_id = state
+        .active_document
+        .as_ref()
+        .and_then(|document| document.diff.current_comment_id())
+        .or_else(|| {
+            let path = selected_path(state)?;
+            let line = CommentProjection::current_visible_line(state)?;
+            CommentProjection::current_comment_id_for_line(
+                &state.comments,
+                path,
+                i64::from(line),
+                CommentProjection::current_comment_side(state),
+                state.selected_comment_id,
+            )
+        })?;
+    state
+        .comments
+        .iter()
+        .find(|comment| comment.id == comment_id)
 }
 
 pub fn current_comment_id(state: &AppState) -> Option<i64> {
@@ -39,14 +51,14 @@ pub fn apply_comments_panel_effect(
     match effect {
         CommentsPanelEffect::Toggle => toggle_panel(state, update),
         CommentsPanelEffect::SelectNext => select_adjacent(state, Direction::Next),
-        CommentsPanelEffect::SelectPrevious => select_adjacent(state, Direction::Previous),
+        CommentsPanelEffect::SelectPrevious => select_adjacent(state, Direction::Prev),
         CommentsPanelEffect::ToggleExpanded => toggle_selected_expanded_or_navigate(state, view),
         CommentsPanelEffect::NavigateToSelected => navigate_to_selected(state, view),
         CommentsPanelEffect::NavigateNextComment => {
             navigate_adjacent_comment(state, view, Direction::Next)
         }
         CommentsPanelEffect::NavigatePreviousComment => {
-            navigate_adjacent_comment(state, view, Direction::Previous);
+            navigate_adjacent_comment(state, view, Direction::Prev);
         }
         CommentsPanelEffect::EditCurrent => {
             if current_comment(state).is_none() {
@@ -122,60 +134,30 @@ fn navigate_adjacent_comment(state: &mut AppState, view: &impl AppViewport, dire
         state.show_comments_panel = true;
         state.mark_model_changed();
     }
-    let comments = current_file_comments(state);
-    if comments.is_empty() {
-        return;
-    }
-    let Some(cursor_line) = CommentProjection::current_head_line_for_navigation(state) else {
+    state.ensure_active_document();
+    let row = RowIndex(state.diff_line_cursor);
+    let Some(comment_id) = state
+        .active_document
+        .as_ref()
+        .and_then(|document| document.diff.next_comment(row, direction))
+        .map(|comment| comment.id)
+    else {
         return;
     };
-    let cursor_line = i64::from(cursor_line);
-    let next_index = match direction {
-        Direction::Next => comments
-            .iter()
-            .position(|comment| {
-                visible_comment_line_range(state, comment)
-                    .is_some_and(|(line_start, _)| line_start > cursor_line)
-            })
-            .unwrap_or(0),
-        Direction::Previous => comments
-            .iter()
-            .rposition(|comment| {
-                visible_comment_line_range(state, comment)
-                    .is_some_and(|(line_start, _)| line_start < cursor_line)
-            })
-            .unwrap_or(comments.len() - 1),
-    };
-    let comment = comments[next_index].clone();
-    state.selected_comment_id = Some(comment.id);
-    navigate_to_comment(state, view, &comment);
+    navigate_to_comment_id(state, view, comment_id);
 }
 
 fn select_adjacent(state: &mut AppState, direction: Direction) {
-    let comments = current_file_comments(state);
-    if comments.is_empty() {
-        state.selected_comment_id = None;
-    } else if let Some(cursor_line) =
-        CommentProjection::current_head_line_for_navigation(state).map(i64::from)
-    {
-        let next_index = match direction {
-            Direction::Next => comments
-                .iter()
-                .position(|comment| {
-                    visible_comment_line_range(state, comment)
-                        .is_some_and(|(line_start, _)| line_start > cursor_line)
-                })
-                .unwrap_or(0),
-            Direction::Previous => comments
-                .iter()
-                .rposition(|comment| {
-                    visible_comment_line_range(state, comment)
-                        .is_some_and(|(line_start, _)| line_start < cursor_line)
-                })
-                .unwrap_or(comments.len() - 1),
-        };
-        state.selected_comment_id = Some(comments[next_index].id);
-    }
+    state.ensure_active_document();
+    state.selected_comment_id = state
+        .active_document
+        .as_ref()
+        .and_then(|document| {
+            document
+                .diff
+                .next_comment(RowIndex(state.diff_line_cursor), direction)
+        })
+        .map(|comment| comment.id);
     state.pending_delete_comment_id = None;
     state.mark_model_changed();
 }
@@ -225,15 +207,15 @@ fn navigate_to_comment(state: &mut AppState, view: &impl AppViewport, comment: &
     };
     state.select_file(file_index, focus, false);
     state.selected_comment_id = Some(comment.id);
-    let Some((start_row, end_row)) = CommentProjection::display_rows_for_comment(state, comment)
-    else {
+    state.ensure_active_document();
+    let Some(span) = comment_display_span(state, comment) else {
         state.mark_model_changed();
         return false;
     };
     state.pane_focus = PaneFocus::Diff;
-    state.diff_line_cursor = start_row;
+    state.diff_line_cursor = span.start.0;
     state.diff_col_cursor = 0;
-    scroll_to_comment(state, view, start_row, end_row);
+    scroll_to_comment(state, view, span.start.0, span.end.0);
     clamp_cursor_and_scroll(state, view);
     state.mark_model_changed();
     true
@@ -276,40 +258,23 @@ fn selected_comment(state: &AppState) -> Option<&Comment> {
     state.comments.iter().find(|comment| comment.id == id)
 }
 
-fn visible_comment_line_range(state: &AppState, comment: &Comment) -> Option<(i64, i64)> {
-    CommentProjection::visible_range_for_side(
-        comment,
-        CommentProjection::current_comment_side(state),
-    )
-}
-
-fn current_file_comments(state: &AppState) -> Vec<&Comment> {
-    let Some(path) = selected_path(state) else {
-        return Vec::new();
-    };
-    let mut comments: Vec<&Comment> = state
-        .comments
-        .iter()
-        .filter(|comment| {
-            comment.file_path() == path && visible_comment_line_range(state, comment).is_some()
-        })
-        .collect();
-    comments.sort_by_key(|comment| {
-        let (start, end) = visible_comment_line_range(state, comment)
-            .unwrap_or((comment.line_start(), comment.line_end()));
-        (start, end, comment.id)
-    });
-    comments
-}
-
 fn selected_path(state: &AppState) -> Option<&str> {
     state
         .selected_file_entry()
         .map(|entry| entry.change.path.as_str())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Direction {
-    Next,
-    Previous,
+fn comment_display_span(state: &AppState, comment: &Comment) -> Option<RowSpan> {
+    state
+        .active_document
+        .as_ref()
+        .and_then(|document| document.diff.comment_span(comment.id))
+        .or_else(|| {
+            CommentProjection::display_rows_for_comment(state, comment).map(|(start, end)| {
+                RowSpan {
+                    start: RowIndex(start),
+                    end: RowIndex(end),
+                }
+            })
+        })
 }
