@@ -65,7 +65,7 @@ pub async fn handle_init(
     let (git_ctx, merge_base) = match git_result {
         Ok(Ok(pair)) => pair,
         Ok(Err(e)) => {
-            return JsonRpcResponse::error(id.clone(), ERR_INVALID_PARAMS, format!("{e}"));
+            return JsonRpcResponse::error(id.clone(), ERR_INVALID_PARAMS, format!("{e:#}"));
         }
         Err(e) => {
             return JsonRpcResponse::error(
@@ -78,11 +78,14 @@ pub async fn handle_init(
 
     // Ensure .crt directory exists
     let crt_dir = git_ctx.repo_root.join(".crt");
-    if !crt_dir.exists() && std::fs::create_dir_all(&crt_dir).is_err() {
+    if let Err(e) = std::fs::create_dir_all(&crt_dir) {
         return JsonRpcResponse::error(
             id.clone(),
             ERR_INTERNAL,
-            format!("Failed to create .crt directory at {}", crt_dir.display()),
+            format!(
+                "Failed to create .crt directory at {}: {e}",
+                crt_dir.display()
+            ),
         );
     }
 
