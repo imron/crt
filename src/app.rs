@@ -1965,6 +1965,50 @@ mod tests {
             .expect("test comment anchor should be valid");
     }
 
+    fn move_comment_to_base_head_ranges(
+        comment: &mut crate::review_types::Comment,
+        base_line_start: i64,
+        base_line_end: i64,
+        head_line_start: i64,
+        head_line_end: i64,
+    ) {
+        let file_path = comment.file_path().to_string();
+        let anchor = crate::review_types::CommentAnchor {
+            segments: vec![
+                crate::review_types::CommentAnchorSegment {
+                    side: crate::review_types::CommentAnchorSide::Base,
+                    file_path: file_path.clone(),
+                    line_start: base_line_start,
+                    line_end: base_line_end,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "old line".to_string(),
+                    context_before: String::new(),
+                    context_after: String::new(),
+                    placement_status: crate::review_types::AnchorPlacementStatus::Anchored,
+                    match_method: crate::review_types::AnchorMatchMethod::ExactAtLine,
+                },
+                crate::review_types::CommentAnchorSegment {
+                    side: crate::review_types::CommentAnchorSide::Head,
+                    file_path,
+                    line_start: head_line_start,
+                    line_end: head_line_end,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "new line".to_string(),
+                    context_before: String::new(),
+                    context_after: String::new(),
+                    placement_status: crate::review_types::AnchorPlacementStatus::Anchored,
+                    match_method: crate::review_types::AnchorMatchMethod::ExactAtLine,
+                },
+            ],
+            aggregate_status: crate::review_types::AnchorAggregateStatus::Anchored,
+        };
+        comment
+            .replace_anchor(anchor)
+            .expect("test comment anchor should be valid");
+    }
+
     fn segment_for_side(
         capture: &CommentAnchorCapture,
         side: CommentAnchorSide,
@@ -2357,6 +2401,56 @@ mod tests {
         );
         assert_eq!(app.state.files[app.state.selected_file].change.path, "a.rs");
         assert_eq!(app.state.selected_comment_id, Some(9));
+    }
+
+    #[test]
+    fn unresolved_comment_shortcut_advances_from_deletion_row() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_offset_multiline_replacement_hunk("a.rs")],
+        );
+        let mut current = stored_comment(1, "a.rs");
+        move_comment_to_base_head_ranges(&mut current, 26, 26, 27, 27);
+        let mut next = stored_comment(2, "a.rs");
+        move_comment_head_range(&mut next, 28, 28);
+        app.state.comments = vec![current, next];
+        app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
+        app.state.content_mode = ContentMode::Diff;
+        app.state.render_variant = RenderVariant::Inline;
+        app.state.diff_line_cursor = 0;
+        app.state.selected_comment_id = Some(1);
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 12]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+
+        assert_eq!(app.state.selected_comment_id, Some(2));
+        assert_eq!(app.state.diff_line_cursor, 2);
+    }
+
+    #[test]
+    fn unresolved_comment_shortcut_prev_skips_current_multiline_range() {
+        let mut app = App::new(Config::default(), test_context(), vec![test_file("a.rs")]);
+        let mut previous = stored_comment(1, "a.rs");
+        move_comment_head_range(&mut previous, 130, 130);
+        let mut current = stored_comment(2, "a.rs");
+        move_comment_head_range(&mut current, 182, 191);
+        app.state.comments = vec![previous, current];
+        app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::HeadVersion;
+        app.state.diff_line_cursor = 183;
+        app.state.selected_comment_id = Some(2);
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 220]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Prev)],
+        );
+
+        assert_eq!(app.state.selected_comment_id, Some(1));
+        assert_eq!(app.state.diff_line_cursor, 129);
     }
 
     #[test]

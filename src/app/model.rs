@@ -7,8 +7,8 @@
 use std::collections::BTreeMap;
 
 use crate::app::diff_rows::{
-    LinearDiffRows, SideBySideDiffRows, full_file_base_rows, full_file_head_rows, inline_diff_rows,
-    side_by_side_diff_rows,
+    LinearDiffRow, LinearDiffRows, SideBySideDiffRows, full_file_base_rows, full_file_head_rows,
+    inline_diff_rows, side_by_side_diff_rows,
 };
 use crate::app::{AppState, CommentAnchorCapture, FileListSectionFocus, VisualSelectionMode};
 use crate::config::DiffAlgorithm;
@@ -202,9 +202,11 @@ pub struct CommentMarkerSet {
     markers_by_line: BTreeMap<u32, MarkerCandidate>,
     base_markers_by_line: BTreeMap<u32, MarkerCandidate>,
     head_markers_by_line: BTreeMap<u32, MarkerCandidate>,
+    inline_markers_by_row: BTreeMap<u32, MarkerCandidate>,
     current_comment: Option<CurrentComment>,
     base_current_comment: Option<CurrentComment>,
     head_current_comment: Option<CurrentComment>,
+    inline_current_comment: Option<CurrentComment>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -302,10 +304,35 @@ impl CommentMarkerSet {
             markers_by_line: marker_candidates,
             base_markers_by_line,
             head_markers_by_line,
+            inline_markers_by_row: BTreeMap::new(),
             current_comment,
             base_current_comment,
             head_current_comment,
+            inline_current_comment: None,
         }
+    }
+
+    pub(crate) fn new_with_current_inline_rows(
+        comments: &[CommentAttachment],
+        current_line: Option<u32>,
+        current_row: Option<usize>,
+        rows: &LinearDiffRows,
+        selected_comment_id: Option<i64>,
+    ) -> Self {
+        let current_diff_row = current_row.and_then(|row| rows.rows.get(row));
+        let base_current_line = current_diff_row.and_then(|row| row.old_lineno);
+        let head_current_line = current_diff_row.and_then(|row| row.new_lineno);
+        let mut marker_set = Self::new_with_current_side_lines(
+            comments,
+            current_line,
+            base_current_line,
+            head_current_line,
+            selected_comment_id,
+        );
+        marker_set.inline_markers_by_row = inline_marker_candidates(comments, rows);
+        marker_set.inline_current_comment =
+            inline_current_comment(comments, rows, current_row, selected_comment_id);
+        marker_set
     }
 
     pub fn has_markers(&self) -> bool {
@@ -397,6 +424,34 @@ impl CommentMarkerSet {
             })
     }
 
+    pub fn marker_for_inline_row(&self, row: usize) -> CommentMarker {
+        let line = row.saturating_add(1) as u32;
+        if let Some(current_comment) = self.inline_current_comment {
+            if current_comment.contains(line)
+                && self.inline_row_uses_current_marker(line, current_comment)
+            {
+                return CommentMarker {
+                    kind: Some(current_comment.kind_for_line(line)),
+                    resolved: current_comment.resolved,
+                    current: true,
+                };
+            }
+        }
+        self.inline_markers_by_row
+            .get(&line)
+            .copied()
+            .map(|marker| CommentMarker {
+                kind: Some(marker.kind),
+                resolved: marker.resolved,
+                current: false,
+            })
+            .unwrap_or(CommentMarker {
+                kind: None,
+                resolved: false,
+                current: false,
+            })
+    }
+
     fn inactive_marker_for_line(&self, line: u32) -> CommentMarker {
         self.markers_by_line
             .get(&line)
@@ -435,6 +490,17 @@ impl CommentMarkerSet {
         }
 
         !markers_by_line
+            .get(&line)
+            .is_some_and(|marker| marker.kind.is_boundary_marker())
+    }
+
+    fn inline_row_uses_current_marker(&self, line: u32, current_comment: CurrentComment) -> bool {
+        if current_comment.is_boundary(line) {
+            return true;
+        }
+
+        !self
+            .inline_markers_by_row
             .get(&line)
             .is_some_and(|marker| marker.kind.is_boundary_marker())
     }
@@ -540,6 +606,98 @@ fn side_marker_candidates(
     }
 
     marker_candidates
+}
+
+fn inline_marker_candidates(
+    comments: &[CommentAttachment],
+    rows: &LinearDiffRows,
+) -> BTreeMap<u32, MarkerCandidate> {
+    let mut marker_candidates = BTreeMap::new();
+    for (comment, start, end) in inline_comment_row_ranges(comments, rows) {
+        insert_marker_candidates(
+            &mut marker_candidates,
+            comment,
+            i64::from(start),
+            i64::from(end),
+        );
+    }
+    marker_candidates
+}
+
+fn inline_current_comment(
+    comments: &[CommentAttachment],
+    rows: &LinearDiffRows,
+    current_row: Option<usize>,
+    selected_comment_id: Option<i64>,
+) -> Option<CurrentComment> {
+    let current_line = current_row?.saturating_add(1) as u32;
+    let candidates: Vec<CurrentComment> = inline_comment_row_ranges(comments, rows)
+        .into_iter()
+        .filter_map(|(comment, start, end)| {
+            if current_line < start || current_line > end {
+                return None;
+            }
+            Some(CurrentComment {
+                id: comment.id,
+                start,
+                end,
+                resolved: comment.resolved,
+            })
+        })
+        .collect();
+    let max_start = candidates.iter().map(|comment| comment.start).max()?;
+    if let Some(selected) = selected_comment_id.and_then(|id| {
+        candidates
+            .iter()
+            .copied()
+            .find(|comment| comment.id == id && comment.start == max_start)
+    }) {
+        return Some(selected);
+    }
+    candidates
+        .into_iter()
+        .filter(|comment| comment.start == max_start)
+        .max_by_key(|comment| comment.id)
+}
+
+fn inline_comment_row_ranges<'a>(
+    comments: &'a [CommentAttachment],
+    rows: &LinearDiffRows,
+) -> Vec<(&'a CommentAttachment, u32, u32)> {
+    comments
+        .iter()
+        .filter_map(|comment| {
+            let mut matching_rows = rows.rows.iter().enumerate().filter_map(|(idx, row)| {
+                inline_row_matches_comment(row, comment).then_some(idx.saturating_add(1) as u32)
+            });
+            let first = matching_rows.next()?;
+            let (start, end) = matching_rows.fold((first, first), |(start, end), row| {
+                (start.min(row), end.max(row))
+            });
+            Some((comment, start, end))
+        })
+        .collect()
+}
+
+fn inline_row_matches_comment(row: &LinearDiffRow, comment: &CommentAttachment) -> bool {
+    if comment.side_ranges.is_empty() {
+        let start = comment.line_start.max(1) as u32;
+        let end = comment.line_end.max(comment.line_start).max(1) as u32;
+        return row
+            .new_lineno
+            .or(row.old_lineno)
+            .is_some_and(|line| line >= start && line <= end);
+    }
+
+    comment.side_ranges.iter().any(|range| {
+        let start = range.line_start.max(1) as u32;
+        let end = range.line_end.max(range.line_start).max(1) as u32;
+        let line = match range.side {
+            review_types::CommentAnchorSide::Base => row.old_lineno,
+            review_types::CommentAnchorSide::Head => row.new_lineno,
+        };
+        line.is_some_and(|line| line >= start && line <= end)
+    })
 }
 
 fn insert_marker_candidates(
@@ -1183,14 +1341,11 @@ fn comment_marker_set_for_current_view(
             )
         }
         ContentMode::Diff if state.render_variant == RenderVariant::Inline => {
-            let current_row = inline_rows.rows.get(state.diff_line_cursor);
-            let base_current_line = current_row.and_then(|row| row.old_lineno);
-            let head_current_line = current_row.and_then(|row| row.new_lineno);
-            CommentMarkerSet::new_with_current_side_lines(
+            CommentMarkerSet::new_with_current_inline_rows(
                 comments,
                 current_line,
-                base_current_line,
-                head_current_line,
+                Some(state.diff_line_cursor),
+                inline_rows,
                 state.selected_comment_id,
             )
         }
@@ -1299,7 +1454,11 @@ fn comments_panel_model(state: &AppState) -> CommentsPanel {
         .iter()
         .filter(|comment| selected_path.is_none_or(|path| comment.file_path() == path))
         .collect();
-    file_comments.sort_by_key(|comment| (comment.line_start(), comment.line_end(), comment.id));
+    file_comments.sort_by_key(|comment| {
+        let (start, end) = logical_comment_line_range(comment)
+            .unwrap_or((comment.line_start(), comment.line_end()));
+        (start, end, comment.id)
+    });
     let file_comment_ids: Vec<i64> = file_comments.iter().map(|comment| comment.id).collect();
     let detail_id = if state.pane_focus == PaneFocus::Comments {
         state.selected_comment_id
@@ -1324,16 +1483,20 @@ fn comments_panel_model(state: &AppState) -> CommentsPanel {
         })
         .or(selected_comment_out_of_range)
         .map(|comment| {
+            let (line_start, line_end) = logical_comment_line_range(comment)
+                .unwrap_or((comment.line_start(), comment.line_end()));
             let current = selected_path.is_some_and(|path| comment.file_path() == path)
-                && current_line
-                    .is_some_and(|line| comment.line_start() <= line && comment.line_end() >= line);
+                && current_line.is_some_and(|line| {
+                    logical_comment_line_range(comment)
+                        .is_some_and(|(start, end)| start <= line && end >= line)
+                });
             let expanded =
                 !comment.resolved || current || state.expanded_comment_ids.contains(&comment.id);
             vec![CommentItem {
                 id: comment.id,
                 file_path: comment.file_path().to_string(),
-                line_start: comment.line_start(),
-                line_end: comment.line_end(),
+                line_start,
+                line_end,
                 body: comment.body.clone(),
                 preview: comment_preview(&comment.body),
                 resolved: comment.resolved,
@@ -1368,27 +1531,45 @@ fn current_comment_id_for_line(
         .iter()
         .filter(|comment| {
             comment.file_path() == path
-                && comment.line_start() <= line
-                && comment.line_end() >= line
+                && logical_comment_line_range(comment)
+                    .is_some_and(|(start, end)| start <= line && end >= line)
         })
         .collect();
     let max_start = candidates
         .iter()
-        .map(|comment| comment.line_start())
+        .filter_map(|comment| logical_comment_line_range(comment).map(|(start, _)| start))
         .max()?;
     if let Some(selected) = selected_comment_id.and_then(|id| {
-        candidates
-            .iter()
-            .copied()
-            .find(|comment| comment.id == id && comment.line_start() == max_start)
+        candidates.iter().copied().find(|comment| {
+            comment.id == id
+                && logical_comment_line_range(comment).is_some_and(|(start, _)| start == max_start)
+        })
     }) {
         return Some(selected.id);
     }
     candidates
         .into_iter()
-        .filter(|comment| comment.line_start() == max_start)
+        .filter(|comment| {
+            logical_comment_line_range(comment).is_some_and(|(start, _)| start == max_start)
+        })
         .max_by_key(|comment| comment.id)
         .map(|comment| comment.id)
+}
+
+fn logical_comment_line_range(comment: &review_types::Comment) -> Option<(i64, i64)> {
+    let mut segments = comment
+        .anchor()
+        .segments
+        .iter()
+        .filter(|segment| segment.file_path == comment.file_path());
+    let first = segments.next()?;
+    let mut line_start = first.line_start;
+    let mut line_end = first.line_end;
+    for segment in segments {
+        line_start = line_start.min(segment.line_start);
+        line_end = line_end.max(segment.line_end);
+    }
+    Some((line_start, line_end))
 }
 
 fn comment_preview(body: &str) -> String {
@@ -1409,130 +1590,38 @@ fn current_visible_line(state: &AppState) -> Option<u32> {
             }
             _ => None,
         },
-        ContentMode::Diff => diff_new_line_at_row(state, state.diff_line_cursor),
+        ContentMode::Diff => diff_visible_line_at_row(state, state.diff_line_cursor),
     }
 }
 
-fn diff_new_line_at_row(state: &AppState, row: usize) -> Option<u32> {
+fn diff_visible_line_at_row(state: &AppState, row: usize) -> Option<u32> {
     if state.render_variant == RenderVariant::SideBySide {
-        return side_by_side_new_line_at_row(state, row);
+        return side_by_side_visible_line_at_row(state, row);
     }
-    inline_new_line_at_row(state, row)
+    inline_visible_line_at_row(state, row)
 }
 
-fn inline_new_line_at_row(state: &AppState, row: usize) -> Option<u32> {
+fn inline_visible_line_at_row(state: &AppState, row: usize) -> Option<u32> {
     let entry = state.selected_file_entry()?;
-    let head_lines = state
-        .head_content
-        .as_deref()
-        .map(|content| content.lines().count())
-        .unwrap_or(0);
-    if entry.diff.hunks.is_empty() {
-        return (row < head_lines).then_some(row.saturating_add(1) as u32);
-    }
-
-    let mut display_row = 0usize;
-    let mut new_cursor = 1u32;
-    for hunk in &entry.diff.hunks {
-        while new_cursor < hunk.new_start && (new_cursor as usize) <= head_lines {
-            if display_row == row {
-                return Some(new_cursor);
-            }
-            display_row = display_row.saturating_add(1);
-            new_cursor = new_cursor.saturating_add(1);
-        }
-
-        for line in &hunk.lines {
-            if display_row == row {
-                return line.new_lineno;
-            }
-            display_row = display_row.saturating_add(1);
-            if line.new_lineno.is_some() {
-                new_cursor = new_cursor.saturating_add(1);
-            }
-        }
-    }
-
-    while (new_cursor as usize) <= head_lines {
-        if display_row == row {
-            return Some(new_cursor);
-        }
-        display_row = display_row.saturating_add(1);
-        new_cursor = new_cursor.saturating_add(1);
-    }
-    None
+    let rows = inline_diff_rows(&entry.diff.hunks, state.head_content.as_deref());
+    rows.rows
+        .get(row)
+        .and_then(|row| row.new_lineno.or(row.old_lineno))
 }
 
-fn side_by_side_new_line_at_row(state: &AppState, row: usize) -> Option<u32> {
+fn side_by_side_visible_line_at_row(state: &AppState, row: usize) -> Option<u32> {
     let entry = state.selected_file_entry()?;
-    let head_lines = state
-        .head_content
-        .as_deref()
-        .map(|content| content.lines().count())
-        .unwrap_or(0);
-    if entry.diff.hunks.is_empty() {
-        return (row < head_lines).then_some(row.saturating_add(1) as u32);
-    }
-
-    let mut display_row = 0usize;
-    let mut new_cursor = 1u32;
-    for hunk in &entry.diff.hunks {
-        while new_cursor < hunk.new_start && (new_cursor as usize) <= head_lines {
-            if display_row == row {
-                return Some(new_cursor);
-            }
-            display_row = display_row.saturating_add(1);
-            new_cursor = new_cursor.saturating_add(1);
-        }
-
-        let mut index = 0;
-        while index < hunk.lines.len() {
-            let line = &hunk.lines[index];
-            if line.kind == LineKind::Context {
-                if display_row == row {
-                    return line.new_lineno;
-                }
-                display_row = display_row.saturating_add(1);
-                new_cursor = new_cursor.saturating_add(1);
-                index += 1;
-                continue;
-            }
-
-            let block_start = index;
-            let mut del_end = index;
-            while del_end < hunk.lines.len() && hunk.lines[del_end].kind == LineKind::Deletion {
-                del_end += 1;
-            }
-            let mut add_end = del_end;
-            while add_end < hunk.lines.len() && hunk.lines[add_end].kind == LineKind::Addition {
-                add_end += 1;
-            }
-
-            let deletion_count = del_end.saturating_sub(block_start);
-            let additions = &hunk.lines[del_end..add_end];
-            let max_count = deletion_count.max(additions.len());
-            for offset in 0..max_count {
-                let new_lineno = additions.get(offset).and_then(|line| line.new_lineno);
-                if display_row == row {
-                    return new_lineno;
-                }
-                display_row = display_row.saturating_add(1);
-                if new_lineno.is_some() {
-                    new_cursor = new_cursor.saturating_add(1);
-                }
-            }
-            index = add_end;
-        }
-    }
-
-    while (new_cursor as usize) <= head_lines {
-        if display_row == row {
-            return Some(new_cursor);
-        }
-        display_row = display_row.saturating_add(1);
-        new_cursor = new_cursor.saturating_add(1);
-    }
-    None
+    let rows = side_by_side_diff_rows(
+        &entry.diff.hunks,
+        state.base_content.as_deref(),
+        state.head_content.as_deref(),
+    );
+    rows.rows.get(row).and_then(|row| {
+        row.head
+            .as_ref()
+            .map(|cell| cell.line_number)
+            .or_else(|| row.base.as_ref().map(|cell| cell.line_number))
+    })
 }
 
 impl From<&review_types::ReviewStatus> for ReviewStatus {
@@ -2097,6 +2186,103 @@ mod tests {
             false,
             true,
         );
+    }
+
+    #[test]
+    fn comments_panel_uses_logical_inline_comment_on_base_segment_row() {
+        let hunk = review_types::DiffHunk {
+            old_start: 130,
+            old_lines: 1,
+            new_start: 139,
+            new_lines: 4,
+            header: "@@ -130 +139,4 @@".to_string(),
+            lines: vec![
+                review_types::DiffLine {
+                    kind: LineKind::Deletion,
+                    content: ".position(|comment| comment.line_start > cursor_line)".to_string(),
+                    old_lineno: Some(130),
+                    new_lineno: None,
+                },
+                review_types::DiffLine {
+                    kind: LineKind::Addition,
+                    content: ".position(|comment| {".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(139),
+                },
+                review_types::DiffLine {
+                    kind: LineKind::Addition,
+                    content: "    visible_comment_line_range(state, comment)".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(140),
+                },
+                review_types::DiffLine {
+                    kind: LineKind::Addition,
+                    content: "        .is_some_and(|(line_start, _)| line_start > cursor_line)"
+                        .to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(141),
+                },
+                review_types::DiffLine {
+                    kind: LineKind::Addition,
+                    content: "})".to_string(),
+                    old_lineno: None,
+                    new_lineno: Some(142),
+                },
+            ],
+        };
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![file(
+                "src/lib.rs",
+                review_types::ReviewStatus::Unreviewed,
+                vec![hunk],
+            )],
+        );
+        app.state.content_mode = ContentMode::Diff;
+        app.state.render_variant = RenderVariant::Inline;
+        app.state.show_comments_panel = true;
+        app.state.head_content = Some(
+            (1..=143)
+                .map(|n| format!("head {n}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.state.comments = vec![compound_comment(
+            1,
+            "src/lib.rs",
+            vec![
+                anchor_segment(
+                    review_types::CommentAnchorSide::Base,
+                    "src/lib.rs",
+                    130,
+                    130,
+                    "base",
+                ),
+                anchor_segment(
+                    review_types::CommentAnchorSide::Head,
+                    "src/lib.rs",
+                    139,
+                    142,
+                    "head",
+                ),
+            ],
+        )];
+        let deletion_row = app
+            .model()
+            .diff
+            .inline_rows
+            .rows
+            .iter()
+            .position(|row| row.old_lineno == Some(130))
+            .expect("deletion row should render");
+        app.state.diff_line_cursor = deletion_row;
+
+        let model = app.model();
+
+        assert_eq!(model.comments_panel.comments.len(), 1);
+        assert_eq!(model.comments_panel.comments[0].id, 1);
+        assert!(model.comments_panel.comments[0].current);
     }
 
     #[test]

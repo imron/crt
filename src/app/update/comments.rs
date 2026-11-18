@@ -413,7 +413,7 @@ fn visible_comment_line_range_for_side(
     side: Option<CommentAnchorSide>,
 ) -> Option<(i64, i64)> {
     let Some(side) = side else {
-        return Some((comment.line_start(), comment.line_end()));
+        return logical_comment_line_range(comment);
     };
     if side == CommentAnchorSide::Head && comment.anchor().segments.len() == 1 {
         return Some((comment.line_start(), comment.line_end()));
@@ -425,6 +425,22 @@ fn visible_comment_line_range_for_side(
         .iter()
         .filter(|segment| segment.file_path == comment.file_path())
         .filter(|segment| segment.side == side);
+    let first = segments.next()?;
+    let mut line_start = first.line_start;
+    let mut line_end = first.line_end;
+    for segment in segments {
+        line_start = line_start.min(segment.line_start);
+        line_end = line_end.max(segment.line_end);
+    }
+    Some((line_start, line_end))
+}
+
+fn logical_comment_line_range(comment: &Comment) -> Option<(i64, i64)> {
+    let mut segments = comment
+        .anchor()
+        .segments
+        .iter()
+        .filter(|segment| segment.file_path == comment.file_path());
     let first = segments.next()?;
     let mut line_start = first.line_start;
     let mut line_end = first.line_end;
@@ -468,8 +484,38 @@ fn current_visible_line(state: &AppState) -> Option<u32> {
             }
             _ => None,
         },
-        ContentMode::Diff => diff_new_line_at_row(state, state.diff_line_cursor),
+        ContentMode::Diff => diff_visible_line_at_row(state, state.diff_line_cursor),
     }
+}
+
+fn diff_visible_line_at_row(state: &AppState, row: usize) -> Option<u32> {
+    if state.render_variant == RenderVariant::SideBySide {
+        return side_by_side_visible_line_at_row(state, row);
+    }
+    inline_visible_line_at_row(state, row)
+}
+
+fn inline_visible_line_at_row(state: &AppState, row: usize) -> Option<u32> {
+    let entry = state.selected_file_entry()?;
+    let rows = inline_diff_rows(&entry.diff.hunks, state.head_content.as_deref());
+    rows.rows
+        .get(row)
+        .and_then(|row| row.new_lineno.or(row.old_lineno))
+}
+
+fn side_by_side_visible_line_at_row(state: &AppState, row: usize) -> Option<u32> {
+    let entry = state.selected_file_entry()?;
+    let rows = side_by_side_diff_rows(
+        &entry.diff.hunks,
+        state.base_content.as_deref(),
+        state.head_content.as_deref(),
+    );
+    rows.rows.get(row).and_then(|row| {
+        row.head
+            .as_ref()
+            .map(|cell| cell.line_number)
+            .or_else(|| row.base.as_ref().map(|cell| cell.line_number))
+    })
 }
 
 pub fn current_head_line_for_navigation(state: &AppState) -> Option<u32> {
@@ -489,56 +535,6 @@ fn display_row_for_visible_line(state: &AppState, target_line: u32) -> usize {
         ContentMode::Diff => diff_row_for_new_line(state, target_line)
             .unwrap_or_else(|| target_line.saturating_sub(1) as usize),
     }
-}
-
-fn diff_new_line_at_row(state: &AppState, row: usize) -> Option<u32> {
-    if state.render_variant == RenderVariant::SideBySide {
-        return side_by_side_new_line_at_row(state, row);
-    }
-    inline_new_line_at_row(state, row)
-}
-
-fn inline_new_line_at_row(state: &AppState, row: usize) -> Option<u32> {
-    let entry = state.selected_file_entry()?;
-    let head_lines = state
-        .head_content
-        .as_deref()
-        .map(|content| content.lines().count())
-        .unwrap_or(0);
-    if entry.diff.hunks.is_empty() {
-        return (row < head_lines).then_some(row.saturating_add(1) as u32);
-    }
-
-    let mut display_row = 0usize;
-    let mut new_cursor = 1u32;
-    for hunk in &entry.diff.hunks {
-        while new_cursor < hunk.new_start && (new_cursor as usize) <= head_lines {
-            if display_row == row {
-                return Some(new_cursor);
-            }
-            display_row = display_row.saturating_add(1);
-            new_cursor = new_cursor.saturating_add(1);
-        }
-
-        for line in &hunk.lines {
-            if display_row == row {
-                return line.new_lineno;
-            }
-            display_row = display_row.saturating_add(1);
-            if line.new_lineno.is_some() {
-                new_cursor = new_cursor.saturating_add(1);
-            }
-        }
-    }
-
-    while (new_cursor as usize) <= head_lines {
-        if display_row == row {
-            return Some(new_cursor);
-        }
-        display_row = display_row.saturating_add(1);
-        new_cursor = new_cursor.saturating_add(1);
-    }
-    None
 }
 
 fn diff_row_for_new_line(state: &AppState, target_line: u32) -> Option<usize> {
@@ -590,13 +586,6 @@ fn inline_row_for_new_line(state: &AppState, target_line: u32) -> Option<usize> 
         new_cursor = new_cursor.saturating_add(1);
     }
     None
-}
-
-fn side_by_side_new_line_at_row(state: &AppState, row: usize) -> Option<u32> {
-    find_side_by_side_row(state, |diff_row| {
-        (diff_row.display_row == row).then_some(diff_row.new_lineno)
-    })
-    .flatten()
 }
 
 fn side_by_side_row_for_new_line(state: &AppState, target_line: u32) -> Option<usize> {

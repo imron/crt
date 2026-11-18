@@ -495,13 +495,28 @@ pub fn navigate_unresolved_comment_from_cursor(
         })
         .unwrap_or(0);
 
-    let selected_target_index = state.selected_comment_id.and_then(|id| {
-        targets.iter().position(|target| {
-            target.comment_id == id
-                && target.file_index == Some(state.selected_file)
-                && target.line_start == cursor_line
+    let selected_target_index = state
+        .selected_comment_id
+        .and_then(|id| {
+            targets.iter().position(|target| {
+                target.comment_id == id
+                    && target.file_index == Some(state.selected_file)
+                    && target.line_start <= cursor_line
+                    && target.line_end >= cursor_line
+            })
         })
-    });
+        .or_else(|| {
+            targets
+                .iter()
+                .enumerate()
+                .filter(|(_, target)| {
+                    target.file_index == Some(state.selected_file)
+                        && target.line_start <= cursor_line
+                        && target.line_end >= cursor_line
+                })
+                .max_by_key(|(_, target)| (target.line_start, target.comment_id))
+                .map(|(index, _)| index)
+        });
 
     let target = if let Some(index) = selected_target_index {
         let next = match dir {
@@ -580,6 +595,7 @@ struct UnresolvedCommentTarget {
     order_index: usize,
     comment_id: i64,
     line_start: i64,
+    line_end: i64,
 }
 
 fn unresolved_comment_targets(state: &AppState) -> Vec<UnresolvedCommentTarget> {
@@ -592,12 +608,21 @@ fn unresolved_comment_targets(state: &AppState) -> Vec<UnresolvedCommentTarget> 
             .iter()
             .filter(|comment| !comment.resolved && comment.file_path() == entry.change.path)
             .collect();
-        comments.sort_by_key(|comment| (comment.line_start(), comment.line_end(), comment.id));
-        targets.extend(comments.into_iter().map(|comment| UnresolvedCommentTarget {
-            file_index: Some(file_index),
-            order_index: file_index,
-            comment_id: comment.id,
-            line_start: comment.line_start(),
+        comments.sort_by_key(|comment| {
+            let (start, end) = logical_comment_line_range(comment)
+                .unwrap_or((comment.line_start(), comment.line_end()));
+            (start, end, comment.id)
+        });
+        targets.extend(comments.into_iter().map(|comment| {
+            let (line_start, line_end) = logical_comment_line_range(comment)
+                .unwrap_or((comment.line_start(), comment.line_end()));
+            UnresolvedCommentTarget {
+                file_index: Some(file_index),
+                order_index: file_index,
+                comment_id: comment.id,
+                line_start,
+                line_end,
+            }
         }));
     }
     let mut external_paths: Vec<&str> = state
@@ -615,15 +640,40 @@ fn unresolved_comment_targets(state: &AppState) -> Vec<UnresolvedCommentTarget> 
             .iter()
             .filter(|comment| !comment.resolved && comment.file_path() == path)
             .collect();
-        comments.sort_by_key(|comment| (comment.line_start(), comment.line_end(), comment.id));
-        targets.extend(comments.into_iter().map(|comment| UnresolvedCommentTarget {
-            file_index: None,
-            order_index: external_start + offset,
-            comment_id: comment.id,
-            line_start: comment.line_start(),
+        comments.sort_by_key(|comment| {
+            let (start, end) = logical_comment_line_range(comment)
+                .unwrap_or((comment.line_start(), comment.line_end()));
+            (start, end, comment.id)
+        });
+        targets.extend(comments.into_iter().map(|comment| {
+            let (line_start, line_end) = logical_comment_line_range(comment)
+                .unwrap_or((comment.line_start(), comment.line_end()));
+            UnresolvedCommentTarget {
+                file_index: None,
+                order_index: external_start + offset,
+                comment_id: comment.id,
+                line_start,
+                line_end,
+            }
         }));
     }
     targets
+}
+
+fn logical_comment_line_range(comment: &crate::review_types::Comment) -> Option<(i64, i64)> {
+    let mut segments = comment
+        .anchor()
+        .segments
+        .iter()
+        .filter(|segment| segment.file_path == comment.file_path());
+    let first = segments.next()?;
+    let mut line_start = first.line_start;
+    let mut line_end = first.line_end;
+    for segment in segments {
+        line_start = line_start.min(segment.line_start);
+        line_end = line_end.max(segment.line_end);
+    }
+    Some((line_start, line_end))
 }
 
 pub fn navigate_file_section(state: &mut AppState, dir: Direction) {
