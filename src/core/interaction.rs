@@ -58,7 +58,7 @@ impl CoreInteractionEngine {
         match event {
             InputEvent::Key(key)
                 if key.kind == KeyEventKind::Press
-                    && key.modifiers == Default::default()
+                    && key_has_no_command_modifier(key.modifiers)
                     && key.key == Key::Char(':') =>
             {
                 let id = self.next_prompt();
@@ -72,7 +72,7 @@ impl CoreInteractionEngine {
             }
             InputEvent::Key(key)
                 if key.kind == KeyEventKind::Press
-                    && key.modifiers == Default::default()
+                    && key_has_no_command_modifier(key.modifiers)
                     && key.key == Key::Char('/') =>
             {
                 let id = self.next_prompt();
@@ -107,5 +107,101 @@ impl CoreInteractionEngine {
         let id = PromptId(self.next_prompt_id);
         self.active_prompt = Some(id);
         id
+    }
+}
+
+fn key_has_no_command_modifier(modifiers: super::input::InputModifiers) -> bool {
+    !modifiers.ctrl && !modifiers.alt
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::input::{InputModifiers, KeyEvent};
+
+    fn key_event(key: Key, modifiers: InputModifiers) -> InputEvent {
+        InputEvent::Key(KeyEvent {
+            kind: KeyEventKind::Press,
+            key,
+            modifiers,
+        })
+    }
+
+    #[test]
+    fn colon_requests_command_prompt() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(Key::Char(':'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+
+        assert!(matches!(
+            effects.as_slice(),
+            [CoreEffect::RequestPrompt(PromptRequest {
+                kind: PromptKind::CommandLine,
+                ..
+            })]
+        ));
+    }
+
+    #[test]
+    fn slash_requests_search_prompt() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(Key::Char('/'), InputModifiers::default()),
+            &InteractionContext::default(),
+        );
+
+        assert!(matches!(
+            effects.as_slice(),
+            [CoreEffect::RequestPrompt(PromptRequest {
+                kind: PromptKind::Search,
+                ..
+            })]
+        ));
+    }
+
+    #[test]
+    fn shifted_colon_still_requests_command_prompt() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(
+                Key::Char(':'),
+                InputModifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+
+        assert!(matches!(
+            effects.as_slice(),
+            [CoreEffect::RequestPrompt(PromptRequest {
+                kind: PromptKind::CommandLine,
+                ..
+            })]
+        ));
+    }
+
+    #[test]
+    fn control_colon_does_not_request_prompt() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let effects = engine.handle_input(
+            key_event(
+                Key::Char(':'),
+                InputModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &InteractionContext::default(),
+        );
+
+        assert!(effects.is_empty());
     }
 }

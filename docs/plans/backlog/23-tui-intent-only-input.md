@@ -1,6 +1,6 @@
 # Stage 23: TUI Input Adapter Refactor
 
-## Status: Backlog
+## Status: In Progress
 
 ## Order
 
@@ -68,6 +68,13 @@ clean reuse in GUI and increases coupling to TUI-only state.
 - Input adapter translation and dispatch plumbing.
 - Refactored `src/keys.rs` with no business-rule helpers.
 - Updated app loop forwarding `InputEvent` values to core.
+
+## Progress
+
+- Added crossterm key-to-core `InputEvent` translation for TUI key events.
+- Routed `:` and `/` prompt-opening keys through `CoreInteractionEngine`
+  while preserving local TUI prompt text editing and existing key behavior.
+- Added focused tests for core prompt requests and TUI key normalization.
 
 ## Acceptance Criteria
 
