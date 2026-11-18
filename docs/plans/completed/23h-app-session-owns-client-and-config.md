@@ -33,7 +33,7 @@ pub struct App {
 }
 ```
 
-The TUI should receive or create an app session and render/input against it; it
+The TUI should receive an already-loaded `App` and render/input against it; it
 should not know how config and initial review data are loaded.
 
 ## Scope
@@ -46,8 +46,9 @@ should not know how config and initial review data are loaded.
 
 ## Requirements
 
-1. Introduce an app-owned session/runtime boundary that contains:
-   - `App`,
+1. Introduce an app-owned runtime boundary on `App` that contains:
+   - `AppState`,
+   - `Config`,
    - config path/persistence context,
    - the review/search client or service handle needed for app workflows.
 
@@ -56,11 +57,11 @@ should not know how config and initial review data are loaded.
 
 3. Move the initial `list_changed_files()` call out of `Tui::new()`.
 
-4. Move first-file diff/content/blame initialization behind an `App` or app
-   session constructor.
+4. Move first-file diff/content/blame initialization behind an `App`
+   constructor.
 
-5. Change `tui::run(...)` so the TUI is given an app-owned session instead of
-   a raw `Client` plus `ConnectionContext`, or make `tui::run(...)` call a
+5. Change `tui::run(...)` so the TUI is given an already-loaded `App` instead
+   of a raw `Client` plus `ConnectionContext`, or make `tui::run(...)` call a
    narrow app constructor and never touch the raw client directly.
 
 6. Keep startup connection/bootstrap in CLI-level code until Stage 24 supplies
@@ -68,11 +69,11 @@ should not know how config and initial review data are loaded.
 
 ## Deliverables
 
-- App-owned session/runtime type or equivalent `App` constructor.
+- App-owned runtime boundary on `App`.
 - `src/tui/runtime.rs` no longer stores `Client`.
 - `TuiState` no longer stores `config_path`.
 - Initial file snapshot loading lives outside TUI.
-- Focused tests for app session construction where practical.
+- Focused tests for app construction where practical.
 
 ## Acceptance Criteria
 
@@ -86,12 +87,12 @@ should not know how config and initial review data are loaded.
 
 ## Progress
 
-- Added `AppSession`, which owns `App`, the server client, and config
-  persistence context.
+- Folded the server client and config persistence context into `App`, while
+  keeping `AppState` as the world/model state.
 - Moved config loading, config path resolution, initial `list_changed_files()`,
-  and first-file initialization behind `AppSession::load`.
-- Changed `tui::run` and `Tui::new` so the TUI receives an app-owned session
-  and only initializes terminal/presentation state.
+  and first-file initialization behind `App::load`.
+- Changed `tui::run` and `Tui::new` so the TUI receives an already-loaded
+  `App` and only initializes terminal/presentation state.
 - Removed config path ownership from `TuiState`.
 
 ## Notes
