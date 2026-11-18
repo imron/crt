@@ -190,3 +190,76 @@ pub fn digit_width(n: u32) -> usize {
     }
     .max(3)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::comment_markers::CommentMarkerSet;
+    use super::*;
+    use crate::app::model::CommentAttachment;
+    use crate::review_types::AnchorStatus;
+
+    fn marker_span<'a>(line: &'a Line<'static>) -> &'a Span<'static> {
+        line.spans
+            .iter()
+            .find(|span| span.content.as_ref() == "●")
+            .expect("marker span")
+    }
+
+    fn comment() -> CommentAttachment {
+        CommentAttachment {
+            id: 1,
+            line_start: 1,
+            line_end: 1,
+            resolved: false,
+            anchor_status: AnchorStatus::Anchored,
+        }
+    }
+
+    #[test]
+    fn make_line_uses_current_colour_for_current_comment_marker() {
+        let markers = CommentMarkerSet::new(&[comment()], Some(1));
+        let marker = markers.marker_for_line(Some(1));
+
+        let line = make_line(
+            Some(1),
+            Some(1),
+            &marker,
+            " ",
+            "content",
+            Style::default(),
+            Color::DarkGray,
+            Color::Blue,
+            Color::Gray,
+            Color::Black,
+            3,
+            80,
+            None,
+        );
+
+        assert_eq!(marker_span(&line).style.fg, Some(Color::Blue));
+    }
+
+    #[test]
+    fn make_line_keeps_inactive_comment_marker_in_gutter_colour() {
+        let markers = CommentMarkerSet::new(&[comment()], None);
+        let marker = markers.marker_for_line(Some(1));
+
+        let line = make_line(
+            Some(1),
+            Some(1),
+            &marker,
+            " ",
+            "content",
+            Style::default(),
+            Color::DarkGray,
+            Color::Blue,
+            Color::Gray,
+            Color::Black,
+            3,
+            80,
+            None,
+        );
+
+        assert_eq!(marker_span(&line).style.fg, Some(Color::DarkGray));
+    }
+}
