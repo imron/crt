@@ -1667,6 +1667,52 @@ mod tests {
         }
     }
 
+    fn test_file_with_long_offset_replacement_hunk(path: &str) -> FileEntry {
+        let mut lines = vec![
+            DiffLine {
+                kind: LineKind::Deletion,
+                content: "let line = current_head_line(state)?;".to_string(),
+                old_lineno: Some(18),
+                new_lineno: None,
+            },
+            DiffLine {
+                kind: LineKind::Addition,
+                content: "let line = current_visible_line(state)?;".to_string(),
+                old_lineno: None,
+                new_lineno: Some(20),
+            },
+        ];
+        for offset in 0..30 {
+            lines.push(DiffLine {
+                kind: LineKind::Context,
+                content: format!("context {}", offset + 1),
+                old_lineno: Some(19 + offset),
+                new_lineno: Some(21 + offset),
+            });
+        }
+
+        FileEntry {
+            change: FileChange {
+                path: path.to_string(),
+                old_path: None,
+                kind: ChangeKind::Modified,
+            },
+            status: ReviewStatus::Unreviewed,
+            diff: DiffContent {
+                hunks: vec![DiffHunk {
+                    old_start: 18,
+                    old_lines: 31,
+                    new_start: 20,
+                    new_lines: 31,
+                    header: "@@ -18,31 +20,31 @@".to_string(),
+                    lines,
+                }],
+                is_binary: false,
+                diff_hash: format!("hash-{path}"),
+            },
+        }
+    }
+
     fn test_file_with_leading_deletion_hunk(path: &str) -> FileEntry {
         FileEntry {
             change: FileChange {
@@ -2407,7 +2453,7 @@ mod tests {
                 .to_string(),
         );
         app.state.pane_focus = PaneFocus::Diff;
-        app.state.diff_line_cursor = 0;
+        app.state.diff_line_cursor = 9;
 
         app.apply_core_effects(
             &EmptyViewport,
@@ -2824,6 +2870,60 @@ mod tests {
     }
 
     #[test]
+    fn inline_visual_selection_uses_render_rows_for_long_offset_hunk() {
+        let path = "src/app/update/comments.rs";
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_long_offset_replacement_hunk(path)],
+        );
+        let mut base_lines: Vec<String> = (1..=60).map(|n| format!("base {n}")).collect();
+        let mut head_lines: Vec<String> = (1..=62).map(|n| format!("head {n}")).collect();
+        base_lines[17] = "let line = current_head_line(state)?;".to_string();
+        head_lines[19] = "let line = current_visible_line(state)?;".to_string();
+        app.state.base_content = Some(format!("{}\n", base_lines.join("\n")));
+        app.state.head_content = Some(format!("{}\n", head_lines.join("\n")));
+        app.state.pane_focus = PaneFocus::Diff;
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartText {
+                    anchor: TextAnchor {
+                        line: 19,
+                        column: 0,
+                    },
+                }),
+                CoreEffect::VisualSelection(VisualSelectionEffect::ExtendTo {
+                    anchor: TextAnchor {
+                        line: 20,
+                        column: 0,
+                    },
+                }),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+            ],
+        );
+
+        let capture = app
+            .state
+            .pending_comment_anchor
+            .as_ref()
+            .expect("offset replacement selection should capture anchor data");
+        assert_eq!(capture.file_path, path);
+        assert_eq!(capture.segments.len(), 2);
+        let base = segment_for_side(capture, CommentAnchorSide::Base)
+            .expect("replacement selection should capture a base segment");
+        let head = segment_for_side(capture, CommentAnchorSide::Head)
+            .expect("replacement selection should capture a head segment");
+        assert_eq!(base.line_start, 18);
+        assert_eq!(base.line_end, 18);
+        assert_eq!(base.anchor_text, "let line = current_head_line(state)?;");
+        assert_eq!(head.line_start, 20);
+        assert_eq!(head.line_end, 20);
+        assert_eq!(head.anchor_text, "let line = current_visible_line(state)?;");
+    }
+
+    #[test]
     fn visual_selection_across_hunks_captures_all_side_segments() {
         let mut app = App::new(
             Config::default(),
@@ -2848,10 +2948,13 @@ mod tests {
             &EmptyViewport,
             vec![
                 CoreEffect::VisualSelection(VisualSelectionEffect::StartText {
-                    anchor: TextAnchor { line: 0, column: 0 },
+                    anchor: TextAnchor { line: 9, column: 0 },
                 }),
                 CoreEffect::VisualSelection(VisualSelectionEffect::ExtendTo {
-                    anchor: TextAnchor { line: 3, column: 0 },
+                    anchor: TextAnchor {
+                        line: 21,
+                        column: 0,
+                    },
                 }),
                 CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
             ],
