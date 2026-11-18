@@ -2,14 +2,14 @@
 
 use std::time::Instant;
 
+use super::render::diff_view::DiffCache;
 use crate::core::PromptId;
 use crate::core::TextAnchor;
 use crate::model::PaneFocus;
-use crate::tui::render::diff_view::DiffCache;
 
 /// Current terminal input mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum InputMode {
+pub enum InputMode {
     /// Normal mode — keys are dispatched as commands.
     Normal,
     /// Command mode — `:` prompt is active, collecting user input.
@@ -20,7 +20,7 @@ pub(crate) enum InputMode {
 
 /// An in-progress or completed text selection via mouse drag.
 #[derive(Debug, Clone)]
-pub(crate) struct MouseSelection {
+pub struct MouseSelection {
     /// Which pane the selection is confined to.
     pub pane: PaneFocus,
     /// Start position in pane semantic text coordinates.
@@ -47,14 +47,14 @@ impl MouseSelection {
 
 /// Last semantic content click, used for double-click detection.
 #[derive(Debug, Clone)]
-pub(crate) struct LastPointerClick {
+pub struct LastPointerClick {
     pub when: Instant,
     pub pane: PaneFocus,
     pub anchor: TextAnchor,
 }
 
 #[derive(Default)]
-pub(crate) struct TuiState {
+pub struct TuiState {
     pub diff_cache: Option<DiffCache>,
     /// Active mouse text selection, if any.
     pub mouse_selection: Option<MouseSelection>,

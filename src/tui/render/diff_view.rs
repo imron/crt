@@ -9,10 +9,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
+use super::super::state::TuiState;
 use crate::app::AppState;
 use crate::config::DiffStyle;
 use crate::model::{ContentMode, DiffHunk, LineKind, PaneFocus, RenderVariant, ReviewStatus};
-use crate::tui::TuiState;
 
 // ---------------------------------------------------------------------------
 // Diff line cache — avoids rebuilding all Line<'static> every frame

@@ -16,6 +16,9 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
+use super::effects::apply_core_effects;
+use super::state::{LastPointerClick, MouseSelection, TuiState};
+use super::{input, render};
 use crate::app::{AppState, DefinitionResults, JumpLocation, SearchResults};
 use crate::client::Client;
 use crate::core::command::Command;
@@ -24,11 +27,10 @@ use crate::core::review;
 use crate::core::search as core_search;
 use crate::core::{InputEvent, PaneId, TextAnchor};
 use crate::model::{ConnectionContext, PaneFocus, ReviewStatus};
-use crate::tui::{LastPointerClick, MouseSelection, TuiState, apply_core_effects, input, render};
 
 /// The terminal UI runtime. Owns the terminal, client connection, and state.
 pub struct Tui {
-    pub state: AppState,
+    state: AppState,
     tui_state: TuiState,
     client: Client,
     terminal: Terminal<CrosstermBackend<io::Stdout>>,

@@ -1,11 +1,19 @@
 //! Terminal UI adapter and renderer.
 
+use anyhow::{Context, Result};
+
+use crate::client::Client;
+use crate::model::ConnectionContext;
+
 mod effects;
-pub(crate) mod input;
-pub(crate) mod render;
+mod input;
+mod render;
 mod runtime;
 mod state;
 
-pub(crate) use effects::apply_core_effects;
-pub(crate) use runtime::Tui;
-pub(crate) use state::{InputMode, LastPointerClick, MouseSelection, TuiState};
+pub async fn run(client: Client, context: ConnectionContext) -> Result<()> {
+    let mut tui = runtime::Tui::new(client, context)
+        .await
+        .context("Failed to initialize TUI")?;
+    tui.run().await
+}
