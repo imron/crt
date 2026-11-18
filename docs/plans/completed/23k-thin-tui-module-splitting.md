@@ -1,6 +1,6 @@
 # Stage 23k: Thin TUI Module Splitting
 
-## Status: Backlog
+## Status: Completed
 
 ## Order
 
@@ -86,13 +86,38 @@ than introducing shared dependencies that blur App/TUI ownership.
 
 ## Acceptance Criteria
 
-- [ ] `src/app/update.rs` is split into smaller app-owned modules without
+- [x] `src/app/update.rs` is split into smaller app-owned modules without
       behavior changes.
-- [ ] `src/tui/render/diff_view.rs` is split into smaller TUI-owned render
+- [x] `src/tui/render/diff_view.rs` is split into smaller TUI-owned render
       modules without behavior changes.
-- [ ] Any `src/tui/runtime.rs` split preserves TUI-only responsibilities.
-- [ ] TUI-owned viewport/clamping/scrolling behavior remains in TUI-owned code.
-- [ ] No new dependency from `app` to `tui` is introduced.
-- [ ] No review/search/definition/client/config workflow logic moves back into
+- [x] Any `src/tui/runtime.rs` split preserves TUI-only responsibilities.
+- [x] TUI-owned viewport/clamping/scrolling behavior remains in TUI-owned code.
+- [x] No new dependency from `app` to `tui` is introduced.
+- [x] No review/search/definition/client/config workflow logic moves back into
       `tui`.
-- [ ] `cargo test` passes.
+- [x] `cargo test` passes.
+
+## Completed Notes
+
+- Split `src/app/update.rs` into focused app-owned update modules under
+  `src/app/update/`:
+  - command application,
+  - diff cursor movement,
+  - diff search,
+  - location and file/view navigation,
+  - overlay selection,
+  - pane visibility/focus,
+  - output and viewport contracts.
+- Split `src/tui/render/diff_view.rs` into focused TUI-owned render modules
+  under `src/tui/render/diff_view/`:
+  - diff cache key/content cache construction,
+  - content dispatch and title rendering,
+  - inline diff rendering,
+  - side-by-side diff rendering,
+  - full-file rendering,
+  - line/blame formatting helpers,
+  - cursor and search highlight overlays.
+- Reassessed `src/tui/runtime.rs` and left it intact. Its remaining helpers are
+  still coupled to terminal event-loop mechanics, mouse selection, clipboard
+  integration, and terminal lifecycle, so a split did not improve ownership
+  clarity in this stage.
