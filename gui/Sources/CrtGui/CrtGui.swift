@@ -48,7 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "crt"
+        window.title = "Code Review Tool"
         window.contentView = hosting
         window.center()
         window.makeKeyAndOrderFront(nil)
