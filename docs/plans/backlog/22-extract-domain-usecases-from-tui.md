@@ -86,15 +86,17 @@ that contract.
 - Extracted search result shaping, definition result routing, and
   path-to-location target resolution into `core::search` with focused unit
   tests.
+- Extracted command parsing into `core::command` and replaced stringly typed
+  pending commands with typed command requests.
 
 ## Acceptance Criteria
 
 - [x] No direct git orchestration remains in TUI application state methods.
 - [ ] Review/diff/navigation/search rules are exercised by service-level tests.
-- [ ] Command/search/definition semantics are no longer implemented in TUI
+- [x] Command/search/definition semantics are no longer implemented in TUI
       business-logic helpers.
 - [ ] TUI behavior remains functionally equivalent for existing workflows.
-- [ ] New service code is interface-reusable for GUI.
+- [x] New service code is interface-reusable for GUI.
 
 ## Resolved Decisions
 
