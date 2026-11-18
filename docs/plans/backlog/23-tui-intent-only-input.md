@@ -153,6 +153,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   them, keeping effect application at the TUI runtime boundary.
 - Moved crossterm mouse-event normalization out of `AppState` and into the
   TUI input adapter while keeping app hit mapping UI-neutral.
+- Changed the TUI key input adapter to emit UI-neutral `InputEvent`s instead
+  of dispatching to the core interaction engine directly.
 
 ## Acceptance Criteria
 

@@ -17,15 +17,20 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use super::effects::apply_core_effects;
+use super::input::{CoreInputDispatch, KeyInputResult};
 use super::state::{DefinitionResults, LastPointerClick, MouseSelection, SearchResults, TuiState};
 use super::{input, render};
 use crate::app::{App, AppState, JumpLocation};
+use crate::app_update;
 use crate::client::Client;
 use crate::core::command::Command;
 use crate::core::review;
 use crate::core::search as core_search;
-use crate::core::{InputEvent, PaneId, TextAnchor};
+use crate::core::{InputEvent, InteractionContext, PaneId, TextAnchor};
 use crate::model::{ConnectionContext, PaneFocus, ReviewStatus};
+
+/// How long the "Press Ctrl-C again" prompt stays active.
+const CTRL_C_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// The terminal UI runtime. Owns the terminal, client connection, and state.
 pub struct Tui {
@@ -189,9 +194,18 @@ impl Tui {
                 // Any keypress clears mouse selection.
                 self.tui_state.mouse_selection = None;
                 self.tui_state.mouse_down_anchor = None;
-                let effects =
-                    input::handle_key_event(&mut self.app.state, &mut self.tui_state, key);
-                apply_core_effects(&mut self.app.state, &mut self.tui_state, effects);
+                match input::handle_key_event(&mut self.tui_state, key) {
+                    KeyInputResult::Core(dispatch) => {
+                        let handled = self.dispatch_core_input(dispatch);
+                        if !handled {
+                            self.tui_state.clear_status_message();
+                        }
+                    }
+                    KeyInputResult::Local => {}
+                    KeyInputResult::Unhandled => {
+                        self.tui_state.clear_status_message();
+                    }
+                }
             }
             Event::Mouse(mouse) => {
                 self.handle_mouse_event(mouse);
@@ -204,6 +218,32 @@ impl Tui {
                 self.tui_state.pending_refresh = true;
             }
             _ => {}
+        }
+    }
+
+    fn dispatch_core_input(&mut self, dispatch: CoreInputDispatch) -> bool {
+        let (event, context) = match dispatch {
+            CoreInputDispatch::Interaction(event) => (event, self.interaction_context()),
+            CoreInputDispatch::PromptSubmit(event) => {
+                (event, app_update::prompt_submit_context(&self.app.state))
+            }
+            CoreInputDispatch::PromptCancel(event) => (event, InteractionContext::default()),
+        };
+        let effects = self
+            .app
+            .state
+            .core_interaction
+            .handle_input(event, &context);
+        apply_core_effects(&mut self.app.state, &mut self.tui_state, effects)
+    }
+
+    fn interaction_context(&self) -> InteractionContext {
+        InteractionContext {
+            help_visible: self.tui_state.show_help,
+            search_results_visible: self.tui_state.search_results.is_some(),
+            definition_results_visible: self.tui_state.definition_results.is_some(),
+            quit_confirmation_active: self.tui_state.quit_confirmation_active(CTRL_C_TIMEOUT),
+            ..app_update::interaction_context(&self.app.state)
         }
     }
 
