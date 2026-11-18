@@ -291,27 +291,31 @@ the new diff — if the code moved, the comment follows it.
 
 ### Comment Anchoring: Rebase Resilience
 
-Comments must survive rebases. When a comment is created, we store:
+Comments survive rebases via an append-only history model:
 
-- **anchor_text** — the exact lines being commented on.
-- **context_before** — 3–5 lines preceding the anchor in the diff.
-- **context_after** — 3–5 lines following the anchor in the diff.
+- `comments` table: stable logical record (id, scope, file_path, body, resolved, timestamps).
+- `anchor_versions` table: append-only snapshots with `file_blob_sha` (exact file content),
+  line/char ranges, `anchor_text`, `context_before`/`context_after`, and `AnchorStatus`.
+- `v_current_anchors` view (GROUP BY `comment_id` + MAX(`created_at`), covering index) exposes
+  the single latest version per comment.
 
-Only **unresolved** comments are re-anchored on startup. Resolved comments
-skip anchoring entirely — they live in the comments panel as history with
-their original stored context. A resolved comment whose anchor_text no
-longer exists is the expected outcome (the agent addressed the feedback
-and the code changed), not an error.
+On creation the first `anchor_versions` row records the exact `file_blob_sha` the
+selection was made against plus its context.
+
+Only **unresolved** comments are re-anchored. The server runs the four-step match
+against current file content and `INSERT`s a new version row with fresh context
+and the current `file_blob_sha`. The view automatically reflects the latest
+attachment. Resolved comments are never re-anchored; their last recorded version
+is the historical record.
 
 For unresolved comments, re-anchoring proceeds as:
 
-1. Exact match at the stored line number → anchored (high confidence).
-2. Exact match at a different line number → code moved, reattach.
-3. Context-assisted match (anchor gone but surrounding code matches) →
-   attach approximately, flag as shifted.
-4. No match → orphaned. Displayed in the comments panel with original
-   context so the user can decide whether to dismiss, delete, or
-   re-create on the new code.
+1. Exact match at the stored line → Anchored.
+2. Exact match elsewhere in the file → Shifted, reattach with fresh context.
+3. Context-assisted match → Approximate.
+4. No match → Orphaned. The comment is still returned (visible in the panel)
+   with its last-known context from the most recent anchor version so it is
+   not silently lost.
 
 ## Layout
 

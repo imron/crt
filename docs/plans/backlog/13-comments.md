@@ -21,12 +21,15 @@ the agent-facing interfaces (MCP adapter and file markers).
 
 This stage is broken into focused sub-plans. Implement in recommended order:
 
+0. 17-visual-line-abstraction.md (required prerequisite)
 1. 13a-selection-anchor-capture.md
 2. 13b-composer-create.md
 3. 13c-reanchor.md (can be parallel with 13a)
 4. 13d-inline-gutter-display.md
 5. 13e-panel-lifecycle.md
 6. 13f-live-polish-tests.md
+
+Stage 13 depends on the Visual Line Abstraction defined in plan 17.
 
 See the individual sub-plan files under docs/plans/backlog/ for detailed
 requirements, acceptance criteria, and notes for each slice.
@@ -115,8 +118,14 @@ Keybinding decision (recorded here):
     - **Step 3**: context_before/after match → approximate.
     - **Step 4**: no match → orphaned.
 
-15. **Orphaned comments**: visible in the comments panel with original
-    context and orphaned indicator. Not silently lost.
+    On steps 1–3 a new row is appended to `anchor_versions` using the current
+    `file_blob_sha` and fresh context strings. The `v_current_anchors` view
+    then provides the latest attachment for display and future re-anchoring.
+
+15. **Orphaned comments**: visible in the comments panel with their
+    last-known context (from the most recent anchor version, or the
+    creation version if none exists) and an orphaned indicator.
+    Not silently lost.
 
 ### Comment Lifecycle
 
