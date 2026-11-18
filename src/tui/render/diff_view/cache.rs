@@ -3,8 +3,7 @@ use std::hash::{Hash, Hasher};
 
 use ratatui::text::Line;
 
-use super::content::current_comment_line;
-use crate::app::model::CommentAttachment;
+use crate::app::model::{CommentAttachment, CommentMarkerSet};
 use crate::review_types::{ContentMode, RenderVariant};
 
 // ---------------------------------------------------------------------------
@@ -29,7 +28,7 @@ pub struct DiffCacheKey {
     head_blame_len: usize,
     base_blame_len: usize,
     comments: Vec<CommentAttachment>,
-    current_comment_line: Option<u32>,
+    comment_markers: CommentMarkerSet,
     /// Stable hash of the diff content (from DiffContent::diff_hash).
     diff_hash: String,
 }
@@ -69,7 +68,7 @@ pub fn build_key(diff: &crate::app::model::DiffPanel, inner_w: usize) -> DiffCac
         head_blame_len: diff.head_blame.len(),
         base_blame_len: diff.base_blame.len(),
         comments: diff.comments.clone(),
-        current_comment_line: current_comment_line(diff),
+        comment_markers: diff.comment_markers.clone(),
         diff_hash: diff.diff_hash.clone().unwrap_or_default(),
     }
 }
@@ -83,6 +82,18 @@ mod tests {
     use crate::review_types::AnchorStatus;
 
     fn diff_panel(cursor_line: usize, render_variant: RenderVariant) -> DiffPanel {
+        let comments = vec![CommentAttachment {
+            id: 1,
+            line_start: 2,
+            line_end: 2,
+            resolved: false,
+            anchor_status: AnchorStatus::Anchored,
+        }];
+        let current_line = match render_variant {
+            RenderVariant::HeadVersion => Some(cursor_line.saturating_add(1) as u32),
+            RenderVariant::BaseVersion => None,
+            _ => None,
+        };
         DiffPanel {
             selected_file_index: Some(0),
             file_id: Some("file.rs".to_string()),
@@ -113,13 +124,8 @@ mod tests {
             current_search_highlight: None,
             visual_selection: None,
             pending_comment_anchor: None,
-            comments: vec![CommentAttachment {
-                id: 1,
-                line_start: 2,
-                line_end: 2,
-                resolved: false,
-                anchor_status: AnchorStatus::Anchored,
-            }],
+            comment_markers: CommentMarkerSet::new(&comments, current_line),
+            comments,
         }
     }
 

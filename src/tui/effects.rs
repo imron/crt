@@ -23,7 +23,11 @@ pub fn apply_core_effects(
                     tui_state.open_diff_search_prompt(prompt.id, prompt.initial_value);
                 }
                 PromptKind::Comment => {
-                    tui_state.open_comment_prompt(prompt.id, prompt.initial_value);
+                    tui_state.open_comment_prompt_with_title(
+                        prompt.id,
+                        prompt.title,
+                        prompt.initial_value,
+                    );
                 }
                 PromptKind::Custom(_) => {}
             },

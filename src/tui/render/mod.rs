@@ -490,7 +490,7 @@ fn draw_comment_input(frame: &mut Frame, tui_state: &mut TuiState, styles: &Styl
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(*hs.border_fg))
-            .title(" Comment ")
+            .title(format!(" {} ", tui_state.comment_title))
             .title_bottom(" Ctrl-Space submit / Ctrl-Shift-E editor / Esc cancel "),
     )
     .scroll((saturating_u16(tui_state.comment_scroll), 0))
@@ -531,7 +531,7 @@ fn keep_comment_cursor_visible(
     tui_state.comment_scroll = tui_state.comment_scroll.min(max_scroll);
 }
 
-fn comment_visual_lines(text: &str, wrap_width: usize) -> Vec<String> {
+pub(super) fn comment_visual_lines(text: &str, wrap_width: usize) -> Vec<String> {
     let wrap_width = wrap_width.max(1);
     if text.is_empty() {
         return vec![String::new()];

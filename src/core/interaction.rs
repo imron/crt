@@ -279,7 +279,7 @@ impl CoreInteractionEngine {
                         return vec![CoreEffect::RequestPrompt(PromptRequest {
                             id,
                             kind: PromptKind::Comment,
-                            title: "Comment".to_string(),
+                            title: "Edit Comment".to_string(),
                             placeholder: Some("Write a comment".to_string()),
                             initial_value: comment.body.clone(),
                         })];
@@ -2342,7 +2342,7 @@ mod tests {
             vec![CoreEffect::RequestPrompt(PromptRequest {
                 id: PromptId(1),
                 kind: PromptKind::Comment,
-                title: "Comment".to_string(),
+                title: "Edit Comment".to_string(),
                 placeholder: Some("Write a comment".to_string()),
                 initial_value: "existing".to_string(),
             })]

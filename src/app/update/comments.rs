@@ -3,7 +3,7 @@ use super::output::AppOutput;
 use super::viewport::AppViewport;
 use crate::app::AppState;
 use crate::core::CommentsPanelEffect;
-use crate::review_types::{Comment, ContentMode, PaneFocus, RenderVariant};
+use crate::review_types::{Comment, ContentMode, LineKind, PaneFocus, RenderVariant};
 
 pub fn current_comment(state: &AppState) -> Option<&Comment> {
     if state.pane_focus == PaneFocus::Comments {
@@ -100,17 +100,27 @@ fn navigate_to_selected(state: &mut AppState, view: &impl AppViewport) {
 }
 
 fn navigate_adjacent_comment(state: &mut AppState, view: &impl AppViewport, direction: Direction) {
+    if !state.show_comments_panel {
+        state.show_comments_panel = true;
+        state.mark_model_changed();
+    }
     let comments = current_file_comments(state);
     if comments.is_empty() {
         return;
     }
-    let selected = current_comment_id(state).or(state.selected_comment_id);
-    let current_index = selected
-        .and_then(|id| comments.iter().position(|comment| comment.id == id))
-        .unwrap_or(0);
+    let Some(cursor_line) = current_head_line_for_navigation(state) else {
+        return;
+    };
+    let cursor_line = i64::from(cursor_line);
     let next_index = match direction {
-        Direction::Next => (current_index + 1) % comments.len(),
-        Direction::Previous => current_index.checked_sub(1).unwrap_or(comments.len() - 1),
+        Direction::Next => comments
+            .iter()
+            .position(|comment| comment.line_start > cursor_line)
+            .unwrap_or(0),
+        Direction::Previous => comments
+            .iter()
+            .rposition(|comment| comment.line_start < cursor_line)
+            .unwrap_or(comments.len() - 1),
     };
     let comment = comments[next_index].clone();
     state.selected_comment_id = Some(comment.id);
@@ -121,18 +131,19 @@ fn select_adjacent(state: &mut AppState, direction: Direction) {
     let comments = current_file_comments(state);
     if comments.is_empty() {
         state.selected_comment_id = None;
-        state.mark_model_changed();
-        return;
+    } else if let Some(cursor_line) = current_head_line_for_navigation(state).map(i64::from) {
+        let next_index = match direction {
+            Direction::Next => comments
+                .iter()
+                .position(|comment| comment.line_start > cursor_line)
+                .unwrap_or(0),
+            Direction::Previous => comments
+                .iter()
+                .rposition(|comment| comment.line_start < cursor_line)
+                .unwrap_or(comments.len() - 1),
+        };
+        state.selected_comment_id = Some(comments[next_index].id);
     }
-    let current_index = state
-        .selected_comment_id
-        .and_then(|id| comments.iter().position(|comment| comment.id == id))
-        .unwrap_or(0);
-    let next_index = match direction {
-        Direction::Next => (current_index + 1) % comments.len(),
-        Direction::Previous => current_index.checked_sub(1).unwrap_or(comments.len() - 1),
-    };
-    state.selected_comment_id = Some(comments[next_index].id);
     state.pending_delete_comment_id = None;
     state.mark_model_changed();
 }
@@ -186,19 +197,7 @@ fn navigate_to_comment(state: &mut AppState, view: &impl AppViewport, comment: &
 }
 
 pub fn ensure_selected_comment(state: &mut AppState) {
-    let selected_is_current_file = state.selected_comment_id.is_some_and(|id| {
-        current_file_comments(state)
-            .iter()
-            .any(|comment| comment.id == id)
-    });
-    if selected_is_current_file {
-        return;
-    }
-    state.selected_comment_id = current_comment_id(state).or_else(|| {
-        current_file_comments(state)
-            .first()
-            .map(|comment| comment.id)
-    });
+    state.selected_comment_id = current_comment_id(state);
 }
 
 fn selected_comment(state: &AppState) -> Option<&Comment> {
@@ -236,6 +235,13 @@ fn current_head_line(state: &AppState) -> Option<u32> {
     }
 }
 
+fn current_head_line_for_navigation(state: &AppState) -> Option<u32> {
+    current_head_line(state).or_else(|| match state.content_mode {
+        ContentMode::Diff => diff_insertion_head_line_before_row(state, state.diff_line_cursor),
+        ContentMode::FullFile => None,
+    })
+}
+
 fn display_row_for_head_line(state: &AppState, target_line: u32) -> usize {
     match state.content_mode {
         ContentMode::FullFile => match state.render_variant {
@@ -249,6 +255,13 @@ fn display_row_for_head_line(state: &AppState, target_line: u32) -> usize {
 }
 
 fn diff_new_line_at_row(state: &AppState, row: usize) -> Option<u32> {
+    if state.render_variant == RenderVariant::SideBySide {
+        return side_by_side_new_line_at_row(state, row);
+    }
+    inline_new_line_at_row(state, row)
+}
+
+fn inline_new_line_at_row(state: &AppState, row: usize) -> Option<u32> {
     let entry = state.selected_file_entry()?;
     let head_lines = state
         .head_content
@@ -292,6 +305,13 @@ fn diff_new_line_at_row(state: &AppState, row: usize) -> Option<u32> {
 }
 
 fn diff_row_for_new_line(state: &AppState, target_line: u32) -> Option<usize> {
+    if state.render_variant == RenderVariant::SideBySide {
+        return side_by_side_row_for_new_line(state, target_line);
+    }
+    inline_row_for_new_line(state, target_line)
+}
+
+fn inline_row_for_new_line(state: &AppState, target_line: u32) -> Option<usize> {
     let entry = state.selected_file_entry()?;
     let head_lines = state
         .head_content
@@ -331,6 +351,197 @@ fn diff_row_for_new_line(state: &AppState, target_line: u32) -> Option<usize> {
         }
         display_row = display_row.saturating_add(1);
         new_cursor = new_cursor.saturating_add(1);
+    }
+    None
+}
+
+fn side_by_side_new_line_at_row(state: &AppState, row: usize) -> Option<u32> {
+    find_side_by_side_row(state, |diff_row| {
+        (diff_row.display_row == row).then_some(diff_row.new_lineno)
+    })
+    .flatten()
+}
+
+fn side_by_side_row_for_new_line(state: &AppState, target_line: u32) -> Option<usize> {
+    find_side_by_side_row(state, |diff_row| {
+        (diff_row.new_lineno == Some(target_line)).then_some(diff_row.display_row)
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SideBySideDiffRow {
+    display_row: usize,
+    new_lineno: Option<u32>,
+    insertion_head_line: Option<u32>,
+}
+
+fn find_side_by_side_row<T>(
+    state: &AppState,
+    mut f: impl FnMut(SideBySideDiffRow) -> Option<T>,
+) -> Option<T> {
+    let entry = state.selected_file_entry()?;
+    let head_lines = state
+        .head_content
+        .as_deref()
+        .map(|content| content.lines().count())
+        .unwrap_or(0);
+    if entry.diff.hunks.is_empty() {
+        for row in 0..head_lines {
+            let diff_row = SideBySideDiffRow {
+                display_row: row,
+                new_lineno: Some(row.saturating_add(1) as u32),
+                insertion_head_line: None,
+            };
+            if let Some(value) = f(diff_row) {
+                return Some(value);
+            }
+        }
+        return None;
+    }
+
+    let mut display_row = 0usize;
+    let mut new_cursor = 1u32;
+    for hunk in &entry.diff.hunks {
+        while new_cursor < hunk.new_start && (new_cursor as usize) <= head_lines {
+            let diff_row = SideBySideDiffRow {
+                display_row,
+                new_lineno: Some(new_cursor),
+                insertion_head_line: None,
+            };
+            if let Some(value) = f(diff_row) {
+                return Some(value);
+            }
+            display_row = display_row.saturating_add(1);
+            new_cursor = new_cursor.saturating_add(1);
+        }
+
+        let mut index = 0;
+        while index < hunk.lines.len() {
+            let line = &hunk.lines[index];
+            if line.kind == LineKind::Context {
+                let diff_row = SideBySideDiffRow {
+                    display_row,
+                    new_lineno: line.new_lineno,
+                    insertion_head_line: None,
+                };
+                if let Some(value) = f(diff_row) {
+                    return Some(value);
+                }
+                display_row = display_row.saturating_add(1);
+                new_cursor = new_cursor.saturating_add(1);
+                index += 1;
+                continue;
+            }
+
+            let block_start = index;
+            let mut del_end = index;
+            while del_end < hunk.lines.len() && hunk.lines[del_end].kind == LineKind::Deletion {
+                del_end += 1;
+            }
+            let mut add_end = del_end;
+            while add_end < hunk.lines.len() && hunk.lines[add_end].kind == LineKind::Addition {
+                add_end += 1;
+            }
+
+            let deletion_count = del_end.saturating_sub(block_start);
+            let additions = &hunk.lines[del_end..add_end];
+            let max_count = deletion_count.max(additions.len());
+            for offset in 0..max_count {
+                let new_lineno = additions.get(offset).and_then(|line| line.new_lineno);
+                let diff_row = SideBySideDiffRow {
+                    display_row,
+                    new_lineno,
+                    insertion_head_line: new_lineno
+                        .is_none()
+                        .then_some(new_cursor.saturating_sub(1)),
+                };
+                if let Some(value) = f(diff_row) {
+                    return Some(value);
+                }
+                display_row = display_row.saturating_add(1);
+                if new_lineno.is_some() {
+                    new_cursor = new_cursor.saturating_add(1);
+                }
+            }
+            index = add_end;
+        }
+    }
+
+    while (new_cursor as usize) <= head_lines {
+        let diff_row = SideBySideDiffRow {
+            display_row,
+            new_lineno: Some(new_cursor),
+            insertion_head_line: None,
+        };
+        if let Some(value) = f(diff_row) {
+            return Some(value);
+        }
+        display_row = display_row.saturating_add(1);
+        new_cursor = new_cursor.saturating_add(1);
+    }
+    None
+}
+
+fn diff_insertion_head_line_before_row(state: &AppState, row: usize) -> Option<u32> {
+    let entry = state.selected_file_entry()?;
+    let head_lines = state
+        .head_content
+        .as_deref()
+        .map(|content| content.lines().count())
+        .unwrap_or(0);
+    if entry.diff.hunks.is_empty() {
+        return None;
+    }
+    if state.render_variant == RenderVariant::SideBySide {
+        return find_side_by_side_row(state, |diff_row| {
+            (diff_row.display_row == row && diff_row.new_lineno.is_none())
+                .then_some(diff_row.insertion_head_line)
+        })
+        .flatten();
+    }
+
+    let mut display_row = 0usize;
+    let mut new_cursor = 1u32;
+    for hunk in &entry.diff.hunks {
+        while new_cursor < hunk.new_start && (new_cursor as usize) <= head_lines {
+            display_row = display_row.saturating_add(1);
+            new_cursor = new_cursor.saturating_add(1);
+        }
+
+        let mut index = 0;
+        while index < hunk.lines.len() {
+            let line = &hunk.lines[index];
+            if line.kind == LineKind::Context {
+                display_row = display_row.saturating_add(1);
+                new_cursor = new_cursor.saturating_add(1);
+                index += 1;
+                continue;
+            }
+
+            let block_start = index;
+            let mut del_end = index;
+            while del_end < hunk.lines.len() && hunk.lines[del_end].kind == LineKind::Deletion {
+                del_end += 1;
+            }
+            let mut add_end = del_end;
+            while add_end < hunk.lines.len() && hunk.lines[add_end].kind == LineKind::Addition {
+                add_end += 1;
+            }
+
+            let deletion_count = del_end.saturating_sub(block_start);
+            let additions = &hunk.lines[del_end..add_end];
+            for _ in 0..deletion_count {
+                if display_row == row {
+                    return Some(new_cursor.saturating_sub(1));
+                }
+                display_row = display_row.saturating_add(1);
+            }
+            for _ in additions {
+                display_row = display_row.saturating_add(1);
+                new_cursor = new_cursor.saturating_add(1);
+            }
+            index = add_end;
+        }
     }
     None
 }

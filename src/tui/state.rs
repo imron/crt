@@ -121,6 +121,8 @@ pub struct TuiState {
     pub diff_search_cursor: usize,
     /// In-progress review comment body.
     pub comment_input: String,
+    /// Title shown on the comment composer.
+    pub comment_title: String,
     /// Cursor position within `comment_input`.
     pub comment_cursor: usize,
     /// First visible line in the comment composer.
@@ -168,6 +170,7 @@ impl Default for TuiState {
             diff_search_input: String::new(),
             diff_search_cursor: 0,
             comment_input: String::new(),
+            comment_title: "Comment".to_string(),
             comment_cursor: 0,
             comment_scroll: 0,
             active_core_prompt: None,
@@ -463,9 +466,20 @@ impl TuiState {
         self.diff_search_cursor = self.diff_search_input.len();
     }
 
+    #[cfg(test)]
     pub fn open_comment_prompt(&mut self, id: PromptId, initial_value: String) {
+        self.open_comment_prompt_with_title(id, "Comment".to_string(), initial_value);
+    }
+
+    pub fn open_comment_prompt_with_title(
+        &mut self,
+        id: PromptId,
+        title: String,
+        initial_value: String,
+    ) {
         self.active_core_prompt = Some(id);
         self.input_mode = InputMode::Comment;
+        self.comment_title = title;
         self.comment_input = initial_value;
         self.comment_cursor = self.comment_input.len();
         self.comment_scroll = 0;
@@ -479,6 +493,7 @@ impl TuiState {
         self.diff_search_input.clear();
         self.diff_search_cursor = 0;
         self.comment_input.clear();
+        self.comment_title = "Comment".to_string();
         self.comment_cursor = 0;
         self.comment_scroll = 0;
     }
@@ -556,7 +571,11 @@ mod tests {
     #[test]
     fn clear_prompt_resets_all_prompt_buffers() {
         let mut state = TuiState::default();
-        state.open_diff_search_prompt(PromptId(8), "needle".to_string());
+        state.open_comment_prompt_with_title(
+            PromptId(8),
+            "Edit Comment".to_string(),
+            "needle".to_string(),
+        );
 
         state.clear_prompt();
 
@@ -567,6 +586,7 @@ mod tests {
         assert!(state.diff_search_input.is_empty());
         assert_eq!(state.diff_search_cursor, 0);
         assert!(state.comment_input.is_empty());
+        assert_eq!(state.comment_title, "Comment");
         assert_eq!(state.comment_cursor, 0);
     }
 
