@@ -2188,6 +2188,63 @@ mod tests {
     }
 
     #[test]
+    fn compound_reanchor_preserves_base_and_head_segments() {
+        let mut comment = stored_comment(2, "head target");
+        comment.anchor = review_types::CommentAnchor {
+            segments: vec![
+                review_types::CommentAnchorSegment {
+                    side: review_types::CommentAnchorSide::Base,
+                    file_path: "src/lib.rs".to_string(),
+                    line_start: 4,
+                    line_end: 4,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "base target".to_string(),
+                    context_before: "base before".to_string(),
+                    context_after: "base after".to_string(),
+                    placement_status: review_types::AnchorPlacementStatus::Anchored,
+                    match_method: review_types::AnchorMatchMethod::ExactAtLine,
+                },
+                review_types::CommentAnchorSegment {
+                    side: review_types::CommentAnchorSide::Head,
+                    file_path: "src/lib.rs".to_string(),
+                    line_start: 2,
+                    line_end: 2,
+                    char_start: None,
+                    char_end: None,
+                    anchor_text: "head target".to_string(),
+                    context_before: "head before".to_string(),
+                    context_after: "head after".to_string(),
+                    placement_status: review_types::AnchorPlacementStatus::Anchored,
+                    match_method: review_types::AnchorMatchMethod::ExactAtLine,
+                },
+            ],
+            aggregate_status: review_types::AnchorAggregateStatus::Anchored,
+        };
+
+        let anchor = resolve_anchor(
+            &comment,
+            "head before\nhead target\nhead after\n",
+            "head-blob".to_string(),
+            None,
+        );
+
+        assert_eq!(anchor.segments.len(), 2);
+        assert!(
+            anchor
+                .segments
+                .iter()
+                .any(|segment| segment.side == review_types::CommentAnchorSide::Base)
+        );
+        assert!(
+            anchor
+                .segments
+                .iter()
+                .any(|segment| segment.side == review_types::CommentAnchorSide::Head)
+        );
+    }
+
+    #[test]
     fn resolves_shifted_anchor_by_exact_text() {
         let comment = stored_comment(2, "target");
         let anchor = resolve_anchor(
