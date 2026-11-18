@@ -17,6 +17,7 @@ pub enum CoreEffect {
     ClearPrompt { id: PromptId },
     Command(CommandParse),
     DiffSearch(DiffSearchEffect),
+    DiffCursor(DiffCursorEffect),
     SearchResults(SearchResultsEffect),
     DefinitionResults(DefinitionResultsEffect),
     Quit,
@@ -46,6 +47,31 @@ pub enum DiffSearchEffect {
     NextMatch,
     PreviousMatch,
     Clear,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffCursorEffect {
+    LineDown,
+    LineUp,
+    PageDown,
+    PageUp,
+    HalfPageDown,
+    HalfPageUp,
+    ScrollDown,
+    ScrollUp,
+    Top,
+    Bottom,
+    ViewTop,
+    ViewMiddle,
+    ViewBottom,
+    CharLeft,
+    CharRight,
+    LineStart,
+    LineEnd,
+    WordForward,
+    WordBackward,
+    BigWordForward,
+    BigWordBackward,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +150,9 @@ impl CoreInteractionEngine {
                     if let Some(effect) = definition_results_key_effect(key) {
                         return vec![CoreEffect::DefinitionResults(effect)];
                     }
+                }
+                if let Some(effect) = diff_cursor_key_effect(key) {
+                    return vec![CoreEffect::DiffCursor(effect)];
                 }
             }
         }
@@ -418,6 +447,67 @@ fn definition_results_key_effect(key: &super::input::KeyEvent) -> Option<Definit
         }
         Key::Enter if key_has_no_modifier(key.modifiers) => {
             Some(DefinitionResultsEffect::AcceptSelected)
+        }
+        _ => None,
+    }
+}
+
+fn diff_cursor_key_effect(key: &super::input::KeyEvent) -> Option<DiffCursorEffect> {
+    match key.key {
+        Key::Char('j') | Key::Down if key_has_no_modifier(key.modifiers) => {
+            Some(DiffCursorEffect::LineDown)
+        }
+        Key::Char('k') | Key::Up if key_has_no_modifier(key.modifiers) => {
+            Some(DiffCursorEffect::LineUp)
+        }
+        Key::Char(' ') => Some(DiffCursorEffect::PageDown),
+        Key::Char('b') if key_has_control_modifier_only(key.modifiers) => {
+            Some(DiffCursorEffect::PageUp)
+        }
+        Key::Char('d') if key_has_control_modifier_only(key.modifiers) => {
+            Some(DiffCursorEffect::HalfPageDown)
+        }
+        Key::Char('u') if key_has_control_modifier_only(key.modifiers) => {
+            Some(DiffCursorEffect::HalfPageUp)
+        }
+        Key::Char('e') if key_has_control_modifier_only(key.modifiers) => {
+            Some(DiffCursorEffect::ScrollDown)
+        }
+        Key::Char('y') if key_has_control_modifier_only(key.modifiers) => {
+            Some(DiffCursorEffect::ScrollUp)
+        }
+        Key::Char('g') if key_has_no_modifier(key.modifiers) => Some(DiffCursorEffect::Top),
+        Key::Char('G') if key_has_no_command_modifier(key.modifiers) => {
+            Some(DiffCursorEffect::Bottom)
+        }
+        Key::Char('H') if key_has_no_command_modifier(key.modifiers) => {
+            Some(DiffCursorEffect::ViewTop)
+        }
+        Key::Char('M') if key_has_no_command_modifier(key.modifiers) => {
+            Some(DiffCursorEffect::ViewMiddle)
+        }
+        Key::Char('L') if key_has_no_command_modifier(key.modifiers) => {
+            Some(DiffCursorEffect::ViewBottom)
+        }
+        Key::Char('h') | Key::Left if key_has_no_modifier(key.modifiers) => {
+            Some(DiffCursorEffect::CharLeft)
+        }
+        Key::Char('l') | Key::Right if key_has_no_modifier(key.modifiers) => {
+            Some(DiffCursorEffect::CharRight)
+        }
+        Key::Char('0') if key_has_no_modifier(key.modifiers) => Some(DiffCursorEffect::LineStart),
+        Key::Char('$') if key_has_no_command_modifier(key.modifiers) => {
+            Some(DiffCursorEffect::LineEnd)
+        }
+        Key::Char('w') if key_has_no_modifier(key.modifiers) => Some(DiffCursorEffect::WordForward),
+        Key::Char('b') if key_has_no_modifier(key.modifiers) => {
+            Some(DiffCursorEffect::WordBackward)
+        }
+        Key::Char('W') if key_has_no_command_modifier(key.modifiers) => {
+            Some(DiffCursorEffect::BigWordForward)
+        }
+        Key::Char('B') if key_has_no_command_modifier(key.modifiers) => {
+            Some(DiffCursorEffect::BigWordBackward)
         }
         _ => None,
     }
@@ -723,6 +813,219 @@ mod tests {
             vec![CoreEffect::DefinitionResults(
                 DefinitionResultsEffect::AcceptSelected
             )]
+        );
+    }
+
+    #[test]
+    fn diff_cursor_line_and_page_keys_request_cursor_effects() {
+        let mut engine = CoreInteractionEngine::new();
+
+        let line_down = engine.handle_input(
+            key_event(Key::Down, InputModifiers::default()),
+            &Default::default(),
+        );
+        let line_up = engine.handle_input(
+            key_event(Key::Char('k'), InputModifiers::default()),
+            &Default::default(),
+        );
+        let page_down = engine.handle_input(
+            key_event(
+                Key::Char(' '),
+                InputModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &Default::default(),
+        );
+        let page_up = engine.handle_input(
+            key_event(
+                Key::Char('b'),
+                InputModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &Default::default(),
+        );
+        let half_down = engine.handle_input(
+            key_event(
+                Key::Char('d'),
+                InputModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &Default::default(),
+        );
+        let half_up = engine.handle_input(
+            key_event(
+                Key::Char('u'),
+                InputModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &Default::default(),
+        );
+
+        assert_eq!(
+            line_down,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::LineDown)]
+        );
+        assert_eq!(
+            line_up,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::LineUp)]
+        );
+        assert_eq!(
+            page_down,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::PageDown)]
+        );
+        assert_eq!(
+            page_up,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::PageUp)]
+        );
+        assert_eq!(
+            half_down,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::HalfPageDown)]
+        );
+        assert_eq!(
+            half_up,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::HalfPageUp)]
+        );
+    }
+
+    #[test]
+    fn diff_cursor_view_and_horizontal_keys_request_cursor_effects() {
+        let mut engine = CoreInteractionEngine::new();
+        let shifted = InputModifiers {
+            shift: true,
+            ..Default::default()
+        };
+
+        let scroll_down = engine.handle_input(
+            key_event(
+                Key::Char('e'),
+                InputModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &Default::default(),
+        );
+        let scroll_up = engine.handle_input(
+            key_event(
+                Key::Char('y'),
+                InputModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            ),
+            &Default::default(),
+        );
+        let top = engine.handle_input(
+            key_event(Key::Char('g'), InputModifiers::default()),
+            &Default::default(),
+        );
+        let bottom = engine.handle_input(key_event(Key::Char('G'), shifted), &Default::default());
+        let view_top = engine.handle_input(key_event(Key::Char('H'), shifted), &Default::default());
+        let view_middle =
+            engine.handle_input(key_event(Key::Char('M'), shifted), &Default::default());
+        let view_bottom =
+            engine.handle_input(key_event(Key::Char('L'), shifted), &Default::default());
+        let char_left = engine.handle_input(
+            key_event(Key::Left, InputModifiers::default()),
+            &Default::default(),
+        );
+        let char_right = engine.handle_input(
+            key_event(Key::Char('l'), InputModifiers::default()),
+            &Default::default(),
+        );
+        let line_start = engine.handle_input(
+            key_event(Key::Char('0'), InputModifiers::default()),
+            &Default::default(),
+        );
+        let line_end = engine.handle_input(key_event(Key::Char('$'), shifted), &Default::default());
+
+        assert_eq!(
+            scroll_down,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::ScrollDown)]
+        );
+        assert_eq!(
+            scroll_up,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::ScrollUp)]
+        );
+        assert_eq!(top, vec![CoreEffect::DiffCursor(DiffCursorEffect::Top)]);
+        assert_eq!(
+            bottom,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::Bottom)]
+        );
+        assert_eq!(
+            view_top,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::ViewTop)]
+        );
+        assert_eq!(
+            view_middle,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::ViewMiddle)]
+        );
+        assert_eq!(
+            view_bottom,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::ViewBottom)]
+        );
+        assert_eq!(
+            char_left,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::CharLeft)]
+        );
+        assert_eq!(
+            char_right,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::CharRight)]
+        );
+        assert_eq!(
+            line_start,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::LineStart)]
+        );
+        assert_eq!(
+            line_end,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::LineEnd)]
+        );
+    }
+
+    #[test]
+    fn diff_cursor_word_keys_request_cursor_effects() {
+        let mut engine = CoreInteractionEngine::new();
+        let shifted = InputModifiers {
+            shift: true,
+            ..Default::default()
+        };
+
+        let word_forward = engine.handle_input(
+            key_event(Key::Char('w'), InputModifiers::default()),
+            &Default::default(),
+        );
+        let word_backward = engine.handle_input(
+            key_event(Key::Char('b'), InputModifiers::default()),
+            &Default::default(),
+        );
+        let bigword_forward =
+            engine.handle_input(key_event(Key::Char('W'), shifted), &Default::default());
+        let bigword_backward =
+            engine.handle_input(key_event(Key::Char('B'), shifted), &Default::default());
+
+        assert_eq!(
+            word_forward,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::WordForward)]
+        );
+        assert_eq!(
+            word_backward,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::WordBackward)]
+        );
+        assert_eq!(
+            bigword_forward,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::BigWordForward)]
+        );
+        assert_eq!(
+            bigword_backward,
+            vec![CoreEffect::DiffCursor(DiffCursorEffect::BigWordBackward)]
         );
     }
 

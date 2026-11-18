@@ -15,9 +15,9 @@ use crate::core::command::{self, Command, CommandParse};
 use crate::core::navigation::{self, Direction, FileNavigationScope};
 use crate::core::search as core_search;
 use crate::core::{
-    CoreEffect, DefinitionResultsEffect, DiffSearchEffect, InputEvent, InputModifiers,
-    InteractionContext, Key as CoreKey, KeyEvent as CoreKeyEvent, KeyEventKind as CoreKeyEventKind,
-    PaneId, PromptKind, SearchResultsEffect,
+    CoreEffect, DefinitionResultsEffect, DiffCursorEffect, DiffSearchEffect, InputEvent,
+    InputModifiers, InteractionContext, Key as CoreKey, KeyEvent as CoreKeyEvent,
+    KeyEventKind as CoreKeyEventKind, PaneId, PromptKind, SearchResultsEffect,
 };
 use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
@@ -146,6 +146,9 @@ fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
             }
             CoreEffect::DiffSearch(DiffSearchEffect::Clear) => {
                 clear_diff_search(state);
+            }
+            CoreEffect::DiffCursor(effect) => {
+                apply_diff_cursor_effect(state, effect);
             }
             CoreEffect::SearchResults(effect) => {
                 apply_search_results_effect(state, effect);
@@ -339,6 +342,119 @@ fn clear_diff_search(state: &mut AppState) {
     state.diff_search_query = None;
     state.diff_search_matches.clear();
     state.diff_search_current = 0;
+}
+
+fn apply_diff_cursor_effect(state: &mut AppState, effect: DiffCursorEffect) {
+    match effect {
+        DiffCursorEffect::LineDown => {
+            state.diff_line_cursor = state.diff_line_cursor.saturating_add(1);
+            state.diff_col_cursor = 0;
+            state.clamp_cursor_and_scroll();
+        }
+        DiffCursorEffect::LineUp => {
+            state.diff_line_cursor = state.diff_line_cursor.saturating_sub(1);
+            state.diff_col_cursor = 0;
+            state.clamp_cursor_and_scroll();
+        }
+        DiffCursorEffect::PageDown => {
+            let delta = state.diff_view_height;
+            state.diff_line_cursor = state.diff_line_cursor.saturating_add(delta);
+            state.diff_scroll = state.diff_scroll.saturating_add(delta);
+            state.diff_col_cursor = 0;
+            state.clamp_cursor_and_scroll();
+        }
+        DiffCursorEffect::PageUp => {
+            let delta = state.diff_view_height;
+            state.diff_line_cursor = state.diff_line_cursor.saturating_sub(delta);
+            state.diff_scroll = state.diff_scroll.saturating_sub(delta);
+            state.diff_col_cursor = 0;
+            state.clamp_cursor_and_scroll();
+        }
+        DiffCursorEffect::HalfPageDown => {
+            let delta = state.diff_view_height / 2;
+            state.diff_line_cursor = state.diff_line_cursor.saturating_add(delta);
+            state.diff_scroll = state.diff_scroll.saturating_add(delta);
+            state.diff_col_cursor = 0;
+            state.clamp_cursor_and_scroll();
+        }
+        DiffCursorEffect::HalfPageUp => {
+            let delta = state.diff_view_height / 2;
+            state.diff_line_cursor = state.diff_line_cursor.saturating_sub(delta);
+            state.diff_scroll = state.diff_scroll.saturating_sub(delta);
+            state.diff_col_cursor = 0;
+            state.clamp_cursor_and_scroll();
+        }
+        DiffCursorEffect::ScrollDown => {
+            state.diff_scroll = state.diff_scroll.saturating_add(1);
+            state.clamp_diff_scroll();
+            if state.diff_line_cursor < state.diff_scroll {
+                state.diff_line_cursor = state.diff_scroll;
+                state.diff_col_cursor = 0;
+            }
+        }
+        DiffCursorEffect::ScrollUp => {
+            state.diff_scroll = state.diff_scroll.saturating_sub(1);
+            if state.diff_view_height > 0
+                && state.diff_line_cursor >= state.diff_scroll + state.diff_view_height
+            {
+                state.diff_line_cursor = state.diff_scroll + state.diff_view_height - 1;
+                state.diff_col_cursor = 0;
+            }
+        }
+        DiffCursorEffect::Top => {
+            state.diff_line_cursor = 0;
+            state.diff_scroll = 0;
+            state.diff_col_cursor = 0;
+        }
+        DiffCursorEffect::Bottom => {
+            state.diff_line_cursor = state.max_diff_scroll();
+            state.diff_col_cursor = 0;
+            state.clamp_cursor_and_scroll();
+        }
+        DiffCursorEffect::ViewTop => {
+            state.diff_line_cursor = state.diff_scroll;
+            state.diff_col_cursor = 0;
+        }
+        DiffCursorEffect::ViewMiddle => {
+            let mid = state.diff_view_height / 2;
+            state.diff_line_cursor = state.diff_scroll + mid;
+            state.diff_col_cursor = 0;
+            state.clamp_cursor_and_scroll();
+        }
+        DiffCursorEffect::ViewBottom => {
+            let bottom = state.diff_view_height.saturating_sub(1);
+            state.diff_line_cursor = state.diff_scroll + bottom;
+            state.diff_col_cursor = 0;
+            state.clamp_cursor_and_scroll();
+        }
+        DiffCursorEffect::CharLeft => {
+            state.diff_col_cursor = state.diff_col_cursor.saturating_sub(1);
+        }
+        DiffCursorEffect::CharRight => {
+            let max = state.current_line_text_len().saturating_sub(1);
+            if state.diff_col_cursor < max {
+                state.diff_col_cursor += 1;
+            }
+        }
+        DiffCursorEffect::LineStart => {
+            state.diff_col_cursor = 0;
+        }
+        DiffCursorEffect::LineEnd => {
+            state.diff_col_cursor = state.current_line_text_len().saturating_sub(1);
+        }
+        DiffCursorEffect::WordForward => {
+            word_forward(state);
+        }
+        DiffCursorEffect::WordBackward => {
+            word_backward(state);
+        }
+        DiffCursorEffect::BigWordForward => {
+            bigword_forward(state);
+        }
+        DiffCursorEffect::BigWordBackward => {
+            bigword_backward(state);
+        }
+    }
 }
 
 fn apply_search_results_effect(state: &mut AppState, effect: SearchResultsEffect) {
@@ -1079,143 +1195,8 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
     state.status_message = None;
 
     // --- Diff cursor and scrolling: always controls the diff pane regardless of focus ---
-    match (key.code, key.modifiers) {
-        (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => {
-            state.diff_line_cursor = state.diff_line_cursor.saturating_add(1);
-            state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
-            return;
-        }
-        (KeyCode::Char('k') | KeyCode::Up, KeyModifiers::NONE) => {
-            state.diff_line_cursor = state.diff_line_cursor.saturating_sub(1);
-            state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
-            return;
-        }
-        (KeyCode::Char(' '), _) => {
-            let delta = state.diff_view_height;
-            state.diff_line_cursor = state.diff_line_cursor.saturating_add(delta);
-            state.diff_scroll = state.diff_scroll.saturating_add(delta);
-            state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
-            return;
-        }
-        (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
-            let delta = state.diff_view_height;
-            state.diff_line_cursor = state.diff_line_cursor.saturating_sub(delta);
-            state.diff_scroll = state.diff_scroll.saturating_sub(delta);
-            state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
-            return;
-        }
-        (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
-            let delta = state.diff_view_height / 2;
-            state.diff_line_cursor = state.diff_line_cursor.saturating_add(delta);
-            state.diff_scroll = state.diff_scroll.saturating_add(delta);
-            state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
-            return;
-        }
-        (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
-            let delta = state.diff_view_height / 2;
-            state.diff_line_cursor = state.diff_line_cursor.saturating_sub(delta);
-            state.diff_scroll = state.diff_scroll.saturating_sub(delta);
-            state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
-            return;
-        }
-        (KeyCode::Char('e'), KeyModifiers::CONTROL) => {
-            // Scroll viewport down one line, keeping cursor on screen.
-            state.diff_scroll = state.diff_scroll.saturating_add(1);
-            state.clamp_diff_scroll();
-            if state.diff_line_cursor < state.diff_scroll {
-                state.diff_line_cursor = state.diff_scroll;
-                state.diff_col_cursor = 0;
-            }
-            return;
-        }
-        (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
-            // Scroll viewport up one line, keeping cursor on screen.
-            state.diff_scroll = state.diff_scroll.saturating_sub(1);
-            if state.diff_view_height > 0
-                && state.diff_line_cursor >= state.diff_scroll + state.diff_view_height
-            {
-                state.diff_line_cursor = state.diff_scroll + state.diff_view_height - 1;
-                state.diff_col_cursor = 0;
-            }
-            return;
-        }
-        (KeyCode::Char('g'), KeyModifiers::NONE) => {
-            state.diff_line_cursor = 0;
-            state.diff_scroll = 0;
-            state.diff_col_cursor = 0;
-            return;
-        }
-        (KeyCode::Char('G'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
-            state.diff_line_cursor = state.max_diff_scroll();
-            state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
-            return;
-        }
-        (KeyCode::Char('H'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
-            // Move cursor to top of visible viewport.
-            state.diff_line_cursor = state.diff_scroll;
-            state.diff_col_cursor = 0;
-            return;
-        }
-        (KeyCode::Char('M'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
-            // Move cursor to middle of visible viewport.
-            let mid = state.diff_view_height / 2;
-            state.diff_line_cursor = state.diff_scroll + mid;
-            state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
-            return;
-        }
-        (KeyCode::Char('L'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
-            // Move cursor to bottom of visible viewport.
-            let bottom = state.diff_view_height.saturating_sub(1);
-            state.diff_line_cursor = state.diff_scroll + bottom;
-            state.diff_col_cursor = 0;
-            state.clamp_cursor_and_scroll();
-            return;
-        }
-        // --- Horizontal cursor movement ---
-        (KeyCode::Char('h') | KeyCode::Left, KeyModifiers::NONE) => {
-            state.diff_col_cursor = state.diff_col_cursor.saturating_sub(1);
-            return;
-        }
-        (KeyCode::Char('l') | KeyCode::Right, KeyModifiers::NONE) => {
-            let max = state.current_line_text_len().saturating_sub(1);
-            if state.diff_col_cursor < max {
-                state.diff_col_cursor += 1;
-            }
-            return;
-        }
-        (KeyCode::Char('0'), KeyModifiers::NONE) => {
-            state.diff_col_cursor = 0;
-            return;
-        }
-        (KeyCode::Char('$'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-            state.diff_col_cursor = state.current_line_text_len().saturating_sub(1);
-            return;
-        }
-        (KeyCode::Char('w'), KeyModifiers::NONE) => {
-            word_forward(state);
-            return;
-        }
-        (KeyCode::Char('b'), KeyModifiers::NONE) => {
-            word_backward(state);
-            return;
-        }
-        (KeyCode::Char('W'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
-            bigword_forward(state);
-            return;
-        }
-        (KeyCode::Char('B'), KeyModifiers::SHIFT | KeyModifiers::NONE) => {
-            bigword_backward(state);
-            return;
-        }
-        _ => {}
+    if dispatch_core_input(state, key) {
+        return;
     }
 
     // --- Pane-specific keys ---
