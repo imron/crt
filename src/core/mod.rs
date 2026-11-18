@@ -22,7 +22,7 @@ pub use input::{
 };
 pub use interaction::{
     ConnectionState, CoreEffect, CoreEffects, CoreInteractionEngine, DefinitionResultsEffect,
-    DiffCursorEffect, DiffSearchEffect, InteractionContext, SearchResultsEffect,
+    DiffCursorEffect, DiffSearchEffect, InteractionContext, PaneEffect, SearchResultsEffect,
 };
 pub use prompt::{PromptId, PromptKind, PromptRequest};
 pub use render::{
