@@ -72,6 +72,8 @@ pub struct TuiState {
     pub hunk_first_change_rows: Vec<usize>,
     /// Number of columns occupied by line-number gutters in the TUI diff pane.
     pub diff_gutter_cols: usize,
+    /// Column where semantic diff text starts in the rendered TUI diff pane.
+    pub diff_content_start_col: usize,
     /// Total rendered line count in the diff pane.
     pub diff_content_height: usize,
     /// Visible rendered line count in the diff pane.
@@ -140,6 +142,7 @@ impl Default for TuiState {
             hunk_end_rows: Vec::new(),
             hunk_first_change_rows: Vec::new(),
             diff_gutter_cols: 0,
+            diff_content_start_col: 0,
             diff_content_height: 0,
             diff_view_height: 0,
             diff_rendered_text: Vec::new(),
@@ -225,7 +228,9 @@ impl TuiState {
     }
 
     pub fn diff_content_start_col(&self) -> usize {
-        if self.diff_gutter_cols > 0 {
+        if self.diff_content_start_col > 0 {
+            self.diff_content_start_col
+        } else if self.diff_gutter_cols > 0 {
             self.diff_gutter_cols + 3
         } else {
             0
@@ -479,6 +484,10 @@ impl AppViewport for TuiState {
 
     fn diff_gutter_cols(&self) -> usize {
         self.diff_gutter_cols
+    }
+
+    fn diff_content_start_col(&self) -> usize {
+        TuiState::diff_content_start_col(self)
     }
 
     fn diff_content_height(&self) -> usize {

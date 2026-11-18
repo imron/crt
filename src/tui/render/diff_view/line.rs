@@ -72,6 +72,9 @@ pub fn make_line(
     parts.push(Span::styled(old_num, gutter_style));
     parts.push(Span::styled(" ", gutter_style));
     parts.push(Span::styled(new_num, gutter_style));
+    if comment_marker.width() > 0 {
+        parts.push(Span::styled(" ", gutter_style));
+    }
     if !comment_marker.text().is_empty() {
         let marker_style = if comment_marker.is_current() {
             gutter_style.fg(current_comment_fg)
@@ -86,7 +89,8 @@ pub fn make_line(
     parts.push(Span::styled(format!(" {prefix} "), content_style));
 
     // Width consumed by blame + gutters + separator + prefix.
-    let fixed_cols = blame_cols + gutter_w + 1 + gutter_w + comment_marker.width() + 3;
+    let marker_sep = usize::from(comment_marker.width() > 0);
+    let fixed_cols = blame_cols + gutter_w + 1 + gutter_w + marker_sep + comment_marker.width() + 3;
     let content_cols = inner_w.saturating_sub(fixed_cols);
     let visible_len = content.chars().count();
     let pad = content_cols.saturating_sub(visible_len);
@@ -143,6 +147,9 @@ pub fn make_line_with_emphasis(
     parts.push(Span::styled(old_num, gutter_style));
     parts.push(Span::styled(" ", gutter_style));
     parts.push(Span::styled(new_num, gutter_style));
+    if comment_marker.width() > 0 {
+        parts.push(Span::styled(" ", gutter_style));
+    }
     if !comment_marker.text().is_empty() {
         let marker_style = if comment_marker.is_current() {
             gutter_style.fg(current_comment_fg)
@@ -156,7 +163,8 @@ pub fn make_line_with_emphasis(
     }
     parts.push(Span::styled(format!(" {prefix} "), base_style));
 
-    let fixed_cols = blame_cols + gutter_w + 1 + gutter_w + comment_marker.width() + 3;
+    let marker_sep = usize::from(comment_marker.width() > 0);
+    let fixed_cols = blame_cols + gutter_w + 1 + gutter_w + marker_sep + comment_marker.width() + 3;
     let content_cols = inner_w.saturating_sub(fixed_cols);
 
     let mut char_count = 0;
@@ -261,5 +269,34 @@ mod tests {
         );
 
         assert_eq!(marker_span(&line).style.fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn make_line_separates_line_number_and_comment_marker() {
+        let markers = CommentMarkerSet::new(&[comment()], None);
+        let marker = markers.marker_for_line(Some(1));
+
+        let line = make_line(
+            Some(1),
+            Some(1),
+            &marker,
+            " ",
+            "content",
+            Style::default(),
+            Color::DarkGray,
+            Color::Blue,
+            Color::Gray,
+            Color::Black,
+            3,
+            80,
+            None,
+        );
+        let rendered: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+
+        assert!(rendered.starts_with("  1   1 ●"));
     }
 }
