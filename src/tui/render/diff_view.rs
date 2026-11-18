@@ -12,6 +12,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::app::AppState;
 use crate::config::DiffStyle;
 use crate::model::{ContentMode, DiffHunk, LineKind, PaneFocus, RenderVariant, ReviewStatus};
+use crate::tui::TuiState;
 
 // ---------------------------------------------------------------------------
 // Diff line cache — avoids rebuilding all Line<'static> every frame
@@ -59,7 +60,7 @@ fn string_id(s: &Option<String>) -> Option<(usize, usize)> {
 }
 
 /// Draw the diff/file view pane.
-pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
+pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState, area: Rect) {
     let focused = state.pane_focus == PaneFocus::Diff;
     let border_style = super::pane_border_style(&state.styles.panel, focused);
 
@@ -87,7 +88,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
     };
 
     // Check if the cache is still valid.
-    let cache_hit = state
+    let cache_hit = tui_state
         .diff_cache
         .as_ref()
         .map_or(false, |c| c.key == new_key);
@@ -108,7 +109,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
             })
             .collect();
 
-        state.diff_cache = Some(DiffCache {
+        tui_state.diff_cache = Some(DiffCache {
             key: new_key,
             lines: content,
             hunk_starts,
@@ -122,7 +123,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // From here we know the cache is populated.
     // Extract values we need, then drop the immutable borrow on state.
     let (hunk_starts, hunk_ends, hunk_first_changes, gutter_w, content_height) = {
-        let cache = state.diff_cache.as_ref().unwrap();
+        let cache = tui_state.diff_cache.as_ref().unwrap();
         (
             cache.hunk_starts.clone(),
             cache.hunk_ends.clone(),
@@ -151,7 +152,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // Only update on cache miss — the value persists across frames.
     if !cache_hit {
         let rendered_text = {
-            let cache = state.diff_cache.as_ref().unwrap();
+            let cache = tui_state.diff_cache.as_ref().unwrap();
             cache.rendered_text.clone()
         };
         state.diff_rendered_text = rendered_text;
@@ -185,7 +186,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let search_current_bg = *state.styles.diff.search_current_match_bg;
     let cursor_visible_idx = state.diff_line_cursor.saturating_sub(state.diff_scroll);
     let visible: Vec<Line> = {
-        let cache = state.diff_cache.as_ref().unwrap();
+        let cache = tui_state.diff_cache.as_ref().unwrap();
         cache
             .lines
             .iter()

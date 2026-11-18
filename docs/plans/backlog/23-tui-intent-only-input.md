@@ -114,6 +114,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
 - Moved terminal input and rendering modules under the `tui` module boundary.
 - Moved the terminal runtime shell into `tui::Tui`, leaving the mixed
   AppState/TUI state split for a later Stage 23 slice.
+- Moved the diff render cache into TUI-owned state so `AppState` no longer
+  depends on `tui::render` internals.
 
 ## Acceptance Criteria
 

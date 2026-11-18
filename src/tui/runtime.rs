@@ -27,11 +27,13 @@ use crate::core::review;
 use crate::core::search as core_search;
 use crate::core::{InputEvent, PaneId, TextAnchor};
 use crate::model::{ConnectionContext, PaneFocus, ReviewStatus};
+use crate::tui::TuiState;
 use crate::tui::{input, render};
 
 /// The terminal UI runtime. Owns the terminal, client connection, and state.
 pub struct Tui {
     pub state: AppState,
+    tui_state: TuiState,
     client: Client,
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
 }
@@ -72,6 +74,7 @@ impl Tui {
 
         Ok(Self {
             state,
+            tui_state: TuiState::default(),
             client,
             terminal,
         })
@@ -129,7 +132,9 @@ impl Tui {
         loop {
             // Render current state.
             let state = &mut self.state;
-            self.terminal.draw(|frame| render::draw(frame, state))?;
+            let tui_state = &mut self.tui_state;
+            self.terminal
+                .draw(|frame| render::draw(frame, state, tui_state))?;
 
             // Wait for the next terminal event, with a timeout so that
             // transient status messages get cleared by re-rendering.
@@ -415,7 +420,10 @@ impl Tui {
                 self.state.status_message = Some(("Searching...".to_string(), Instant::now()));
                 // Force a re-render so the user sees the searching message.
                 let state = &mut self.state;
-                let _ = self.terminal.draw(|frame| render::draw(frame, state));
+                let tui_state = &mut self.tui_state;
+                let _ = self
+                    .terminal
+                    .draw(|frame| render::draw(frame, state, tui_state));
 
                 match self.client.search_codebase(&pattern, "all").await {
                     Ok(result) => match core_search::search_outcome(&pattern, false, result) {
@@ -448,7 +456,10 @@ impl Tui {
                 self.state.status_message =
                     Some(("Searching diff files...".to_string(), Instant::now()));
                 let state = &mut self.state;
-                let _ = self.terminal.draw(|frame| render::draw(frame, state));
+                let tui_state = &mut self.tui_state;
+                let _ = self
+                    .terminal
+                    .draw(|frame| render::draw(frame, state, tui_state));
 
                 match self.client.search_codebase(&pattern, "diff").await {
                     Ok(result) => match core_search::search_outcome(&pattern, true, result) {
@@ -483,7 +494,10 @@ impl Tui {
                 self.state.status_message =
                     Some(("Finding definition...".to_string(), Instant::now()));
                 let state = &mut self.state;
-                let _ = self.terminal.draw(|frame| render::draw(frame, state));
+                let tui_state = &mut self.tui_state;
+                let _ = self
+                    .terminal
+                    .draw(|frame| render::draw(frame, state, tui_state));
 
                 let context_file = self
                     .state

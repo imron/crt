@@ -658,7 +658,6 @@ fn toggle_diff_base(state: &mut AppState) {
     if has_reviewed_commit {
         state.show_merge_base = !state.show_merge_base;
         state.reload_current_diff();
-        state.diff_cache = None;
         let label = if state.show_merge_base {
             "Diff base: merge base"
         } else {
