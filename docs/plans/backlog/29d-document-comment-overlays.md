@@ -57,7 +57,8 @@ impl Document {
 }
 ```
 
-`RenderContent.marker` should be produced from `DocumentComments`.
+`RenderContent.marker` and `RenderLine::Spacer.marker` should be produced from
+`DocumentComments`.
 
 ## Design Requirements
 
@@ -101,12 +102,13 @@ Document-level marker, precedence, span, and navigation behavior is covered in
 - resolving, unresolving, editing, and deleting comments refresh document
   overlays without rebuilding structural rows.
 - status messages for no unresolved comments still come from app update code.
-- TUI rendering receives markers through `RenderContent.marker` and does not
-  compute marker precedence.
+- TUI rendering receives markers through `RenderContent.marker` or
+  `RenderLine::Spacer.marker` and does not compute marker precedence.
 
 ## Acceptance Criteria
 
-- [ ] `RenderContent.marker` comes from `DocumentComments`.
+- [ ] `RenderContent.marker` and `RenderLine::Spacer.marker` come from
+      `DocumentComments`.
 - [ ] Current-comment commands use document APIs.
 - [ ] Comments panel current lookup uses document APIs.
 - [ ] `{` and `}` use document comment navigation for current-file movement.

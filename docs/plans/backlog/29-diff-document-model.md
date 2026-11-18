@@ -178,8 +178,13 @@ pub struct ContentRow {
 ```
 
 `DocumentRow::Spacer` is used for side-by-side alignment. It cannot contain
-text, blame, source, or comment data, which makes invalid spacer state
-unrepresentable.
+text, blame, source, line kind, or owned comment data, which makes invalid
+spacer state unrepresentable.
+
+Spacer rows can still receive overlay output when rendered. A multi-line
+comment may pass through a spacer row, and a visual line selection may include
+one. Those are overlay facts about the document row axis, not structural spacer
+content.
 
 ### Keep Comments Out Of Structural Rows
 
@@ -211,7 +216,10 @@ The TUI should ask a document for visible rows and render returned lines:
 ```rust
 pub enum RenderLine<'a> {
     Content(RenderContent<'a>),
-    Spacer,
+    Spacer {
+        marker: CommentMarker,
+        selected: bool,
+    },
 }
 
 pub struct RenderContent<'a> {
@@ -224,12 +232,15 @@ pub struct RenderContent<'a> {
 ```
 
 `RenderLine` is not a ratatui type. It contains domain-level runs and semantic
-line kind. The TUI maps these to ratatui spans and styles.
+line kind for content rows, plus overlay-only spacer state. The TUI maps these
+to ratatui spans and styles.
 
 There should not be both `LineKind` and `RenderLineKind`. Content rows use the
 existing semantic `LineKind`. Spacer rows are represented by
 `RenderLine::Spacer`, so a spacer cannot accidentally claim to be an addition,
-deletion, or context row.
+deletion, or context row. `RenderLine::Spacer` may still carry a comment marker
+and selection flag so markers and selections remain visually continuous across
+side-by-side alignment gaps.
 
 ### Track Hunk Targets In Documents
 
@@ -303,8 +314,9 @@ roles in this plan are:
   and `RenderLine::Spacer`.
 - `Comment`: existing logical review comment from app/server state. Documents
   project comments into `DocumentComments`; they do not own logical comments.
-- `CommentMarker`: semantic marker returned in `RenderContent`, describing
-  no marker, start, join, end, or single-line marker plus active/resolved state.
+- `CommentMarker`: semantic marker returned in `RenderContent` or
+  `RenderLine::Spacer`, describing no marker, start, join, end, or single-line
+  marker plus active/resolved state.
 - `Direction`: existing navigation direction, used by document APIs for
   next/previous comment lookup.
 - `SearchInput`: proposed builder input containing the active search query and
@@ -474,7 +486,10 @@ pub enum RunStyle {
 
 pub enum RenderLine<'a> {
     Content(RenderContent<'a>),
-    Spacer,
+    Spacer {
+        marker: CommentMarker,
+        selected: bool,
+    },
 }
 
 pub struct RenderContent<'a> {
