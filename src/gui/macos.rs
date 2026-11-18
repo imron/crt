@@ -149,11 +149,17 @@ fn detach_from_terminal() -> Result<ForkRole> {
         libc::signal(libc::SIGHUP, libc::SIG_IGN);
     }
 
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let _ = std::io::Write::flush(&mut std::io::stderr());
     let null = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR) };
     if null >= 0 {
         unsafe {
             libc::dup2(null, libc::STDIN_FILENO);
-            libc::close(null);
+            libc::dup2(null, libc::STDOUT_FILENO);
+            libc::dup2(null, libc::STDERR_FILENO);
+            if null > libc::STDERR_FILENO {
+                libc::close(null);
+            }
         }
     }
 
