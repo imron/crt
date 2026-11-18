@@ -1961,6 +1961,93 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_comment_shortcut_visits_same_start_line_comments() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("a.rs"), test_file("b.rs")],
+        );
+        let mut outer = stored_comment(9, "a.rs");
+        outer.line_start = 18;
+        outer.line_end = 29;
+        let mut middle = stored_comment(14, "a.rs");
+        middle.line_start = 18;
+        middle.line_end = 21;
+        let mut single = stored_comment(15, "a.rs");
+        single.line_start = 18;
+        single.line_end = 18;
+        let mut next_file = stored_comment(20, "b.rs");
+        next_file.line_start = 4;
+        next_file.line_end = 4;
+        app.state.comments = vec![outer, next_file, single, middle];
+        app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::HeadVersion;
+        app.state.diff_line_cursor = 16;
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 40]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+        assert_eq!(app.state.selected_comment_id, Some(15));
+        assert_eq!(app.state.diff_line_cursor, 17);
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 40]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+        assert_eq!(app.state.selected_comment_id, Some(14));
+        assert_eq!(app.state.diff_line_cursor, 17);
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 40]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+        assert_eq!(app.state.selected_comment_id, Some(9));
+        assert_eq!(app.state.diff_line_cursor, 17);
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 40]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Prev)],
+        );
+        assert_eq!(app.state.selected_comment_id, Some(14));
+        assert_eq!(app.state.diff_line_cursor, 17);
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 40]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Prev)],
+        );
+        assert_eq!(app.state.selected_comment_id, Some(15));
+        assert_eq!(app.state.diff_line_cursor, 17);
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 40]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+        assert_eq!(app.state.selected_comment_id, Some(14));
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 40]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+        assert_eq!(app.state.selected_comment_id, Some(9));
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 40]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "b.rs");
+        assert_eq!(app.state.selected_comment_id, Some(20));
+
+        app.apply_core_effects(
+            &RenderedViewport::new(vec!["line"; 40]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Prev)],
+        );
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "a.rs");
+        assert_eq!(app.state.selected_comment_id, Some(9));
+    }
+
+    #[test]
     fn unresolved_comment_navigation_selects_out_of_range_comment() {
         let mut app = App::new(Config::default(), test_context(), vec![test_file("a.rs")]);
         let mut comment = stored_comment(8, "mcp.rs");

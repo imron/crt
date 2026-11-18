@@ -406,24 +406,42 @@ pub fn navigate_unresolved_comment_from_cursor(
         })
         .unwrap_or(0);
 
-    let target = match dir {
-        Direction::Next => targets
-            .iter()
-            .find(|target| {
-                target.order_index > state.selected_file
-                    || (target.file_index == Some(state.selected_file)
-                        && target.line_start > cursor_line)
-            })
-            .or_else(|| targets.first()),
-        Direction::Prev => targets
-            .iter()
-            .rev()
-            .find(|target| {
-                target.order_index < state.selected_file
-                    || (target.file_index == Some(state.selected_file)
-                        && target.line_start < cursor_line)
-            })
-            .or_else(|| targets.last()),
+    let selected_target_index = state.selected_comment_id.and_then(|id| {
+        targets.iter().position(|target| {
+            target.comment_id == id
+                && target.file_index == Some(state.selected_file)
+                && target.line_start == cursor_line
+        })
+    });
+
+    let target = if let Some(index) = selected_target_index {
+        let next = match dir {
+            Direction::Next => (index + 1) % targets.len(),
+            Direction::Prev => index.checked_sub(1).unwrap_or(targets.len() - 1),
+        };
+        targets.get(next).copied()
+    } else {
+        match dir {
+            Direction::Next => targets
+                .iter()
+                .find(|target| {
+                    target.order_index > state.selected_file
+                        || (target.file_index == Some(state.selected_file)
+                            && target.line_start > cursor_line)
+                })
+                .copied()
+                .or_else(|| targets.first().copied()),
+            Direction::Prev => targets
+                .iter()
+                .rev()
+                .find(|target| {
+                    target.order_index < state.selected_file
+                        || (target.file_index == Some(state.selected_file)
+                            && target.line_start < cursor_line)
+                })
+                .copied()
+                .or_else(|| targets.last().copied()),
+        }
     };
 
     if let Some(target) = target {
