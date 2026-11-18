@@ -1,6 +1,6 @@
 # Stage 23f: Route Input through AppModel Targets
 
-## Status: Backlog
+## Status: Complete
 
 ## Order
 
@@ -43,10 +43,10 @@ submit app-domain input to `App`.
 
 ## Acceptance Criteria
 
-- [ ] TUI mouse input no longer asks app state to interpret terminal
+- [x] TUI mouse input no longer asks app state to interpret terminal
       coordinates.
-- [ ] App input handlers receive semantic targets, not terminal cells.
-- [ ] Keybindings and command mode behavior remain compatible.
-- [ ] Pointer interactions continue to support file selection, diff cursor
+- [x] App input handlers receive semantic targets, not terminal cells.
+- [x] Keybindings and command mode behavior remain compatible.
+- [x] Pointer interactions continue to support file selection, diff cursor
       movement, selection, and scrolling.
-- [ ] `cargo test` passes.
+- [x] `cargo test` passes.

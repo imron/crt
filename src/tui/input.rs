@@ -10,7 +10,7 @@ use crossterm::event::{
 };
 
 use super::state::{InputMode, TuiState};
-use crate::app::AppState;
+use crate::app::model::AppModel;
 use crate::core::{
     InputEvent, InputModifiers, Key as CoreKey, KeyEvent as CoreKeyEvent,
     KeyEventKind as CoreKeyEventKind, MouseButton as CoreMouseButton, MouseEvent as CoreMouseEvent,
@@ -65,7 +65,7 @@ fn input_event_from_key(key: CrosstermKeyEvent) -> Option<InputEvent> {
 }
 
 pub fn input_event_from_mouse(
-    state: &AppState,
+    model: &AppModel,
     tui_state: &TuiState,
     mouse: &CrosstermMouseEvent,
 ) -> Option<InputEvent> {
@@ -99,7 +99,7 @@ pub fn input_event_from_mouse(
         button,
         local_pos,
         semantic_hit: pane
-            .and_then(|pane| tui_state.pointer_semantic_hit(state, pane, mouse.column, mouse.row)),
+            .and_then(|pane| tui_state.pointer_semantic_hit(model, pane, mouse.column, mouse.row)),
         modifiers: InputModifiers {
             ctrl: mouse.modifiers.contains(KeyModifiers::CONTROL),
             alt: mouse.modifiers.contains(KeyModifiers::ALT),
@@ -289,8 +289,10 @@ fn handle_diff_search_input(tui_state: &mut TuiState, key: CrosstermKeyEvent) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::AppState;
+    use crate::app::model::AppModel;
     use crate::config::DiffAlgorithm;
-    use crate::core::PromptId;
+    use crate::core::{AppTarget, PromptId};
     use crate::core::{
         MouseButton as CoreMouseButton, MouseEvent as CoreMouseEvent,
         MouseEventKind as CoreMouseEventKind, PaneId, PointerSemanticHit, TextAnchor,
@@ -432,6 +434,7 @@ mod tests {
     #[test]
     fn mouse_input_event_maps_file_list_hit() {
         let state = test_state();
+        let model = AppModel::from_state(&state);
         let tui_state = TuiState {
             file_list_area: Rect::new(0, 0, 30, 10),
             file_list_row_to_file: vec![Some(0)],
@@ -439,7 +442,7 @@ mod tests {
         };
 
         let event = input_event_from_mouse(
-            &state,
+            &model,
             &tui_state,
             &CrosstermMouseEvent {
                 kind: CrosstermMouseEventKind::Down(CrosstermMouseButton::Left),
@@ -458,6 +461,7 @@ mod tests {
                 local_pos: Some((5, 1)),
                 semantic_hit: Some(PointerSemanticHit {
                     pane_id: PaneId::FileList,
+                    target: AppTarget::File { index: 0 },
                     region_id: Some("file:src/lib.rs".to_string()),
                     text_anchor: Some(TextAnchor { line: 0, column: 4 }),
                 }),
@@ -474,6 +478,7 @@ mod tests {
     fn mouse_input_event_maps_diff_hit_to_content_anchor() {
         let mut state = test_state();
         state.diff_scroll = 10;
+        let model = AppModel::from_state(&state);
         let tui_state = TuiState {
             show_file_list: false,
             diff_area: Rect::new(0, 0, 80, 20),
@@ -482,7 +487,7 @@ mod tests {
         };
 
         let event = input_event_from_mouse(
-            &state,
+            &model,
             &tui_state,
             &CrosstermMouseEvent {
                 kind: CrosstermMouseEventKind::ScrollDown,
@@ -501,6 +506,12 @@ mod tests {
                 local_pos: Some((12, 3)),
                 semantic_hit: Some(PointerSemanticHit {
                     pane_id: PaneId::Diff,
+                    target: AppTarget::DiffText {
+                        anchor: TextAnchor {
+                            line: 12,
+                            column: 4,
+                        },
+                    },
                     region_id: Some("diff-line:12".to_string()),
                     text_anchor: Some(TextAnchor {
                         line: 12,

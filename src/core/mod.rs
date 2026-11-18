@@ -17,7 +17,7 @@ pub mod services;
 pub mod world;
 
 pub use input::{
-    InputEvent, InputModifiers, Key, KeyEvent, KeyEventKind, MouseButton, MouseEvent,
+    AppTarget, InputEvent, InputModifiers, Key, KeyEvent, KeyEventKind, MouseButton, MouseEvent,
     MouseEventKind, PointerSemanticHit, TextAnchor,
 };
 pub use interaction::{

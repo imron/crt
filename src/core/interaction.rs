@@ -1,7 +1,7 @@
 //! Core interaction entrypoint scaffold.
 
 use super::command::{self, CommandParse};
-use super::input::{InputEvent, Key, KeyEventKind, MouseButton, MouseEventKind};
+use super::input::{AppTarget, InputEvent, Key, KeyEventKind, MouseButton, MouseEventKind};
 use super::navigation::Direction;
 use super::prompt::{PromptId, PromptKind, PromptRequest};
 use super::render::PaneId;
@@ -100,7 +100,7 @@ pub enum DefinitionResultsEffect {
 pub enum PaneEffect {
     ActivateFileListSelection,
     ActivateDiffSelection,
-    SelectFileAt { row: usize },
+    SelectFile { file_index: usize },
 }
 
 /// Connection lifecycle states for UI adapters.
@@ -594,23 +594,22 @@ fn mouse_click_effect(mouse: &super::input::MouseEvent) -> Option<CoreEffect> {
     }
 
     let hit = mouse.semantic_hit.as_ref()?;
-    let anchor = hit.text_anchor?;
-    match hit.pane_id {
-        PaneId::FileList => Some(CoreEffect::Pane(PaneEffect::SelectFileAt {
-            row: anchor.line,
+    match hit.target {
+        AppTarget::File { index } => Some(CoreEffect::Pane(PaneEffect::SelectFile {
+            file_index: index,
         })),
-        PaneId::Diff => Some(CoreEffect::DiffCursor(DiffCursorEffect::MoveTo {
+        AppTarget::DiffText { anchor } => Some(CoreEffect::DiffCursor(DiffCursorEffect::MoveTo {
             line: anchor.line,
             column: anchor.column,
         })),
-        _ => None,
+        AppTarget::Pane { .. } => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::input::{InputModifiers, KeyEvent};
+    use crate::core::input::{AppTarget, InputModifiers, KeyEvent};
 
     fn key_event(key: Key, modifiers: InputModifiers) -> InputEvent {
         InputEvent::Key(KeyEvent {
@@ -1211,6 +1210,9 @@ mod tests {
                 local_pos: Some((4, 2)),
                 semantic_hit: Some(super::super::input::PointerSemanticHit {
                     pane_id: PaneId::Diff,
+                    target: AppTarget::DiffText {
+                        anchor: super::super::input::TextAnchor { line: 8, column: 0 },
+                    },
                     region_id: Some("diff-line:8".to_string()),
                     text_anchor: Some(super::super::input::TextAnchor { line: 8, column: 0 }),
                 }),
@@ -1225,6 +1227,9 @@ mod tests {
                 local_pos: Some((4, 2)),
                 semantic_hit: Some(super::super::input::PointerSemanticHit {
                     pane_id: PaneId::Diff,
+                    target: AppTarget::DiffText {
+                        anchor: super::super::input::TextAnchor { line: 8, column: 0 },
+                    },
                     region_id: Some("diff-line:8".to_string()),
                     text_anchor: Some(super::super::input::TextAnchor { line: 8, column: 0 }),
                 }),
@@ -1251,6 +1256,9 @@ mod tests {
                 local_pos: Some((4, 2)),
                 semantic_hit: Some(super::super::input::PointerSemanticHit {
                     pane_id: PaneId::FileList,
+                    target: AppTarget::Pane {
+                        pane_id: PaneId::FileList,
+                    },
                     region_id: Some("file-list-row:0".to_string()),
                     text_anchor: Some(super::super::input::TextAnchor { line: 0, column: 0 }),
                 }),
@@ -1273,6 +1281,7 @@ mod tests {
                 local_pos: Some((4, 3)),
                 semantic_hit: Some(super::super::input::PointerSemanticHit {
                     pane_id: PaneId::FileList,
+                    target: AppTarget::File { index: 5 },
                     region_id: Some("file:src/lib.rs".to_string()),
                     text_anchor: Some(super::super::input::TextAnchor {
                         line: 12,
@@ -1286,7 +1295,7 @@ mod tests {
 
         assert_eq!(
             effects,
-            vec![CoreEffect::Pane(PaneEffect::SelectFileAt { row: 12 })]
+            vec![CoreEffect::Pane(PaneEffect::SelectFile { file_index: 5 })]
         );
     }
 
@@ -1301,6 +1310,12 @@ mod tests {
                 local_pos: Some((9, 5)),
                 semantic_hit: Some(super::super::input::PointerSemanticHit {
                     pane_id: PaneId::Diff,
+                    target: AppTarget::DiffText {
+                        anchor: super::super::input::TextAnchor {
+                            line: 18,
+                            column: 5,
+                        },
+                    },
                     region_id: Some("diff-line:18".to_string()),
                     text_anchor: Some(super::super::input::TextAnchor {
                         line: 18,

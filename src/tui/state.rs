@@ -5,9 +5,10 @@ use std::time::{Duration, Instant};
 
 use super::render::diff_view::DiffCache;
 use crate::app::AppState;
+use crate::app::model::AppModel;
 use crate::app_update::{AppUpdate, AppView, StatusUpdate};
 use crate::core::command::Command;
-use crate::core::{PaneId, PointerSemanticHit, PromptId, TextAnchor};
+use crate::core::{AppTarget, PaneId, PointerSemanticHit, PromptId, TextAnchor};
 use crate::model::{DefinitionLocation, PaneFocus, SearchMatch};
 use ratatui::layout::Rect;
 
@@ -293,7 +294,7 @@ impl TuiState {
 
     pub fn pointer_semantic_hit(
         &self,
-        state: &AppState,
+        model: &AppModel,
         pane: PaneFocus,
         column: u16,
         row: u16,
@@ -302,17 +303,19 @@ impl TuiState {
             PaneFocus::FileList => PaneId::FileList,
             PaneFocus::Diff => PaneId::Diff,
         };
-        let text_anchor = self.pointer_text_anchor_for_pane(state, pane, column, row, false);
+        let text_anchor = self.pointer_text_anchor_for_pane(model, pane, column, row, false);
+        let target = self.pointer_target(pane, text_anchor);
         Some(PointerSemanticHit {
             pane_id,
-            region_id: self.pointer_region_id(state, pane, text_anchor),
+            target,
+            region_id: self.pointer_region_id(model, pane, text_anchor),
             text_anchor,
         })
     }
 
     pub fn pointer_text_anchor_for_pane(
         &self,
-        state: &AppState,
+        model: &AppModel,
         pane: PaneFocus,
         column: u16,
         row: u16,
@@ -344,32 +347,52 @@ impl TuiState {
 
         match pane {
             PaneFocus::FileList => Some(TextAnchor {
-                line: state
-                    .file_list_scroll
+                line: model
+                    .file_list
+                    .scroll
                     .saturating_add((row - inner_top) as usize),
                 column: column.saturating_sub(inner_left) as usize,
             }),
             PaneFocus::Diff => Some(TextAnchor {
-                line: state.diff_scroll.saturating_add((row - inner_top) as usize),
+                line: model.diff.scroll.saturating_add((row - inner_top) as usize),
                 column: (column as usize)
                     .saturating_sub(inner_left as usize + self.diff_content_start_col()),
             }),
         }
     }
 
+    fn pointer_target(&self, pane: PaneFocus, text_anchor: Option<TextAnchor>) -> AppTarget {
+        match (pane, text_anchor) {
+            (PaneFocus::FileList, Some(anchor)) => self
+                .file_list_row_to_file
+                .get(anchor.line)
+                .and_then(|file_idx| *file_idx)
+                .map(|index| AppTarget::File { index })
+                .unwrap_or(AppTarget::Pane {
+                    pane_id: PaneId::FileList,
+                }),
+            (PaneFocus::Diff, Some(anchor)) => AppTarget::DiffText { anchor },
+            (PaneFocus::FileList, None) => AppTarget::Pane {
+                pane_id: PaneId::FileList,
+            },
+            (PaneFocus::Diff, None) => AppTarget::Pane {
+                pane_id: PaneId::Diff,
+            },
+        }
+    }
+
     fn pointer_region_id(
         &self,
-        state: &AppState,
+        model: &AppModel,
         pane: PaneFocus,
         text_anchor: Option<TextAnchor>,
     ) -> Option<String> {
         let anchor = text_anchor?;
         match pane {
             PaneFocus::FileList => match self.file_list_row_to_file.get(anchor.line) {
-                Some(Some(file_idx)) => state
-                    .files
-                    .get(*file_idx)
-                    .map(|entry| format!("file:{}", entry.change.path)),
+                Some(Some(file_idx)) => {
+                    model_file_path(model, *file_idx).map(|path| format!("file:{path}"))
+                }
                 _ => Some(format!("file-list-row:{}", anchor.line)),
             },
             PaneFocus::Diff => Some(format!("diff-line:{}", anchor.line)),
@@ -481,10 +504,16 @@ impl AppView for TuiState {
     fn diff_rendered_text(&self) -> &[String] {
         &self.diff_rendered_text
     }
+}
 
-    fn file_list_row_to_file(&self) -> &[Option<usize>] {
-        &self.file_list_row_to_file
-    }
+fn model_file_path(model: &AppModel, file_index: usize) -> Option<&str> {
+    model
+        .file_list
+        .sections
+        .iter()
+        .flat_map(|section| section.rows.iter())
+        .find(|row| row.file_index == file_index)
+        .map(|row| row.path.as_str())
 }
 
 #[cfg(test)]

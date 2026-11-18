@@ -299,7 +299,8 @@ impl Tui {
 
     /// Handle mouse events: selection, scroll wheel, border drag.
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
-        let input_event = input::input_event_from_mouse(&self.app.state, &self.tui_state, &mouse);
+        let model = self.app.model();
+        let input_event = input::input_event_from_mouse(&model, &self.tui_state, &mouse);
         let semantic_content_hit = input_event.as_ref().and_then(mouse_content_hit);
         let pending_core_effects = input_event
             .map(|event| self.core_effects_for_input(CoreInputDispatch::Interaction(event)))
@@ -382,7 +383,7 @@ impl Tui {
                             let (pane, _) = self.tui_state.mouse_down_anchor?;
                             self.tui_state
                                 .pointer_text_anchor_for_pane(
-                                    &self.app.state,
+                                    &model,
                                     pane,
                                     mouse.column,
                                     mouse.row,

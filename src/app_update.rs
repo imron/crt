@@ -21,7 +21,6 @@ pub trait AppView {
     fn diff_content_height(&self) -> usize;
     fn diff_view_height(&self) -> usize;
     fn diff_rendered_text(&self) -> &[String];
-    fn file_list_row_to_file(&self) -> &[Option<usize>];
 
     fn max_diff_scroll(&self) -> usize {
         self.diff_content_height().saturating_sub(1)
@@ -164,7 +163,7 @@ pub fn apply_core_effects(
             }
             CoreEffect::SearchResults(_) | CoreEffect::DefinitionResults(_) => {}
             CoreEffect::Pane(effect) => {
-                apply_pane_effect(state, view, effect);
+                apply_pane_effect(state, effect);
             }
             CoreEffect::Quit => {
                 update.request_quit();
@@ -478,7 +477,7 @@ fn apply_diff_cursor_effect(state: &mut AppState, view: &impl AppView, effect: D
     }
 }
 
-fn apply_pane_effect(state: &mut AppState, view: &impl AppView, effect: PaneEffect) {
+fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
     match effect {
         PaneEffect::ActivateFileListSelection => {}
         PaneEffect::ActivateDiffSelection => {
@@ -491,10 +490,10 @@ fn apply_pane_effect(state: &mut AppState, view: &impl AppView, effect: PaneEffe
                 }
             }
         }
-        PaneEffect::SelectFileAt { row } => {
-            if let Some(&Some(file_idx)) = view.file_list_row_to_file().get(row) {
-                if file_idx < state.files.len() && file_idx != state.selected_file {
-                    state.selected_file = file_idx;
+        PaneEffect::SelectFile { file_index } => {
+            if state.files.get(file_index).is_some() {
+                if file_index != state.selected_file {
+                    state.selected_file = file_index;
                     state.on_file_changed();
                 }
             }
