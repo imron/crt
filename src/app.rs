@@ -1204,13 +1204,20 @@ impl App {
         }
     }
 
-    /// Reload the file list from the server, preserving selection by path.
+    /// Reload the file list from the server, preserving selection and cursor.
     async fn reload_file_list(&mut self) {
         let selected_path = self
             .state
             .files
             .get(self.state.selected_file)
             .map(|f| f.change.path.clone());
+
+        // Save cursor/scroll position to restore after reload.
+        let saved_cursor = self.state.diff_line_cursor;
+        let saved_col = self.state.diff_col_cursor;
+        let saved_scroll = self.state.diff_scroll;
+        let saved_content_mode = self.state.content_mode;
+        let saved_render_variant = self.state.render_variant;
 
         match self.client.list_changed_files().await {
             Ok(result) => {
@@ -1224,10 +1231,27 @@ impl App {
                         .then(a.change.path.cmp(&b.change.path))
                 });
                 // Restore selection by path.
+                let prev_selected = self.state.selected_file;
                 self.state.selected_file = selected_path
                     .and_then(|p| self.state.files.iter().position(|f| f.change.path == p))
                     .unwrap_or(0);
-                self.state.on_file_changed();
+
+                // Refresh diff and content for the selected file.
+                self.state.refresh_current_file_diff();
+                self.state.load_head_content();
+                self.state.load_blame();
+
+                // Restore cursor/scroll if we're still on the same file.
+                if self.state.selected_file == prev_selected {
+                    self.state.content_mode = saved_content_mode;
+                    self.state.render_variant = saved_render_variant;
+                    self.state.diff_line_cursor = saved_cursor;
+                    self.state.diff_col_cursor = saved_col;
+                    self.state.diff_scroll = saved_scroll;
+                    self.state.clamp_cursor_and_scroll();
+                } else {
+                    self.state.on_file_changed();
+                }
             }
             Err(e) => {
                 self.state.status_message = Some((
