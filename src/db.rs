@@ -521,12 +521,12 @@ impl Database {
         include_resolved: bool,
         include_previous_bases: bool,
     ) -> Result<Vec<StoredComment>> {
-        let base_clause = if include_previous_bases {
-            "c.merge_base != ?1"
+        let scope_clause = if include_previous_bases {
+            "NOT (c.merge_base = ?1 AND c.head_ref = ?2)"
         } else {
-            "c.merge_base = ?1"
+            "c.merge_base = ?1 AND c.head_ref = ?2"
         };
-        let mut sql = format!("{COMMENT_SELECT} WHERE {base_clause} AND c.head_ref = ?2");
+        let mut sql = format!("{COMMENT_SELECT} WHERE {scope_clause}");
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
             Box::new(merge_base.to_string()),
             Box::new(head_ref.to_string()),
@@ -1172,13 +1172,18 @@ mod tests {
         db.resolve_comment(&resolution_event(&old_resolved))
             .unwrap();
 
+        let mut other_session = simple_comment("b.rs", 4, "q", "other session");
+        other_session.head_ref = "other-head".to_string();
+        db.create_comment(&other_session).unwrap();
+
         let exact = db.list_comments("main", "feat", None, true, false).unwrap();
         assert_eq!(exact.len(), 1);
         assert_eq!(exact[0].body, "current base");
 
         let carry_over = db.list_comments("main", "feat", None, false, true).unwrap();
-        assert_eq!(carry_over.len(), 1);
+        assert_eq!(carry_over.len(), 2);
         assert_eq!(carry_over[0].body, "old unresolved");
+        assert_eq!(carry_over[1].body, "other session");
     }
 
     #[test]
