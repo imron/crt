@@ -168,6 +168,7 @@ impl Tui {
                 tui_dirty = false;
             }
 
+            let mut from_tick = false;
             tokio::select! {
                 maybe_ev = event_pump.recv() => {
                     match maybe_ev {
@@ -182,18 +183,25 @@ impl Tui {
                         None => break,
                     }
                 }
-                _ = tokio::time::sleep(APP_TICK_INTERVAL) => {}
+                _ = tokio::time::sleep(APP_TICK_INTERVAL) => {
+                    from_tick = true;
+                }
             }
 
             if self.tui_state.expire_status_message(STATUS_MSG_TIMEOUT) {
                 tui_dirty = true;
             }
 
-            let status = self.app.process_background_work().await;
-            if status.is_some() {
-                tui_dirty = true;
+            // Keep reconnect/notification work on the tick. Input that only
+            // mutates TUI state (comment typing, cursor motion) should paint
+            // without waiting on it.
+            if from_tick || self.app.has_pending_work() {
+                let status = self.app.process_background_work().await;
+                if status.is_some() {
+                    tui_dirty = true;
+                }
+                self.tui_state.apply_status_update(status);
             }
-            self.tui_state.apply_status_update(status);
 
             if self.tui_state.should_suspend {
                 self.tui_state.should_suspend = false;
@@ -262,7 +270,12 @@ impl Tui {
     }
 
     fn render_current_frame(&mut self) -> Result<u64> {
-        self.app.state.ensure_active_document();
+        if !matches!(
+            self.tui_state.input_mode,
+            InputMode::Comment | InputMode::Command | InputMode::DiffSearch
+        ) {
+            self.app.state.ensure_active_document();
+        }
         let model = self.app.model();
         let revision = model.revision;
         let styles = &self.app.config.style;

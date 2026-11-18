@@ -394,6 +394,10 @@ impl App {
         self.client()?.recover_if_disconnected().await
     }
 
+    pub fn has_pending_work(&self) -> bool {
+        !self.pending_work.is_empty()
+    }
+
     pub async fn process_background_work(&mut self) -> Option<StatusUpdate> {
         let mut status = self.process_pending_work().await;
 
