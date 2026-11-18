@@ -44,7 +44,7 @@ sandboxed MCP clients use localhost HTTP.
 │                                                       │
 │  ┌───────────────────────────────────────────────┐   │
 │  │      JSON-RPC API                             │   │
-│  │      ~/.crt/server.sock + 127.0.0.1:4768      │   │
+│  │      ~/.crt/server.sock + 127.0.0.1:25175     │   │
 │  └───────────────────────────────────────────────┘   │
 └──────────────────────┬────────────────────────────────┘
                        │
@@ -599,12 +599,12 @@ stdio protocol to the crt server's JSON-RPC API. It connects to an existing
 server over localhost HTTP and does not start an embedded server. Start a TUI
 session or explicit `crt server` first.
 
-By default the server listens on `127.0.0.1:4768` for HTTP JSON-RPC. Override
+By default the server listens on `127.0.0.1:25175` for HTTP JSON-RPC. Override
 the MCP connection target by passing environment variables to `crt mcp-server`:
 
 ```
 CRT_SERVER_HOST=127.0.0.1
-CRT_SERVER_PORT=4768
+CRT_SERVER_PORT=25175
 ```
 
 MCP starts unscoped. Use `list_review_sessions` to discover active review
