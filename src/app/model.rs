@@ -8,7 +8,8 @@ use crate::app::{AppState, CommentAnchorCapture, VisualSelectionMode};
 use crate::config::DiffAlgorithm;
 use crate::core::TextAnchor;
 use crate::review_types::{
-    self, ChangeKind, ConnectionContext, ContentMode, LineKind, PaneFocus, RenderVariant,
+    self, AnchorStatus, ChangeKind, ConnectionContext, ContentMode, LineKind, PaneFocus,
+    RenderVariant,
 };
 
 #[derive(Debug, Clone)]
@@ -102,6 +103,7 @@ pub struct DiffPanel {
     pub current_search_highlight: Option<usize>,
     pub visual_selection: Option<VisualSelection>,
     pub pending_comment_anchor: Option<CommentAnchorCapture>,
+    pub comments: Vec<CommentAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +129,15 @@ pub struct BlameLine {
     pub hash: String,
     pub author: String,
     pub date: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentAttachment {
+    pub id: i64,
+    pub line_start: i64,
+    pub line_end: i64,
+    pub resolved: bool,
+    pub anchor_status: AnchorStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,7 +385,27 @@ fn diff_panel_model(state: &AppState) -> DiffPanel {
                 end: selection.end,
             }),
         pending_comment_anchor: state.pending_comment_anchor.clone(),
+        comments: selected
+            .map(|entry| comment_attachments_for_file(&state.comments, &entry.change.path))
+            .unwrap_or_default(),
     }
+}
+
+fn comment_attachments_for_file(
+    comments: &[review_types::Comment],
+    file_path: &str,
+) -> Vec<CommentAttachment> {
+    comments
+        .iter()
+        .filter(|comment| comment.file_path == file_path)
+        .map(|comment| CommentAttachment {
+            id: comment.id,
+            line_start: comment.line_start,
+            line_end: comment.line_end,
+            resolved: comment.resolved,
+            anchor_status: comment.anchor_status,
+        })
+        .collect()
 }
 
 impl From<&review_types::ReviewStatus> for ReviewStatus {

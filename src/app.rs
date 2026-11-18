@@ -168,8 +168,16 @@ impl App {
                 Vec::new()
             }
         };
+        let comments = match client.list_comments(None, true).await {
+            Ok(result) => result.comments,
+            Err(e) => {
+                eprintln!("Warning: could not load comments: {e}");
+                Vec::new()
+            }
+        };
         let config_path = crate::config::config_path();
         let mut app = Self::new(config, context, files);
+        app.state.comments = comments;
         app.client = Some(client);
         app.config_path = config_path;
         app.state.on_file_changed();
@@ -243,6 +251,10 @@ impl App {
         context_file: Option<&str>,
     ) -> Result<crate::review_types::FindDefinitionResult> {
         self.client()?.find_definition(symbol, context_file).await
+    }
+
+    pub async fn list_comments(&self) -> Result<crate::review_types::ListCommentsResult> {
+        self.client()?.list_comments(None, true).await
     }
 
     async fn drain_notifications(&self) -> Result<Vec<Notification>> {
@@ -362,6 +374,9 @@ impl App {
         if notification_requires_snapshot_reload(&notifications) {
             return self.reload_file_snapshot().await;
         }
+        if notification_requires_comment_reload(&notifications) {
+            return self.reload_comments().await;
+        }
 
         None
     }
@@ -459,9 +474,23 @@ impl App {
         match self.list_changed_files().await {
             Ok(result) => {
                 self.replace_file_snapshot(result.files);
+                if let Some(status) = self.reload_comments().await {
+                    return Some(status);
+                }
                 None
             }
             Err(e) => Some(StatusUpdate::Set(format!("Failed to reload files: {e}"))),
+        }
+    }
+
+    async fn reload_comments(&mut self) -> Option<StatusUpdate> {
+        match self.list_comments().await {
+            Ok(result) => {
+                self.state.comments = result.comments;
+                self.state.mark_model_changed();
+                None
+            }
+            Err(e) => Some(StatusUpdate::Set(format!("Failed to reload comments: {e}"))),
         }
     }
 
@@ -551,6 +580,7 @@ impl App {
             Ok(result) => {
                 self.state.pending_comment_anchor = None;
                 self.state.visual_selection = None;
+                upsert_comment(&mut self.state.comments, result.comment.clone());
                 self.state.mark_model_changed();
                 Some(StatusUpdate::Set(format!(
                     "Created comment #{}",
@@ -682,6 +712,26 @@ fn notification_requires_snapshot_reload(notifications: &[Notification]) -> bool
     })
 }
 
+fn notification_requires_comment_reload(notifications: &[Notification]) -> bool {
+    notifications
+        .iter()
+        .any(|notification| matches!(notification.kind, NotificationKind::CommentChanged { .. }))
+}
+
+fn upsert_comment(
+    comments: &mut Vec<crate::review_types::Comment>,
+    comment: crate::review_types::Comment,
+) {
+    if let Some(existing) = comments
+        .iter_mut()
+        .find(|existing| existing.id == comment.id)
+    {
+        *existing = comment;
+    } else {
+        comments.push(comment);
+    }
+}
+
 /// Central application state for review data and domain interaction.
 /// Input events mutate it, sometimes by sending requests to the server.
 pub struct AppState {
@@ -691,6 +741,8 @@ pub struct AppState {
     pub context: ConnectionContext,
     /// All files changed in base..HEAD, with their review status and diffs.
     pub files: Vec<FileEntry>,
+    /// Review comments in the current review scope.
+    pub comments: Vec<crate::review_types::Comment>,
     /// Index of the currently selected file in `files`.
     pub selected_file: usize,
     /// Which pane has keyboard focus.
@@ -775,6 +827,7 @@ impl AppState {
             model_revision: 0,
             context,
             files,
+            comments: Vec::new(),
             // Index 0 is the first unreviewed file (due to sort order).
             selected_file: 0,
             pane_focus: PaneFocus::FileList,
@@ -1208,6 +1261,27 @@ mod tests {
         }
     }
 
+    fn stored_comment(id: i64, file_path: &str) -> crate::review_types::Comment {
+        crate::review_types::Comment {
+            id,
+            merge_base: "abc123".to_string(),
+            head_ref: "feature".to_string(),
+            file_path: file_path.to_string(),
+            line_start: 2,
+            line_end: 2,
+            char_start: None,
+            char_end: None,
+            anchor_text: "anchor".to_string(),
+            context_before: String::new(),
+            context_after: String::new(),
+            body: "comment".to_string(),
+            resolved: false,
+            created_at: "2026-06-28T00:00:00+10:00".to_string(),
+            updated_at: "2026-06-28T00:00:00+10:00".to_string(),
+            anchor_status: crate::review_types::AnchorStatus::Anchored,
+        }
+    }
+
     #[test]
     fn app_owns_config_and_state() {
         let config = Config::default();
@@ -1296,6 +1370,23 @@ mod tests {
         assert_eq!(app.state.diff_scroll, 5);
         assert_eq!(app.state.content_mode, ContentMode::FullFile);
         assert_eq!(app.state.render_variant, RenderVariant::HeadVersion);
+    }
+
+    #[test]
+    fn app_model_projects_current_file_comments() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("a.rs"), test_file("b.rs")],
+        );
+        app.state.comments = vec![stored_comment(1, "a.rs"), stored_comment(2, "b.rs")];
+        app.state.selected_file = 1;
+
+        let model = app.model();
+
+        assert_eq!(model.diff.comments.len(), 1);
+        assert_eq!(model.diff.comments[0].id, 2);
+        assert_eq!(model.diff.comments[0].line_start, 2);
     }
 
     #[test]
@@ -1792,6 +1883,18 @@ mod tests {
         )]));
         assert!(!notification_requires_snapshot_reload(&[notification(
             NotificationKind::CommentChanged { comment_id: 7 },
+        )]));
+    }
+
+    #[test]
+    fn comment_notifications_require_comment_reload() {
+        assert!(notification_requires_comment_reload(&[notification(
+            NotificationKind::CommentChanged { comment_id: 7 },
+        )]));
+        assert!(!notification_requires_comment_reload(&[notification(
+            NotificationKind::ReviewChanged {
+                file_path: "a.rs".to_string(),
+            },
         )]));
     }
 }

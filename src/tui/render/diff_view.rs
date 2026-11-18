@@ -2,6 +2,7 @@
 //! mode with change highlighting, and reviewed-file summary.
 
 mod cache;
+mod comment_markers;
 mod content;
 mod full_file;
 mod highlight;
@@ -50,8 +51,15 @@ pub fn draw(
         Some(cache) if cache.key == new_key => true,
         _ => {
             // Cache miss — rebuild everything.
-            let (_title, content, hunk_starts, hunk_ends, hunk_first_changes, gutter_w) =
-                build_content(diff, styles, inner_w);
+            let (
+                _title,
+                content,
+                hunk_starts,
+                hunk_ends,
+                hunk_first_changes,
+                gutter_w,
+                comment_marker_w,
+            ) = build_content(diff, styles, inner_w);
 
             // Pre-compute rendered text for clipboard.
             let rendered_text: Vec<String> = content
@@ -71,6 +79,7 @@ pub fn draw(
                 hunk_ends,
                 hunk_first_changes,
                 gutter_w,
+                comment_marker_w,
                 rendered_text,
             });
             false
@@ -84,6 +93,7 @@ pub fn draw(
         hunk_ends,
         hunk_first_changes,
         gutter_w,
+        comment_marker_w,
         content_height,
         rendered_text,
         cache_lines,
@@ -96,6 +106,7 @@ pub fn draw(
             cache.hunk_ends.clone(),
             cache.hunk_first_changes.clone(),
             cache.gutter_w,
+            cache.comment_marker_w,
             cache.lines.len(),
             cache.rendered_text.clone(),
             cache.lines.clone(),
@@ -112,7 +123,7 @@ pub fn draw(
         0
     };
     tui_state.diff_gutter_cols = if gutter_w > 0 {
-        blame_cols + gutter_w * 2 + 1
+        blame_cols + gutter_w * 2 + 1 + comment_marker_w
     } else {
         0
     };
