@@ -85,7 +85,12 @@ struct FileTreeItem: View {
             DisclosureGroup(isExpanded: $expanded) {
                 FileTreeRows(nodes: children)
             } label: {
-                Label(node.name, systemImage: "folder")
+                Label {
+                    Text(node.name)
+                } icon: {
+                    Image(systemName: "folder.fill")
+                        .foregroundStyle(.blue)
+                }
             }
         } else if let file = node.file {
             Label {
@@ -96,7 +101,9 @@ struct FileTreeItem: View {
                         .foregroundStyle(.secondary)
                 }
             } icon: {
-                Image(systemName: "doc")
+                Image(systemName: "doc.fill")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, Color.secondary)
             }
             .tag(file.path)
         }
@@ -118,7 +125,9 @@ struct DiffView: View {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(diff.lines.enumerated()), id: \.offset) { _, line in
                             Text(displayText(for: line))
-                                .font(.system(.body, design: .monospaced))
+                                .font(.system(size: 12, design: .monospaced))
+                                .lineLimit(1)
+                                .lineSpacing(0)
                                 .foregroundStyle(color(for: line.kind))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -134,10 +143,7 @@ struct DiffView: View {
     }
 
     private func displayText(for line: GuiDiffLine) -> String {
-        if line.kind == "hunk" {
-            return line.content
-        }
-        return line.content
+        line.content.trimmingCharacters(in: .newlines)
     }
 
     private func color(for kind: String) -> Color {

@@ -166,14 +166,14 @@ fn gui_diff(entry: &review_types::FileEntry) -> GuiDiff {
         for hunk in &entry.diff.hunks {
             lines.push(GuiDiffLine {
                 kind: "hunk",
-                content: hunk.header.clone(),
+                content: trim_diff_text(&hunk.header),
                 old_lineno: None,
                 new_lineno: None,
             });
             for line in &hunk.lines {
                 lines.push(GuiDiffLine {
                     kind: diff_line_kind(line.kind),
-                    content: line.content.clone(),
+                    content: trim_diff_text(&line.content),
                     old_lineno: line.old_lineno,
                     new_lineno: line.new_lineno,
                 });
@@ -202,6 +202,10 @@ fn review_status_name(status: &review_types::ReviewStatus) -> &'static str {
         review_types::ReviewStatus::Reviewed { .. } => "reviewed",
         review_types::ReviewStatus::Changed { .. } => "changed",
     }
+}
+
+fn trim_diff_text(text: &str) -> String {
+    text.trim_end_matches(['\n', '\r']).to_string()
 }
 
 fn diff_line_kind(kind: review_types::LineKind) -> &'static str {
