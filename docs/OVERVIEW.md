@@ -101,25 +101,40 @@ The server distinguishes two paths for each client connection:
 This means a reviewer in the main working tree and an agent in a worktree
 can share review state while operating on different copies of the files.
 
-### Review Scoping: `(base_ref, head_ref)`
+### Review Scoping: `(merge_base, head_ref)`
 
 All review state — file reviews, comments — is scoped by the pair
-`(base_ref, head_ref)` where:
+`(merge_base, head_ref)` where:
 
-- `base_ref` is the literal ref name the user provides (e.g. `"main"`).
-- `head_ref` is the branch name at HEAD of the worktree, resolved
+- `merge_base` is the **commit hash** of the common ancestor between the
+  base ref and HEAD, computed via `git merge-base`. This is resolved
   automatically by the server during connection init.
+- `head_ref` is the branch name at HEAD of the worktree, also resolved
+  automatically.
+
+The merge-base is the stable "fork point" — the commit where the feature
+branch diverged from the base. Using it as the scope key solves several
+problems:
+
+- **Stable when base advances.** If `main` moves forward (new commits,
+  merges from other branches), the merge-base of `main` and `feature-a`
+  doesn't change. Review state is preserved without any re-review needed.
+- **Different ref strings converge.** `crt main` and `crt abc123` produce
+  the same scope if they have the same common ancestor with HEAD. This
+  means a reviewer using `crt main` and an agent using `crt <hash>` see
+  each other's comments.
+- **Rebase creates a new scope.** When `feature-a` is rebased onto new
+  main, the merge-base changes (correctly). The diff-hash mechanism
+  preserves review state for files whose diffs haven't changed.
+- **Relative refs resolve stably.** `crt HEAD~3` resolves to a specific
+  merge-base hash. Adding a new commit changes the hash, which is correct
+  — the review window has shifted.
 
 This ensures that two feature branches (`feature-a`, `feature-b`) both
 branching from `main` have completely separate review state, even though
-they share the same repo and the same database. It also means a reviewer
-and an agent working on the same branch from different worktrees
-naturally share state — they both resolve to the same `head_ref`.
-
-Ref names (not commit hashes) are stored as keys. This is rebase-proof:
-rebasing `feature-a` changes the commit hash but not the branch name, so
-the review scope `("main", "feature-a")` is unchanged. The diff-hash
-mechanism detects whether actual content changed.
+they share the same repo and the same database. A reviewer and an agent
+working on the same branch from different worktrees naturally share
+state — they resolve to the same merge-base and head_ref.
 
 ### Connection Handshake
 
@@ -127,15 +142,17 @@ When a client connects, it sends an `init` request:
 
 ```
 client → server:  init { worktree: "/path/to/agent-worktree", base_ref: "main" }
-server resolves:  repo_root  → /path/to/repo  (via git commondir)
-                  head_ref   → "feature-a"    (branch at HEAD of worktree)
-                  db_path    → /path/to/repo/.crt/reviews.db
-server → client:  ok { repo: "/path/to/repo", head_ref: "feature-a" }
+server resolves:  repo_root   → /path/to/repo     (via git commondir)
+                  head_ref    → "feature-a"        (branch at HEAD of worktree)
+                  merge_base  → abc123...          (git merge-base main feature-a)
+                  db_path     → /path/to/repo/.crt/reviews.db
+server → client:  ok { repo_root, head_ref, merge_base, base_ref }
 ```
 
 All subsequent requests on that connection are scoped to
-`(base_ref: "main", head_ref: "feature-a")` and operate against the
-specified worktree. No need to repeat paths on every call.
+`(merge_base, head_ref)` and operate against the specified worktree.
+No need to repeat paths on every call. The original `base_ref` string
+is returned for display purposes but is not used as a key.
 
 ## Design Decisions
 
@@ -214,7 +231,7 @@ to search the codebase for definition patterns.
 
 There is no concept of a "review session" that can be started or
 completed. Review state is simply a mapping of
-`(base_ref, head_ref, file_path) -> (diff_hash, reviewed_at)`. Running
+`(merge_base, head_ref, file_path) -> (diff_hash, reviewed_at)`. Running
 `crt <base>` always shows the current state.
 
 **Why:**
@@ -225,7 +242,7 @@ completed. Review state is simply a mapping of
   evolves, files with changed diffs are automatically flagged for
   re-review.
 - If you want a fresh start, `crt <base> --reset` clears all stored
-  state for the current `(base_ref, head_ref)` pair.
+  state for the current `(merge_base, head_ref)` scope.
 - After the branch is merged, you simply never run `crt <base>` for it
   again.
 
@@ -416,32 +433,35 @@ Comments can be unresolved from the panel.
 ## Server API
 
 All operations go through the server's JSON-RPC API. The TUI, MCP
-adapter, and CLI subcommands are all clients.
+adapter, and CLI subcommands are all clients. After `init`, all
+operations are implicitly scoped to the connection's `(merge_base,
+head_ref)` — no need to pass them on every call.
 
 **Connection:**
-- `init(worktree_path, base_ref)` — establish connection context
+- `init(worktree_path, base_ref)` — resolve repo context, compute
+  merge-base, open DB, establish connection scope
 
-**Review state:**
-- `list_changed_files(base_ref)`
-- `get_file_diff(base_ref, file_path)`
-- `get_file_content(base_ref, file_path, version)`
-- `mark_reviewed(base_ref, file_path)`
-- `unmark_reviewed(base_ref, file_path)`
-- `reset_reviews(base_ref)`
+**Review state** (scoped by connection):
+- `list_changed_files()`
+- `get_file_diff(file_path)`
+- `get_file_content(file_path, version)`
+- `mark_reviewed(file_path)`
+- `unmark_reviewed(file_path)`
+- `reset_reviews()`
 
-**Comments:**
-- `create_comment(base_ref, file_path, lines, body, ...)`
-- `list_comments(base_ref, file_path?, include_resolved?)`
+**Comments** (scoped by connection):
+- `create_comment(file_path, lines, body, ...)`
+- `list_comments(file_path?, include_resolved?)`
 - `get_comment(id)`
 - `update_comment(id, body)`
 - `resolve_comment(id)` / `unresolve_comment(id)`
 - `delete_comment(id)`
 
-**Markers:**
-- `apply_comments(base_ref)`
-- `clear_comments(base_ref)`
+**Markers** (scoped by connection):
+- `apply_comments()`
+- `clear_comments()`
 
-**Search:**
+**Search** (scoped by connection worktree):
 - `search_codebase(pattern, scope?)`
 - `find_definition(symbol, context_file?)`
 
@@ -497,16 +517,16 @@ src/
 ```sql
 CREATE TABLE file_reviews (
     file_path   TEXT NOT NULL,
-    base_ref    TEXT NOT NULL,
+    merge_base  TEXT NOT NULL,          -- commit hash of common ancestor
     head_ref    TEXT NOT NULL,
     diff_hash   TEXT NOT NULL,
     reviewed_at TEXT NOT NULL,
-    PRIMARY KEY (base_ref, head_ref, file_path)
+    PRIMARY KEY (merge_base, head_ref, file_path)
 );
 
 CREATE TABLE comments (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    base_ref        TEXT NOT NULL,
+    merge_base      TEXT NOT NULL,      -- commit hash of common ancestor
     head_ref        TEXT NOT NULL,
     file_path       TEXT NOT NULL,
     line_start      INTEGER NOT NULL,
@@ -523,12 +543,14 @@ CREATE TABLE comments (
 );
 ```
 
-Both tables are scoped by `(base_ref, head_ref)`. The `base_ref` is the
-literal string the user provides (e.g. `"main"`). The `head_ref` is the
-branch name at HEAD of the worktree (e.g. `"feature-a"`), resolved
-automatically by the server. This means `crt main` run from a `feature-a`
-worktree and `crt main` run from a `feature-b` worktree have completely
-separate review state.
+Both tables are scoped by `(merge_base, head_ref)`. The `merge_base` is
+the commit hash of the common ancestor between the user's base ref and
+HEAD, computed via `git merge-base`. The `head_ref` is the branch name
+at HEAD of the worktree (e.g. `"feature-a"`), resolved automatically by
+the server. This means `crt main` from `feature-a` and `crt main` from
+`feature-b` have completely separate review state (different merge-bases).
+Two clients using different ref strings that resolve to the same ancestor
+share state (same merge-base).
 
 ## CLI
 

@@ -26,7 +26,11 @@ use clap::{Parser, Subcommand};
 // ---------------------------------------------------------------------------
 
 #[derive(Parser)]
-#[command(name = "crt", version, about = "Code Review Tool")]
+#[command(
+    name = "crt",
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("CRT_BUILD_HASH"), ")"),
+    about = "Code Review Tool"
+)]
 pub struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
