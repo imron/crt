@@ -16,7 +16,7 @@ use crate::core::navigation::{self, Direction, FileNavigationScope};
 use crate::core::search as core_search;
 use crate::core::{
     CoreEffect, DiffSearchEffect, InputEvent, InputModifiers, InteractionContext, Key as CoreKey,
-    KeyEvent as CoreKeyEvent, KeyEventKind as CoreKeyEventKind, PromptKind,
+    KeyEvent as CoreKeyEvent, KeyEventKind as CoreKeyEventKind, PaneId, PromptKind,
 };
 use crate::model::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
@@ -153,6 +153,31 @@ fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> bool {
             CoreEffect::PopJumpStack => {
                 pop_jump_stack(state);
             }
+            CoreEffect::TogglePaneFocus => {
+                toggle_pane_focus(state);
+            }
+            CoreEffect::TogglePaneVisibility(PaneId::FileList) => {
+                toggle_pane_visibility(state, PaneFocus::FileList);
+                state.status_message = None;
+            }
+            CoreEffect::TogglePaneVisibility(PaneId::Diff) => {
+                toggle_pane_visibility(state, PaneFocus::Diff);
+                state.status_message = None;
+            }
+            CoreEffect::TogglePaneVisibility(_) => {}
+            CoreEffect::ToggleInlineDiff => {
+                toggle_inline_diff(state);
+            }
+            CoreEffect::CycleViewMode => {
+                state.status_message = None;
+                cycle_view_mode(state);
+            }
+            CoreEffect::CycleDiffAlgorithm => {
+                cycle_diff_algorithm(state);
+            }
+            CoreEffect::ToggleDiffBase => {
+                toggle_diff_base(state);
+            }
             CoreEffect::Render(_)
             | CoreEffect::ConnectionState(_)
             | CoreEffect::TransientError(_) => {}
@@ -245,6 +270,72 @@ fn apply_diff_search(state: &mut AppState, query: String) {
             let cur = state.diff_search_current + 1;
             state.status_message = Some((format!("{cur}/{total}"), Instant::now()));
         }
+    }
+}
+
+fn toggle_pane_focus(state: &mut AppState) {
+    if state.show_file_list && state.show_diff_pane {
+        state.pane_focus = match state.pane_focus {
+            PaneFocus::FileList => PaneFocus::Diff,
+            PaneFocus::Diff => PaneFocus::FileList,
+        };
+    }
+    state.status_message = None;
+}
+
+fn toggle_inline_diff(state: &mut AppState) {
+    if state.content_mode == ContentMode::Diff {
+        state.render_variant = match state.render_variant {
+            RenderVariant::Inline => RenderVariant::SideBySide,
+            RenderVariant::SideBySide => RenderVariant::Inline,
+            other => other,
+        };
+    }
+    state.status_message = None;
+}
+
+fn cycle_diff_algorithm(state: &mut AppState) {
+    state.diff_algorithm = state.diff_algorithm.next();
+    state.reload_current_diff();
+    state.status_message = Some((
+        format!("Diff algorithm: {}", state.diff_algorithm.label()),
+        Instant::now(),
+    ));
+    // Persist to config.
+    if let Some(path) = &state.config_path {
+        let layout = crate::config::LayoutConfig {
+            file_list_width: state.file_list_width,
+            diff_algorithm: Some(state.diff_algorithm),
+        };
+        crate::config::save_layout(path, &layout);
+    }
+}
+
+fn toggle_diff_base(state: &mut AppState) {
+    let has_reviewed_commit = state.selected_file_entry().is_some_and(|e| {
+        matches!(
+            &e.status,
+            ReviewStatus::Reviewed {
+                reviewed_commit: Some(_),
+                ..
+            } | ReviewStatus::Changed {
+                reviewed_commit: Some(_),
+                ..
+            }
+        )
+    });
+    if has_reviewed_commit {
+        state.show_merge_base = !state.show_merge_base;
+        state.reload_current_diff();
+        state.diff_cache = None;
+        let label = if state.show_merge_base {
+            "Diff base: merge base"
+        } else {
+            "Diff base: since review"
+        };
+        state.status_message = Some((label.to_string(), Instant::now()));
+    } else {
+        state.status_message = Some(("File not yet reviewed".to_string(), Instant::now()));
     }
 }
 
@@ -722,14 +813,10 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
             }
         }
         (KeyCode::Tab, KeyModifiers::NONE | KeyModifiers::SHIFT) => {
-            // Only toggle between visible panes.
-            if state.show_file_list && state.show_diff_pane {
-                state.pane_focus = match state.pane_focus {
-                    PaneFocus::FileList => PaneFocus::Diff,
-                    PaneFocus::Diff => PaneFocus::FileList,
-                };
+            if dispatch_core_input(state, key) {
+                return;
             }
-            state.status_message = None;
+            toggle_pane_focus(state);
             return;
         }
         (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
@@ -749,11 +836,17 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
             return;
         }
         (KeyCode::Char('1'), KeyModifiers::NONE) => {
+            if dispatch_core_input(state, key) {
+                return;
+            }
             toggle_pane_visibility(state, PaneFocus::FileList);
             state.status_message = None;
             return;
         }
         (KeyCode::Char('2'), KeyModifiers::NONE) => {
+            if dispatch_core_input(state, key) {
+                return;
+            }
             toggle_pane_visibility(state, PaneFocus::Diff);
             state.status_message = None;
             return;
@@ -777,19 +870,16 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
             return;
         }
         (KeyCode::Char('i'), KeyModifiers::NONE) => {
-            // Toggle inline / side-by-side in diff mode.
-            if state.content_mode == ContentMode::Diff {
-                state.render_variant = match state.render_variant {
-                    RenderVariant::Inline => RenderVariant::SideBySide,
-                    RenderVariant::SideBySide => RenderVariant::Inline,
-                    other => other,
-                };
+            if dispatch_core_input(state, key) {
+                return;
             }
-            state.status_message = None;
+            toggle_inline_diff(state);
             return;
         }
         (KeyCode::Char('s'), KeyModifiers::NONE) => {
-            // Cycle: Diff → Head → Base → Diff.
+            if dispatch_core_input(state, key) {
+                return;
+            }
             state.status_message = None;
             cycle_view_mode(state);
             return;
@@ -804,50 +894,18 @@ pub fn handle_key_event(state: &mut AppState, key: CrosstermKeyEvent) {
         }
 
         (KeyCode::Char('d'), KeyModifiers::NONE) => {
-            state.diff_algorithm = state.diff_algorithm.next();
-            state.reload_current_diff();
-            state.status_message = Some((
-                format!("Diff algorithm: {}", state.diff_algorithm.label()),
-                Instant::now(),
-            ));
-            // Persist to config.
-            if let Some(path) = &state.config_path {
-                let layout = crate::config::LayoutConfig {
-                    file_list_width: state.file_list_width,
-                    diff_algorithm: Some(state.diff_algorithm),
-                };
-                crate::config::save_layout(path, &layout);
+            if dispatch_core_input(state, key) {
+                return;
             }
+            cycle_diff_algorithm(state);
             return;
         }
 
         (KeyCode::Char('m'), KeyModifiers::NONE) => {
-            // Toggle diff base between merge base and reviewed commit.
-            let has_reviewed_commit = state.selected_file_entry().is_some_and(|e| {
-                matches!(
-                    &e.status,
-                    ReviewStatus::Reviewed {
-                        reviewed_commit: Some(_),
-                        ..
-                    } | ReviewStatus::Changed {
-                        reviewed_commit: Some(_),
-                        ..
-                    }
-                )
-            });
-            if has_reviewed_commit {
-                state.show_merge_base = !state.show_merge_base;
-                state.reload_current_diff();
-                state.diff_cache = None;
-                let label = if state.show_merge_base {
-                    "Diff base: merge base"
-                } else {
-                    "Diff base: since review"
-                };
-                state.status_message = Some((label.to_string(), Instant::now()));
-            } else {
-                state.status_message = Some(("File not yet reviewed".to_string(), Instant::now()));
+            if dispatch_core_input(state, key) {
+                return;
             }
+            toggle_diff_base(state);
             return;
         }
 

@@ -84,6 +84,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   as typed navigation effects.
 - Fixed go-to-definition symbol extraction to use the current diff column
   cursor instead of the first identifier on the line.
+- Routed pane focus, pane visibility, diff rendering, view mode, diff
+  algorithm, and diff-base toggles through core input as typed effects.
 
 ## Acceptance Criteria
 
