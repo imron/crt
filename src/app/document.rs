@@ -1732,9 +1732,18 @@ mod tests {
     }
 
     fn segment(side: CommentAnchorSide, start: i64, end: i64) -> CommentAnchorSegment {
+        segment_with_path("src/lib.rs", side, start, end)
+    }
+
+    fn segment_with_path(
+        file_path: &str,
+        side: CommentAnchorSide,
+        start: i64,
+        end: i64,
+    ) -> CommentAnchorSegment {
         CommentAnchorSegment {
             side,
-            file_path: "src/lib.rs".to_string(),
+            file_path: file_path.to_string(),
             line_start: start,
             line_end: end,
             char_start: None,
@@ -2033,6 +2042,70 @@ mod tests {
     }
 
     #[test]
+    fn documents_build_without_hunks_from_available_content() {
+        let unified = build_unified_document(&input(
+            key(ContentMode::Diff, RenderVariant::Inline),
+            &[],
+            Some("base one\nbase two\n"),
+            Some("head one\nhead two\n"),
+            &[],
+        ));
+        let side_by_side = build_side_by_side_document(&input(
+            key(ContentMode::Diff, RenderVariant::SideBySide),
+            &[],
+            Some("base one\nbase two\nbase three\n"),
+            Some("head one\nhead two\n"),
+            &[],
+        ))
+        .expect("valid side-by-side document");
+
+        assert_eq!(unified.len(), 2);
+        assert!(unified.hunk_spans().is_empty());
+        assert_eq!(content(&unified, 0).text, "head one");
+        assert_eq!(content(&unified, 0).gutter.text, "1 1");
+        assert_eq!(side_by_side.len(), 3);
+        assert_eq!(content(side_by_side.base(), 2).text, "base three");
+        assert!(matches!(
+            side_by_side.head().row(RowIndex(2)),
+            Some(DocumentRow::Spacer)
+        ));
+    }
+
+    #[test]
+    fn side_by_side_documents_insert_head_spacers_for_deletions() {
+        let hunk = DiffHunk {
+            old_start: 2,
+            old_lines: 2,
+            new_start: 2,
+            new_lines: 0,
+            header: "@@ -2,2 +1,0 @@".to_string(),
+            lines: vec![
+                diff_line(LineKind::Deletion, "old two", Some(2), None),
+                diff_line(LineKind::Deletion, "old three", Some(3), None),
+            ],
+        };
+        let document = build_side_by_side_document(&input(
+            key(ContentMode::Diff, RenderVariant::SideBySide),
+            &[hunk],
+            Some("one\nold two\nold three\nfour\n"),
+            Some("one\nfour\n"),
+            &[],
+        ))
+        .expect("valid side-by-side document");
+
+        assert_eq!(content(document.base(), 1).text, "old two");
+        assert!(matches!(
+            document.head().row(RowIndex(1)),
+            Some(DocumentRow::Spacer)
+        ));
+        assert_eq!(content(document.base(), 2).text, "old three");
+        assert!(matches!(
+            document.head().row(RowIndex(2)),
+            Some(DocumentRow::Spacer)
+        ));
+    }
+
+    #[test]
     fn hunk_navigation_uses_first_change_rows() {
         let hunks = vec![
             DiffHunk {
@@ -2079,6 +2152,98 @@ mod tests {
         assert_eq!(
             document.next_hunk(RowIndex(5), Direction::Prev),
             Some(RowIndex(2))
+        );
+        assert_eq!(document.next_hunk(RowIndex(5), Direction::Next), None);
+        assert_eq!(document.next_hunk(RowIndex(0), Direction::Prev), None);
+    }
+
+    #[test]
+    fn diff_document_builder_routes_variants_and_forwards_accessors() {
+        let hunk = replacement_hunk();
+        let comments = vec![comment(
+            41,
+            false,
+            vec![segment(CommentAnchorSide::Head, 2, 2)],
+        )];
+        let mut unified_input = input(
+            key(ContentMode::Diff, RenderVariant::Inline),
+            std::slice::from_ref(&hunk),
+            Some("one\nold\nfour\n"),
+            Some("one\nnew one\nnew two\nfour\n"),
+            &comments,
+        );
+        unified_input.cursor = Some(RowIndex(2));
+        let unified = DiffDocumentBuilder::build(unified_input).expect("unified document");
+        assert!(matches!(unified.diff, DiffDocument::Unified(_)));
+        assert_eq!(unified.diff.len(), 5);
+        assert_eq!(unified.diff.current_comment_id(), Some(41));
+
+        let side_by_side = DiffDocumentBuilder::build(input(
+            key(ContentMode::Diff, RenderVariant::SideBySide),
+            std::slice::from_ref(&hunk),
+            Some("one\nold\nfour\n"),
+            Some("one\nnew one\nnew two\nfour\n"),
+            &comments,
+        ))
+        .expect("side-by-side document");
+        assert!(matches!(side_by_side.diff, DiffDocument::SideBySide(_)));
+        assert_eq!(side_by_side.diff.len(), 4);
+
+        let mut side_by_side_input = input(
+            key(ContentMode::Diff, RenderVariant::SideBySide),
+            std::slice::from_ref(&hunk),
+            Some("one\nold\nfour\n"),
+            Some("one\nnew one\nnew two\nfour\n"),
+            &comments,
+        );
+        side_by_side_input.cursor = Some(RowIndex(1));
+        let side_by_side =
+            DiffDocumentBuilder::build(side_by_side_input).expect("side-by-side document");
+        assert_eq!(side_by_side.diff.current_comment_id(), Some(41));
+
+        let base_comments = vec![comment(
+            42,
+            false,
+            vec![segment(CommentAnchorSide::Base, 2, 2)],
+        )];
+        let mut base_input = input(
+            key(ContentMode::FullFile, RenderVariant::BaseVersion),
+            std::slice::from_ref(&hunk),
+            Some("one\nold\nfour\n"),
+            Some("one\nnew one\nnew two\nfour\n"),
+            &base_comments,
+        );
+        base_input.cursor = Some(RowIndex(1));
+        let base = DiffDocumentBuilder::build(base_input).expect("base document");
+        assert!(matches!(base.diff, DiffDocument::Base(_)));
+        assert_eq!(base.diff.len(), 3);
+        assert_eq!(base.diff.current_comment_id(), Some(42));
+
+        let head_comments = vec![comment(
+            43,
+            false,
+            vec![segment(CommentAnchorSide::Head, 2, 2)],
+        )];
+        let mut head_input = input(
+            key(ContentMode::FullFile, RenderVariant::HeadVersion),
+            std::slice::from_ref(&hunk),
+            Some("one\nold\nfour\n"),
+            Some("one\nnew one\nnew two\nfour\n"),
+            &head_comments,
+        );
+        head_input.cursor = Some(RowIndex(1));
+        let head = DiffDocumentBuilder::build(head_input).expect("head document");
+        assert!(matches!(head.diff, DiffDocument::Head(_)));
+        assert_eq!(head.diff.len(), 4);
+        assert_eq!(head.diff.current_comment_id(), Some(43));
+
+        let build_error = DiffDocumentBuildError::from(SideBySideDocumentError {
+            base_len: 1,
+            head_len: 2,
+        });
+        assert_eq!(
+            build_error.to_string(),
+            "side-by-side documents must have equal row counts: base=1, head=2"
         );
     }
 
@@ -2198,6 +2363,65 @@ mod tests {
     }
 
     #[test]
+    fn document_public_comment_accessors_use_logical_comment_indexes() {
+        let comments = DocumentComments::with_selection(
+            vec![
+                document_comment(1, 0, 1),
+                document_comment(2, 1, 3),
+                DocumentComment {
+                    resolved: true,
+                    ..document_comment(3, 4, 4)
+                },
+            ],
+            None,
+            Some(RowIndex(1)),
+        );
+        let document = Document::new(Vec::new(), Vec::new()).with_overlays(DocumentOverlays {
+            comments,
+            ..DocumentOverlays::default()
+        });
+
+        assert_eq!(document.current_comment_id(), Some(2));
+        assert_eq!(
+            document.comment_at(RowIndex(0)).map(|comment| comment.id),
+            Some(1)
+        );
+        assert_eq!(
+            document.comment_at(RowIndex(1)).map(|comment| comment.id),
+            Some(2)
+        );
+        assert_eq!(
+            document
+                .next_comment(RowIndex(1), Direction::Next)
+                .map(|comment| comment.id),
+            Some(3)
+        );
+        assert_eq!(
+            document
+                .next_unresolved_comment(RowIndex(1), Direction::Next)
+                .map(|comment| comment.id),
+            None
+        );
+    }
+
+    #[test]
+    fn empty_documents_and_out_of_range_rows_return_no_render_state() {
+        let document = Document::new(Vec::new(), Vec::new());
+
+        assert!(document.is_empty());
+        assert_eq!(document.row(RowIndex(0)), None);
+        assert_eq!(document.content_row(RowIndex(0)), None);
+        assert_eq!(document.line(RowIndex(0)), None);
+        assert_eq!(document.comment_at(RowIndex(0)), None);
+        assert_eq!(
+            format_gutter(None, None),
+            "",
+            "empty gutters should render as empty text"
+        );
+        assert_eq!(ContentId::from(String::from("owned")).0, "owned");
+    }
+
+    #[test]
     fn side_by_side_document_rejects_mismatched_row_counts() {
         let base = Document::new(Vec::new(), Vec::new());
         let head = Document::new(
@@ -2218,6 +2442,89 @@ mod tests {
                 head_len: 1
             })
         );
+        assert_eq!(
+            SideBySideDocumentError {
+                base_len: 0,
+                head_len: 1
+            }
+            .to_string(),
+            "side-by-side documents must have equal row counts: base=0, head=1"
+        );
+    }
+
+    #[test]
+    fn side_by_side_accessors_preserve_two_single_documents() {
+        let base = Document::new(
+            vec![DocumentRow::Content(side_content_row(
+                CommentAnchorSide::Base,
+                1,
+                "base",
+                LineKind::Context,
+                &[],
+            ))],
+            vec![HunkSpan {
+                full_span: RowSpan {
+                    start: RowIndex(0),
+                    end: RowIndex(0),
+                },
+                first_change: RowIndex(0),
+            }],
+        )
+        .with_overlays(DocumentOverlays {
+            comments: DocumentComments::with_selection(
+                vec![document_comment(10, 0, 0)],
+                None,
+                Some(RowIndex(0)),
+            ),
+            ..DocumentOverlays::default()
+        });
+        let head = Document::new(
+            vec![DocumentRow::Content(side_content_row(
+                CommentAnchorSide::Head,
+                1,
+                "head",
+                LineKind::Context,
+                &[],
+            ))],
+            Vec::new(),
+        );
+        let side_by_side =
+            SideBySideDocument::new(base.clone(), head).expect("valid side-by-side document");
+
+        assert_eq!(side_by_side.current_comment_id(), Some(10));
+        assert_eq!(side_by_side.next_hunk(RowIndex(0), Direction::Next), None);
+
+        let head = Document::new(
+            vec![DocumentRow::Content(side_content_row(
+                CommentAnchorSide::Head,
+                1,
+                "head",
+                LineKind::Context,
+                &[],
+            ))],
+            vec![HunkSpan {
+                full_span: RowSpan {
+                    start: RowIndex(0),
+                    end: RowIndex(0),
+                },
+                first_change: RowIndex(0),
+            }],
+        )
+        .with_overlays(DocumentOverlays {
+            comments: DocumentComments::with_selection(
+                vec![document_comment(20, 0, 0)],
+                None,
+                Some(RowIndex(0)),
+            ),
+            ..DocumentOverlays::default()
+        });
+        let side_by_side =
+            SideBySideDocument::new(base, head).expect("valid side-by-side document");
+        assert_eq!(side_by_side.current_comment_id(), Some(20));
+        assert_eq!(side_by_side.next_hunk(RowIndex(0), Direction::Prev), None);
+        let (base, head) = side_by_side.into_parts();
+        assert_eq!(content(&base, 0).text, "base");
+        assert_eq!(content(&head, 0).text, "head");
     }
 
     #[test]
@@ -2258,6 +2565,40 @@ mod tests {
             panic!("expected spacer render line");
         };
         assert_eq!(marker.kind(), Some(CommentMarkerKind::Join));
+    }
+
+    #[test]
+    fn full_file_hunk_span_closes_when_hunk_reaches_file_end() {
+        let hunk = DiffHunk {
+            old_start: 2,
+            old_lines: 2,
+            new_start: 2,
+            new_lines: 2,
+            header: "@@ -2,2 +2,2 @@".to_string(),
+            lines: vec![
+                diff_line(LineKind::Deletion, "old two", Some(2), None),
+                diff_line(LineKind::Addition, "new two", None, Some(2)),
+                diff_line(LineKind::Context, "three", Some(3), Some(3)),
+            ],
+        };
+        let head = build_head_document(&input(
+            key(ContentMode::FullFile, RenderVariant::HeadVersion),
+            &[hunk],
+            Some("one\nold two\nthree\n"),
+            Some("one\nnew two\nthree\n"),
+            &[],
+        ));
+
+        assert_eq!(
+            head.hunk_spans(),
+            &[HunkSpan {
+                full_span: RowSpan {
+                    start: RowIndex(1),
+                    end: RowIndex(2)
+                },
+                first_change: RowIndex(1)
+            }]
+        );
     }
 
     #[test]
@@ -2386,6 +2727,36 @@ mod tests {
     }
 
     #[test]
+    fn comment_projection_drops_other_files_and_unmapped_source_lines() {
+        let rows = vec![DocumentRow::Content(side_content_row(
+            CommentAnchorSide::Head,
+            1,
+            "one",
+            LineKind::Context,
+            &[],
+        ))];
+        let comments = vec![
+            comment(
+                1,
+                false,
+                vec![segment_with_path("other.rs", CommentAnchorSide::Head, 1, 1)],
+            ),
+            comment(2, false, vec![segment(CommentAnchorSide::Head, 99, 99)]),
+            comment(3, false, vec![segment(CommentAnchorSide::Head, 1, 1)]),
+        ];
+        let projected = project_comments(&rows, None, "src/lib.rs", &comments, None, None);
+
+        assert_eq!(
+            projected
+                .all()
+                .iter()
+                .map(|comment| comment.id)
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
+    }
+
+    #[test]
     fn document_comments_keep_row_order_and_index_by_id() {
         let comments = DocumentComments::new(vec![
             DocumentComment {
@@ -2484,6 +2855,65 @@ mod tests {
     }
 
     #[test]
+    fn comment_navigation_from_arbitrary_cursor_uses_sorted_comment_order() {
+        let comments = DocumentComments::new(vec![
+            document_comment(1, 2, 4),
+            document_comment(2, 5, 5),
+            document_comment(3, 7, 8),
+        ]);
+
+        assert_eq!(
+            comments
+                .next_comment(RowIndex(4), Direction::Next)
+                .map(|comment| comment.id),
+            Some(2)
+        );
+        assert_eq!(
+            comments
+                .next_comment(RowIndex(7), Direction::Prev)
+                .map(|comment| comment.id),
+            Some(2)
+        );
+        assert_eq!(
+            comments
+                .next_comment(RowIndex(2), Direction::Prev)
+                .map(|comment| comment.id),
+            None
+        );
+        assert_eq!(
+            comments
+                .next_comment(RowIndex(8), Direction::Next)
+                .map(|comment| comment.id),
+            None
+        );
+    }
+
+    #[test]
+    fn unresolved_navigation_from_arbitrary_cursor_skips_resolved_comments() {
+        let comments = DocumentComments::new(vec![
+            document_comment(1, 2, 2),
+            DocumentComment {
+                resolved: true,
+                ..document_comment(2, 4, 4)
+            },
+            document_comment(3, 6, 6),
+        ]);
+
+        assert_eq!(
+            comments
+                .next_unresolved_comment(RowIndex(3), Direction::Next)
+                .map(|comment| comment.id),
+            Some(3)
+        );
+        assert_eq!(
+            comments
+                .next_unresolved_comment(RowIndex(6), Direction::Prev)
+                .map(|comment| comment.id),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn source_row_index_maps_source_lines_to_document_rows() {
         let rows = vec![
             DocumentRow::Content(content_row(
@@ -2524,6 +2954,57 @@ mod tests {
     }
 
     #[test]
+    fn aligned_source_row_index_maps_spacer_rows_to_other_side_markers() {
+        let base_rows = vec![
+            DocumentRow::Content(side_content_row(
+                CommentAnchorSide::Base,
+                10,
+                "old",
+                LineKind::Deletion,
+                &[],
+            )),
+            DocumentRow::Spacer,
+        ];
+        let head_rows = vec![
+            DocumentRow::Content(side_content_row(
+                CommentAnchorSide::Head,
+                20,
+                "new one",
+                LineKind::Addition,
+                &[],
+            )),
+            DocumentRow::Content(side_content_row(
+                CommentAnchorSide::Head,
+                21,
+                "new two",
+                LineKind::Addition,
+                &[],
+            )),
+        ];
+        let index = SourceRowIndex::aligned(&base_rows, &head_rows);
+
+        let base_rows: Vec<RowIndex> = index
+            .rows_for_range(CommentAnchorSide::Base, 10, 10)
+            .collect();
+        let head_rows: Vec<RowIndex> = index
+            .rows_for_range(CommentAnchorSide::Head, 20, 21)
+            .collect();
+
+        assert_eq!(base_rows, vec![RowIndex(0)]);
+        assert_eq!(head_rows, vec![RowIndex(0), RowIndex(1)]);
+    }
+
+    #[test]
+    fn source_location_none_has_no_side_lines() {
+        let source = SourceLocation::none();
+
+        assert_eq!(source.line_for_side(CommentAnchorSide::Base), None);
+        assert_eq!(source.line_for_side(CommentAnchorSide::Head), None);
+        assert!(!source.has_line_in_range(CommentAnchorSide::Base, 1, 1));
+        assert!(!source.has_line_in_range(CommentAnchorSide::Head, 1, 1));
+    }
+
+    #[test]
     fn current_comment_prefers_boundaries_then_highest_starting_row() {
         let comments = vec![document_comment(1, 10, 20), document_comment(2, 15, 25)];
 
@@ -2545,6 +3026,70 @@ mod tests {
         );
         assert_eq!(
             document_comments_at_cursor(comments, 21).current_comment_id(),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn current_comment_at_prefers_selected_then_current_then_highest_starting_row() {
+        let comments = vec![
+            document_comment(1, 10, 20),
+            document_comment(2, 15, 25),
+            document_comment(3, 16, 18),
+        ];
+        let selected =
+            DocumentComments::with_selection(comments.clone(), Some(1), Some(RowIndex(16)));
+        let current = DocumentComments::with_selection(comments.clone(), None, Some(RowIndex(16)));
+        let fallback = DocumentComments::new(comments);
+
+        assert_eq!(
+            selected
+                .current_comment_at(RowIndex(16))
+                .map(|comment| comment.id),
+            Some(1)
+        );
+        assert_eq!(
+            current
+                .current_comment_at(RowIndex(17))
+                .map(|comment| comment.id),
+            Some(3)
+        );
+        assert_eq!(
+            fallback
+                .current_comment_at(RowIndex(17))
+                .map(|comment| comment.id),
+            Some(3)
+        );
+        assert_eq!(
+            fallback
+                .current_comment_at(RowIndex(30))
+                .map(|comment| comment.id),
+            None
+        );
+    }
+
+    #[test]
+    fn preferred_marker_uses_highest_start_row_then_kind_then_id() {
+        let same_end = DocumentComments::new(vec![
+            document_comment(1, 10, 20),
+            document_comment(2, 15, 20),
+        ]);
+        let same_start = DocumentComments::new(vec![
+            document_comment(1, 10, 20),
+            document_comment(2, 10, 10),
+            document_comment(3, 10, 20),
+        ]);
+
+        assert_eq!(
+            same_end
+                .current_marker_comment(RowIndex(20))
+                .map(|comment| comment.id),
+            Some(2)
+        );
+        assert_eq!(
+            same_start
+                .current_marker_comment(RowIndex(10))
+                .map(|comment| comment.id),
             Some(2)
         );
     }
@@ -2645,6 +3190,43 @@ mod tests {
         assert_eq!(rendered.runs[0].kind, TextRunKind::SearchMatch);
         assert_eq!(rendered.runs[1].kind, TextRunKind::Plain);
         assert_eq!(rendered.runs[2].kind, TextRunKind::SearchMatch);
+
+        document.search("");
+        assert_eq!(document.overlays().search.query, None);
+        document.search("hay");
+        document.clear_search();
+        let RenderLine::Content(rendered) = document.line(RowIndex(0)).expect("render line") else {
+            panic!("expected content render line");
+        };
+        assert_eq!(rendered.runs.len(), 1);
+        assert_eq!(rendered.runs[0].kind, TextRunKind::Plain);
+        assert_eq!(rendered.runs[0].text, Cow::Borrowed("needle hay needle"));
+    }
+
+    #[test]
+    fn search_overlay_preserves_trailing_plain_text_after_last_match() {
+        let mut document = Document::new(
+            vec![DocumentRow::Content(ContentRow {
+                gutter: Gutter {
+                    text: "1".to_string(),
+                },
+                kind: LineKind::Context,
+                text: "needle tail".to_string(),
+                blame: None,
+                source: SourceLocation::single(CommentAnchorSide::Head, 1),
+            })],
+            Vec::new(),
+        );
+
+        document.search("needle");
+        let RenderLine::Content(rendered) = document.line(RowIndex(0)).expect("render line") else {
+            panic!("expected content render line");
+        };
+        assert_eq!(rendered.runs.len(), 2);
+        assert_eq!(rendered.runs[0].kind, TextRunKind::SearchMatch);
+        assert_eq!(rendered.runs[0].text, Cow::Borrowed("needle"));
+        assert_eq!(rendered.runs[1].kind, TextRunKind::Plain);
+        assert_eq!(rendered.runs[1].text, Cow::Borrowed(" tail"));
     }
 
     #[test]
