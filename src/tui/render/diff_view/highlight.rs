@@ -10,11 +10,7 @@ use ratatui::text::{Line, Span};
 ///
 /// `content_start_col` is the number of fixed columns (gutter + prefix) before
 /// actual content begins. `col_cursor` is the character offset within content.
-pub(super) fn apply_col_cursor(
-    line: &Line,
-    content_start_col: usize,
-    col_cursor: usize,
-) -> Line<'static> {
+pub fn apply_col_cursor(line: &Line, content_start_col: usize, col_cursor: usize) -> Line<'static> {
     // Compute the target character index in the flattened line text.
     // We need to count characters (not bytes) through the spans to find
     // the right position.
@@ -80,7 +76,7 @@ pub(super) fn apply_col_cursor(
 /// `matches` is a list of (byte_start, byte_end, is_current_match) relative
 /// to the flattened span text. `cursor_line_bg` is applied to non-match
 /// portions if the line is the cursor line.
-pub(super) fn apply_search_highlights(
+pub fn apply_search_highlights(
     line: &Line,
     matches: &[(usize, usize, bool)],
     match_bg: Color,

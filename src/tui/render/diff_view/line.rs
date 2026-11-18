@@ -8,10 +8,10 @@ use crate::app::model::BlameLine;
 // ---------------------------------------------------------------------------
 
 /// Width of the blame annotation column (hash + date + author).
-pub(super) const BLAME_COL_WIDTH: usize = 30;
+pub const BLAME_COL_WIDTH: usize = 30;
 
 /// Format a blame annotation for display, padded/truncated to `BLAME_COL_WIDTH`.
-pub(super) fn format_blame(blame: Option<&BlameLine>) -> String {
+pub fn format_blame(blame: Option<&BlameLine>) -> String {
     match blame {
         Some(bl) => {
             // "abc1234 2024-03-15 Author" — hash(7) + space + date(10) + space + author.
@@ -30,7 +30,7 @@ pub(super) fn format_blame(blame: Option<&BlameLine>) -> String {
 /// The gutter inherits the background color from `content_style` so that
 /// hunk-highlighted rows have a consistent background across the full width.
 /// The line is padded with spaces so the background extends to the panel edge.
-pub(super) fn make_line(
+pub fn make_line(
     old_lineno: Option<u32>,
     new_lineno: Option<u32>,
     prefix: &str,
@@ -87,7 +87,7 @@ pub(super) fn make_line(
 ///
 /// Like `make_line` but instead of a single content string, takes
 /// word-diff spans and uses `emphasis_style` for changed portions.
-pub(super) fn make_line_with_emphasis(
+pub fn make_line_with_emphasis(
     old_lineno: Option<u32>,
     new_lineno: Option<u32>,
     prefix: &str,
@@ -152,7 +152,7 @@ pub(super) fn make_line_with_emphasis(
 }
 
 /// Number of decimal digits needed to display `n` (minimum 3).
-pub(super) fn digit_width(n: u32) -> usize {
+pub fn digit_width(n: u32) -> usize {
     match n {
         0..=9 => 1,
         10..=99 => 2,

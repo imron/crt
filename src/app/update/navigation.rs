@@ -7,7 +7,7 @@ use crate::core::navigation::{self as core_navigation, Direction, FileNavigation
 use crate::core::search as core_search;
 use crate::review_types::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
-pub(super) fn navigate_to_search_match(
+pub fn navigate_to_search_match(
     state: &mut AppState,
     view: &impl AppViewport,
     m: &crate::review_types::SearchMatch,
@@ -18,7 +18,7 @@ pub(super) fn navigate_to_search_match(
     update
 }
 
-pub(super) fn navigate_to_definition(
+pub fn navigate_to_definition(
     state: &mut AppState,
     view: &impl AppViewport,
     def: &crate::review_types::DefinitionLocation,
@@ -29,7 +29,7 @@ pub(super) fn navigate_to_definition(
     update
 }
 
-pub(super) fn navigate_to_location_target(
+pub fn navigate_to_location_target(
     state: &mut AppState,
     view: &impl AppViewport,
     update: &mut AppOutput,
@@ -70,28 +70,30 @@ fn push_jump_stack(state: &mut AppState) {
     });
 }
 
-pub(super) fn toggle_inline_diff(state: &mut AppState, update: &mut AppOutput) {
+pub fn toggle_inline_diff(state: &mut AppState, update: &mut AppOutput) {
     if state.content_mode == ContentMode::Diff {
         let previous = state.render_variant;
         state.render_variant = match state.render_variant {
             RenderVariant::Inline => RenderVariant::SideBySide,
+            RenderVariant::SideBySide => RenderVariant::Inline,
             other => other,
         };
         if state.render_variant != previous {
+            state.invalidate_diff_search_matches();
             state.mark_model_changed();
         }
     }
     update.clear_status();
 }
 
-pub(super) fn cycle_diff_algorithm(state: &mut AppState, update: &mut AppOutput) {
+pub fn cycle_diff_algorithm(state: &mut AppState, update: &mut AppOutput) {
     state.diff_algorithm = state.diff_algorithm.next();
     state.reload_current_diff();
     update.set_status(format!("Diff algorithm: {}", state.diff_algorithm.label()));
     update.request_layout_save();
 }
 
-pub(super) fn toggle_diff_base(state: &mut AppState, update: &mut AppOutput) {
+pub fn toggle_diff_base(state: &mut AppState, update: &mut AppOutput) {
     let has_reviewed_commit = state.selected_file_entry().is_some_and(|e| {
         matches!(
             &e.status,
@@ -119,11 +121,7 @@ pub(super) fn toggle_diff_base(state: &mut AppState, update: &mut AppOutput) {
 }
 
 /// Pop the jump stack and restore the previous location.
-pub(super) fn pop_jump_stack(
-    state: &mut AppState,
-    view: &impl AppViewport,
-    update: &mut AppOutput,
-) {
+pub fn pop_jump_stack(state: &mut AppState, view: &impl AppViewport, update: &mut AppOutput) {
     if let Some(loc) = state.jump_stack.pop() {
         if loc.file_index != state.selected_file && loc.file_index < state.files.len() {
             state.selected_file = loc.file_index;
@@ -142,7 +140,7 @@ pub(super) fn pop_jump_stack(
 }
 
 /// Request go-to-definition for the word under the cursor.
-pub(super) fn request_go_to_definition(
+pub fn request_go_to_definition(
     state: &mut AppState,
     view: &impl AppViewport,
     update: &mut AppOutput,
@@ -160,7 +158,7 @@ pub(super) fn request_go_to_definition(
 }
 
 /// Extract the identifier-like word under the current diff column cursor.
-pub(super) fn extract_word_at_cursor(state: &AppState, view: &impl AppViewport) -> Option<String> {
+pub fn extract_word_at_cursor(state: &AppState, view: &impl AppViewport) -> Option<String> {
     let content = content_for_word_extraction(state, view)?;
     word_at_char_offset(content, state.diff_col_cursor)
 }
@@ -223,7 +221,7 @@ fn on_file_changed(state: &mut AppState) {
     state.on_file_changed();
 }
 
-pub(super) fn cycle_view_mode(state: &mut AppState, view: &impl AppViewport) {
+pub fn cycle_view_mode(state: &mut AppState, view: &impl AppViewport) {
     let approx_line = estimate_current_line(state, view);
 
     match (&state.content_mode, &state.render_variant) {
@@ -233,6 +231,7 @@ pub(super) fn cycle_view_mode(state: &mut AppState, view: &impl AppViewport) {
             let row = approx_line.saturating_sub(1);
             state.diff_line_cursor = row;
             state.diff_scroll = row;
+            state.invalidate_diff_search_matches();
         }
         (ContentMode::FullFile, RenderVariant::HeadVersion) => {
             if state.base_content.is_none() {
@@ -244,6 +243,7 @@ pub(super) fn cycle_view_mode(state: &mut AppState, view: &impl AppViewport) {
             let row = base_line.saturating_sub(1);
             state.diff_line_cursor = row;
             state.diff_scroll = row;
+            state.invalidate_diff_search_matches();
         }
         (ContentMode::FullFile, RenderVariant::BaseVersion) => {
             state.content_mode = ContentMode::Diff;
@@ -254,10 +254,12 @@ pub(super) fn cycle_view_mode(state: &mut AppState, view: &impl AppViewport) {
             let row = new_line.saturating_sub(1);
             state.diff_line_cursor = row;
             state.diff_scroll = row;
+            state.invalidate_diff_search_matches();
         }
         _ => {
             state.content_mode = ContentMode::Diff;
             state.render_variant = RenderVariant::Inline;
+            state.invalidate_diff_search_matches();
         }
     }
     state.mark_model_changed();
@@ -296,7 +298,7 @@ fn estimate_current_line(state: &AppState, view: &impl AppViewport) -> usize {
     }
 }
 
-pub(super) fn jump_to_next_hunk(state: &mut AppState, view: &impl AppViewport) {
+pub fn jump_to_next_hunk(state: &mut AppState, view: &impl AppViewport) {
     if let Some(jump) = core_navigation::jump_to_next_hunk(
         state.diff_line_cursor,
         state.diff_scroll,
@@ -312,7 +314,7 @@ pub(super) fn jump_to_next_hunk(state: &mut AppState, view: &impl AppViewport) {
     }
 }
 
-pub(super) fn jump_to_prev_hunk(state: &mut AppState, view: &impl AppViewport) {
+pub fn jump_to_prev_hunk(state: &mut AppState, view: &impl AppViewport) {
     if let Some(jump) = core_navigation::jump_to_prev_hunk(
         state.diff_line_cursor,
         state.diff_scroll,
@@ -328,7 +330,7 @@ pub(super) fn jump_to_prev_hunk(state: &mut AppState, view: &impl AppViewport) {
     }
 }
 
-pub(super) fn navigate_file(state: &mut AppState, dir: Direction) {
+pub fn navigate_file(state: &mut AppState, dir: Direction) {
     let scope = if state.pane_focus == PaneFocus::Diff {
         FileNavigationScope::DiffPane
     } else {
@@ -347,7 +349,7 @@ pub(super) fn navigate_file(state: &mut AppState, dir: Direction) {
     }
 }
 
-pub(super) fn toggle_review(state: &AppState, update: &mut AppOutput) {
+pub fn toggle_review(state: &AppState, update: &mut AppOutput) {
     if state.files.get(state.selected_file).is_some() {
         update.request_review_toggle();
     }

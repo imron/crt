@@ -2,7 +2,7 @@ use crate::app::AppState;
 use crate::core::{PaneEffect, PaneId};
 use crate::review_types::{PaneFocus, ReviewStatus};
 
-pub(super) fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
+pub fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
     match effect {
         PaneEffect::ActivateFileListSelection => {
             if state.show_diff_pane {
@@ -32,7 +32,7 @@ pub(super) fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
     }
 }
 
-pub(super) fn toggle_pane_focus(state: &mut AppState) {
+pub fn toggle_pane_focus(state: &mut AppState) {
     if state.show_file_list && state.show_diff_pane {
         state.pane_focus = match state.pane_focus {
             PaneFocus::FileList => PaneFocus::Diff,
@@ -43,7 +43,7 @@ pub(super) fn toggle_pane_focus(state: &mut AppState) {
 }
 
 /// Toggle visibility of a pane. At least one pane must remain visible.
-pub(super) fn toggle_pane_visibility(state: &mut AppState, pane: PaneId) {
+pub fn toggle_pane_visibility(state: &mut AppState, pane: PaneId) {
     match pane {
         PaneId::FileList => {
             if state.show_file_list {

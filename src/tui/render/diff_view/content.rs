@@ -14,17 +14,17 @@ use crate::review_types::{ContentMode, RenderVariant};
 // ---------------------------------------------------------------------------
 
 /// Return type for content builders: lines, hunk start rows, hunk end rows.
-pub(super) struct BuiltContent {
-    pub(super) lines: Vec<Line<'static>>,
-    pub(super) hunk_starts: Vec<usize>,
-    pub(super) hunk_ends: Vec<usize>,
+pub struct BuiltContent {
+    pub lines: Vec<Line<'static>>,
+    pub hunk_starts: Vec<usize>,
+    pub hunk_ends: Vec<usize>,
     /// Row of the first actual change (+/-) in each hunk.
-    pub(super) hunk_first_changes: Vec<usize>,
+    pub hunk_first_changes: Vec<usize>,
     /// Width of one line-number gutter column (in characters).
-    pub(super) gutter_w: usize,
+    pub gutter_w: usize,
 }
 
-pub(super) fn build_content(
+pub fn build_content(
     diff: &DiffPanel,
     styles: &StyleConfig,
     inner_w: usize,
@@ -163,7 +163,7 @@ pub(super) fn build_content(
 }
 
 /// Build the border title with hunk navigation context.
-pub(super) fn build_title(diff: &DiffPanel, tui_state: &TuiState, total_hunks: usize) -> String {
+pub fn build_title(diff: &DiffPanel, tui_state: &TuiState, total_hunks: usize) -> String {
     let path = diff.path.as_deref().unwrap_or("Diff");
 
     let mode_label: String = match diff.content_mode {

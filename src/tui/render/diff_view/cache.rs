@@ -49,7 +49,7 @@ fn string_signature(s: &Option<String>) -> Option<(u64, usize)> {
     })
 }
 
-pub(super) fn build_key(diff: &crate::app::model::DiffPanel, inner_w: usize) -> DiffCacheKey {
+pub fn build_key(diff: &crate::app::model::DiffPanel, inner_w: usize) -> DiffCacheKey {
     DiffCacheKey {
         selected_file: diff.file_id.clone(),
         content_mode: diff.content_mode,

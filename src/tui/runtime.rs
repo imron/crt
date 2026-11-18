@@ -219,6 +219,9 @@ impl Tui {
         if before != after {
             self.app.state.mark_model_changed();
         }
+        if self.app.refresh_active_diff_search(&self.tui_state) {
+            return Ok(self.app.state.model_revision());
+        }
         Ok(revision)
     }
 

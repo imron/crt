@@ -19,7 +19,7 @@ use self::content::{build_content, build_title};
 use self::highlight::{apply_col_cursor, apply_search_highlights};
 use self::line::BLAME_COL_WIDTH;
 use super::super::state::TuiState;
-use crate::app::model::AppModel;
+use crate::app::model::{AppModel, TextRange};
 use crate::config::StyleConfig;
 use crate::review_types::PaneFocus;
 
@@ -131,6 +131,13 @@ pub fn draw(
     let cursor_visible_idx = diff.cursor.line.saturating_sub(diff.scroll);
     let diff_view_height = tui_state.diff_view_height;
     let content_start_col = tui_state.diff_content_start_col();
+    let search_highlights = render_search_highlights(
+        diff.search_query.as_deref(),
+        &tui_state.diff_rendered_text,
+        tui_state.diff_gutter_cols,
+    )
+    .unwrap_or_else(|| diff.search_highlights.clone());
+    let current_search_highlight = current_search_highlight(diff, &search_highlights);
     let visible_source: Vec<Line> = tui_state
         .diff_cache
         .as_ref()
@@ -152,8 +159,7 @@ pub fn draw(
                     && diff.cursor.line < diff.scroll + diff_view_height;
 
                 // Collect search matches on this row.
-                let row_matches: Vec<(usize, usize, bool)> = diff
-                    .search_highlights
+                let row_matches: Vec<(usize, usize, bool)> = search_highlights
                     .iter()
                     .enumerate()
                     .filter(|(_, range)| range.line == display_row)
@@ -161,7 +167,7 @@ pub fn draw(
                         (
                             range.column_start,
                             range.column_end,
-                            Some(idx) == diff.current_search_highlight,
+                            Some(idx) == current_search_highlight,
                         )
                     })
                     .collect();
@@ -213,4 +219,54 @@ pub fn draw(
     );
 
     frame.render_widget(paragraph, area);
+}
+
+fn render_search_highlights(
+    query: Option<&str>,
+    rendered_text: &[String],
+    gutter_cols: usize,
+) -> Option<Vec<TextRange>> {
+    let query = query.filter(|query| !query.is_empty())?;
+    let re = regex::RegexBuilder::new(query)
+        .case_insensitive(true)
+        .build()
+        .ok()?;
+    let mut matches = Vec::new();
+    for (row, line) in rendered_text.iter().enumerate() {
+        let search_start = gutter_cols.min(line.len());
+        let content = &line[search_start..];
+        for m in re.find_iter(content) {
+            if m.start() == m.end() {
+                continue;
+            }
+            matches.push(TextRange {
+                line: row,
+                column_start: search_start + m.start(),
+                column_end: search_start + m.end(),
+            });
+        }
+    }
+    Some(matches)
+}
+
+fn current_search_highlight(
+    diff: &crate::app::model::DiffPanel,
+    search_highlights: &[TextRange],
+) -> Option<usize> {
+    if search_highlights.is_empty() {
+        return None;
+    }
+
+    if diff.search_highlights == search_highlights {
+        if let Some(current) = diff.current_search_highlight {
+            if current < search_highlights.len() {
+                return Some(current);
+            }
+        }
+    }
+
+    search_highlights
+        .iter()
+        .position(|range| range.line >= diff.cursor.line)
+        .or(Some(0))
 }

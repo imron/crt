@@ -2,7 +2,7 @@ use super::viewport::AppViewport;
 use crate::app::AppState;
 use crate::core::DiffCursorEffect;
 
-pub(super) fn apply_diff_cursor_effect(
+pub fn apply_diff_cursor_effect(
     state: &mut AppState,
     view: &impl AppViewport,
     effect: DiffCursorEffect,
@@ -146,7 +146,7 @@ fn clamp_diff_scroll(state: &mut AppState, view: &impl AppViewport) {
     state.diff_scroll = state.diff_scroll.min(view.max_diff_scroll());
 }
 
-pub(super) fn clamp_cursor_and_scroll(state: &mut AppState, view: &impl AppViewport) {
+pub fn clamp_cursor_and_scroll(state: &mut AppState, view: &impl AppViewport) {
     let max = view.max_diff_scroll();
     state.diff_line_cursor = state.diff_line_cursor.min(max);
     if state.diff_line_cursor < state.diff_scroll {

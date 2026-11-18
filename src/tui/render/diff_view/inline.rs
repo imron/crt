@@ -11,7 +11,7 @@ use crate::review_types::LineKind;
 // Inline diff: full file with additions + deletions interleaved
 // ---------------------------------------------------------------------------
 
-pub(super) fn build_inline_diff(
+pub fn build_inline_diff(
     ds: &DiffStyle,
     default_bg: Color,
     hunks: &[DiffHunk],

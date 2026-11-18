@@ -4,7 +4,7 @@ use super::viewport::AppViewport;
 use crate::app::AppState;
 use crate::core::navigation::Direction;
 
-pub(super) fn apply_diff_search(
+pub fn apply_diff_search(
     state: &mut AppState,
     view: &impl AppViewport,
     update: &mut AppOutput,
@@ -31,7 +31,7 @@ pub(super) fn apply_diff_search(
     state.mark_model_changed();
 }
 
-pub(super) fn navigate_diff_search_match(
+pub fn navigate_diff_search_match(
     state: &mut AppState,
     view: &impl AppViewport,
     update: &mut AppOutput,
@@ -65,11 +65,34 @@ pub(super) fn navigate_diff_search_match(
     update.set_status(format!("{cur}/{len}"));
 }
 
-pub(super) fn clear_diff_search(state: &mut AppState) {
+pub fn clear_diff_search(state: &mut AppState) {
     state.diff_search_query = None;
     state.diff_search_matches.clear();
     state.diff_search_current = 0;
     state.mark_model_changed();
+}
+
+pub fn refresh_active_diff_search(state: &mut AppState, view: &impl AppViewport) -> bool {
+    if state.diff_search_query.is_none() {
+        return false;
+    }
+
+    let previous_matches = state.diff_search_matches.clone();
+    let previous_current = state.diff_search_current;
+    if recompute_diff_search_matches(state, view).is_some() {
+        return false;
+    }
+
+    let matches_changed = state.diff_search_matches != previous_matches;
+    if matches_changed && !state.diff_search_matches.is_empty() {
+        diff_search_jump_to_current(state, view);
+    }
+
+    let changed = matches_changed || state.diff_search_current != previous_current;
+    if changed {
+        state.mark_model_changed();
+    }
+    changed
 }
 
 fn recompute_diff_search_matches(state: &mut AppState, view: &impl AppViewport) -> Option<String> {
