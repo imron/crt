@@ -5,9 +5,11 @@ pub mod document;
 pub mod model;
 mod update;
 
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 
+use self::document::ActiveDocument;
 use self::model::AppModel;
 use crate::client::{Client, ClientEvent, CommentScope, Notification};
 use crate::config::Config;
@@ -158,6 +160,7 @@ pub struct SavedFilePosition {
 pub struct App {
     pub state: AppState,
     pub config: Config,
+    active_document: RefCell<Option<ActiveDocument>>,
     client: Option<Client>,
     config_path: Option<PathBuf>,
     pending_work: VecDeque<AppWork>,
@@ -174,6 +177,7 @@ impl App {
         Self {
             state,
             config,
+            active_document: RefCell::new(None),
             client: None,
             config_path: None,
             pending_work: VecDeque::new(),
@@ -434,7 +438,32 @@ impl App {
     }
 
     pub fn model(&self) -> AppModel {
-        AppModel::from_state(&self.state)
+        AppModel::from_state_with_active_document(&self.state, self.active_document_for_model())
+    }
+
+    fn active_document_for_model(&self) -> Option<ActiveDocument> {
+        let Some(key) = model::active_document_key(&self.state) else {
+            *self.active_document.borrow_mut() = None;
+            return None;
+        };
+        let file_path = key.file_id.clone();
+        let needs_rebuild = self
+            .active_document
+            .borrow()
+            .as_ref()
+            .is_none_or(|document| document.key != key);
+        if needs_rebuild {
+            *self.active_document.borrow_mut() = model::build_active_document(&self.state, key);
+        } else if let Some(document) = self.active_document.borrow_mut().as_mut() {
+            document.refresh_overlays(
+                &file_path,
+                &self.state.comments,
+                self.state.selected_comment_id,
+                Some(document::RowIndex(self.state.diff_line_cursor)),
+                self.state.diff_search_query.as_deref(),
+            );
+        }
+        self.active_document.borrow().clone()
     }
 
     pub fn interaction_context(&self) -> InteractionContext {

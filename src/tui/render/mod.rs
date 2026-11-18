@@ -6,6 +6,7 @@
 
 mod comments_panel;
 pub mod diff_view;
+mod document_diff_view;
 mod file_list;
 mod word_diff;
 
@@ -123,11 +124,25 @@ fn draw_diff_region(
             .constraints([Constraint::Min(3), Constraint::Length(panel_height)])
             .split(area);
         tui_state.diff_area = chunks[0];
-        diff_view::draw(frame, model, tui_state, styles, chunks[0]);
+        draw_diff_view(frame, model, tui_state, styles, chunks[0]);
         comments_panel::draw(frame, model, tui_state, styles, chunks[1]);
     } else {
         tui_state.diff_area = area;
         tui_state.comments_area = Rect::default();
+        draw_diff_view(frame, model, tui_state, styles, area);
+    }
+}
+
+fn draw_diff_view(
+    frame: &mut Frame,
+    model: &AppModel,
+    tui_state: &mut TuiState,
+    styles: &StyleConfig,
+    area: Rect,
+) {
+    if tui_state.use_document_diff_view {
+        document_diff_view::draw(frame, model, tui_state, styles, area);
+    } else {
         diff_view::draw(frame, model, tui_state, styles, area);
     }
 }

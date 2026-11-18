@@ -9,6 +9,10 @@ use std::collections::BTreeMap;
 use crate::app::diff_rows::{
     LinearDiffRow, LinearDiffRows, SideBySideDiffRows, inline_diff_rows, side_by_side_diff_rows,
 };
+use crate::app::document::{
+    ActiveDocument, ContentId as DocumentContentId, DiffDocumentBuilder, DiffDocumentInput,
+    DocumentKey, RowIndex,
+};
 use crate::app::{AppState, CommentAnchorCapture, FileListSectionFocus, VisualSelectionMode};
 use crate::config::DiffAlgorithm;
 use crate::core::TextAnchor;
@@ -24,6 +28,7 @@ pub struct AppModel {
     pub layout: AppLayout,
     pub file_list: FileList,
     pub diff: DiffPanel,
+    pub active_document: Option<ActiveDocument>,
     pub comments_panel: CommentsPanel,
     pub focus: PaneFocus,
     pub search_results: Option<SearchResultsOverlay>,
@@ -938,6 +943,13 @@ pub struct DefinitionResultItem {
 
 impl AppModel {
     pub fn from_state(state: &AppState) -> Self {
+        Self::from_state_with_active_document(state, None)
+    }
+
+    pub(crate) fn from_state_with_active_document(
+        state: &AppState,
+        active_document: Option<ActiveDocument>,
+    ) -> Self {
         Self {
             revision: state.model_revision(),
             context: state.context.clone(),
@@ -948,6 +960,7 @@ impl AppModel {
             },
             file_list: file_list_model(state),
             diff: diff_panel_model(state),
+            active_document,
             comments_panel: comments_panel_model(state),
             focus: state.pane_focus,
             search_results: search_results_model(state),
@@ -962,6 +975,52 @@ impl AppModel {
             .map(|section| section.rows.len())
             .sum()
     }
+}
+
+pub(crate) fn active_document_key(state: &AppState) -> Option<DocumentKey> {
+    let entry = state.selected_file_entry()?;
+    Some(DocumentKey {
+        file_id: entry.change.path.clone(),
+        diff_hash: entry.diff.diff_hash.clone(),
+        content_mode: state.content_mode,
+        render_variant: state.render_variant,
+        diff_algorithm: state.diff_algorithm,
+        ignore_whitespace: state.ignore_whitespace,
+        head_content_id: content_id(state.head_content.as_ref()),
+        base_content_id: content_id(state.base_content.as_ref()),
+    })
+}
+
+pub(crate) fn build_active_document(state: &AppState, key: DocumentKey) -> Option<ActiveDocument> {
+    let entry = state.selected_file_entry()?;
+    let head_blame: Vec<BlameLine> = state.head_blame.iter().map(BlameLine::from).collect();
+    let base_blame: Vec<BlameLine> = state.base_blame.iter().map(BlameLine::from).collect();
+    let mut active_document = DiffDocumentBuilder::build(DiffDocumentInput {
+        key,
+        file_path: &entry.change.path,
+        hunks: &entry.diff.hunks,
+        head_content: state.head_content.as_deref(),
+        base_content: state.base_content.as_deref(),
+        head_blame: &head_blame,
+        base_blame: &base_blame,
+        comments: &state.comments,
+        selected_comment_id: state.selected_comment_id,
+        cursor: Some(RowIndex(state.diff_line_cursor)),
+    })
+    .ok()?;
+    if let Some(query) = state.diff_search_query.as_ref() {
+        active_document.diff.search(query.clone());
+    }
+    Some(active_document)
+}
+
+fn content_id(content: Option<&String>) -> Option<DocumentContentId> {
+    let content = content?;
+    Some(DocumentContentId::from(format!(
+        "{}:{:p}",
+        content.len(),
+        content.as_ptr()
+    )))
 }
 
 fn search_results_model(state: &AppState) -> Option<SearchResultsOverlay> {
@@ -3184,6 +3243,20 @@ mod tests {
         assert_eq!(model.diff.hunks.len(), 1);
         assert_eq!(model.diff.hunks[0].header, "@@ -1,2 +1,2 @@");
         assert_eq!(model.diff.hunks[0].lines[1].kind, LineKind::Addition);
+        assert_eq!(
+            model
+                .active_document
+                .as_ref()
+                .map(|document| document.key.file_id.as_str()),
+            Some("src/main.rs")
+        );
+        assert_eq!(
+            model
+                .active_document
+                .as_ref()
+                .map(|document| document.key.diff_hash.as_str()),
+            Some("hash-src/main.rs")
+        );
         assert_eq!(model.diff.search_query, Some("run".to_string()));
         assert_eq!(
             model.diff.search_highlights,
