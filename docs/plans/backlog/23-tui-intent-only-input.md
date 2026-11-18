@@ -135,6 +135,8 @@ clean reuse in GUI and increases coupling to TUI-only state.
   handled at the TUI effect boundary.
 - Moved the inline-comments display toggle into TUI-owned state, with command
   handling returning a presentation update.
+- Moved TUI style configuration into TUI-owned state so rendering no longer
+  reads style config from AppState.
 
 ## Acceptance Criteria
 

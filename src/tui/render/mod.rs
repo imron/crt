@@ -25,7 +25,7 @@ use crate::model::ReviewStatus;
 /// Draw the entire UI for the current state.
 pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState) {
     // Fill the entire frame with the application background color.
-    let bg_style = Style::default().bg(*state.styles.bg);
+    let bg_style = Style::default().bg(*tui_state.styles.bg);
     frame.render_widget(Block::default().style(bg_style), frame.area());
 
     // Split into main area + status bar.
@@ -49,13 +49,13 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState) {
                 .split(main_area);
             state.file_list_area = panes[0];
             state.diff_area = panes[1];
-            file_list::draw(frame, state, panes[0]);
+            file_list::draw(frame, state, tui_state, panes[0]);
             diff_view::draw(frame, state, tui_state, panes[1]);
         }
         (true, false) => {
             state.file_list_area = main_area;
             state.diff_area = Rect::default();
-            file_list::draw(frame, state, main_area);
+            file_list::draw(frame, state, tui_state, main_area);
         }
         (false, true) => {
             state.file_list_area = Rect::default();
@@ -71,10 +71,10 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState) {
     // Draw status bar or input prompt (command/search replace the status bar).
     match tui_state.input_mode {
         InputMode::Command => {
-            draw_command_input(frame, state, tui_state, status_area);
+            draw_command_input(frame, tui_state, status_area);
         }
         InputMode::DiffSearch => {
-            draw_diff_search_input(frame, state, tui_state, status_area);
+            draw_diff_search_input(frame, tui_state, status_area);
         }
         InputMode::Normal => {
             draw_status_bar(frame, state, tui_state, status_area);
@@ -88,17 +88,17 @@ pub fn draw(frame: &mut Frame, state: &mut AppState, tui_state: &mut TuiState) {
 
     // Search results overlay.
     if tui_state.search_results.is_some() {
-        draw_search_results_overlay(frame, state, tui_state);
+        draw_search_results_overlay(frame, tui_state);
     }
 
     // Definition results overlay.
     if tui_state.definition_results.is_some() {
-        draw_definition_results_overlay(frame, state, tui_state);
+        draw_definition_results_overlay(frame, tui_state);
     }
 
     // Help overlay on top of everything else.
     if tui_state.show_help {
-        draw_help_overlay(frame, &state.styles);
+        draw_help_overlay(frame, &tui_state.styles);
     }
 }
 
@@ -136,8 +136,8 @@ fn draw_selection_highlight(frame: &mut Frame, state: &AppState, tui_state: &Tui
     }
 
     let highlight = Style::default()
-        .bg(*state.styles.selection.bg)
-        .fg(*state.styles.selection.fg);
+        .bg(*tui_state.styles.selection.bg)
+        .fg(*tui_state.styles.selection.fg);
 
     let buf = frame.buffer_mut();
     for line_idx in start.line..=end.line {
@@ -186,10 +186,10 @@ fn saturating_u16(value: usize) -> u16 {
 const STATUS_MSG_TIMEOUT: Duration = Duration::from_secs(3);
 
 fn draw_status_bar(frame: &mut Frame, state: &AppState, tui_state: &mut TuiState, area: Rect) {
-    let ss = &state.styles.status;
-
     // Expire old status messages.
     tui_state.expire_status_message(STATUS_MSG_TIMEOUT);
+
+    let ss = &tui_state.styles.status;
 
     let reviewed_count = state
         .files
@@ -365,8 +365,8 @@ fn draw_help_overlay(frame: &mut Frame, styles: &StyleConfig) {
 // ---------------------------------------------------------------------------
 
 /// Draw the `:` command input line, replacing the status bar.
-fn draw_command_input(frame: &mut Frame, state: &AppState, tui_state: &TuiState, area: Rect) {
-    let ss = &state.styles.status;
+fn draw_command_input(frame: &mut Frame, tui_state: &TuiState, area: Rect) {
+    let ss = &tui_state.styles.status;
     let input = format!(":{}", tui_state.command_input);
     let bar_style = Style::default().bg(*ss.bar_bg).fg(*ss.bar_fg);
     let input_line = Paragraph::new(input.clone()).style(bar_style);
@@ -383,8 +383,8 @@ fn draw_command_input(frame: &mut Frame, state: &AppState, tui_state: &TuiState,
 }
 
 /// Draw the `/` diff search input line, replacing the status bar.
-fn draw_diff_search_input(frame: &mut Frame, state: &AppState, tui_state: &TuiState, area: Rect) {
-    let ss = &state.styles.status;
+fn draw_diff_search_input(frame: &mut Frame, tui_state: &TuiState, area: Rect) {
+    let ss = &tui_state.styles.status;
     let input = format!("/{}", tui_state.diff_search_input);
     let bar_style = Style::default().bg(*ss.bar_bg).fg(*ss.bar_fg);
     let input_line = Paragraph::new(input.clone()).style(bar_style);
@@ -404,12 +404,12 @@ fn draw_diff_search_input(frame: &mut Frame, state: &AppState, tui_state: &TuiSt
 // ---------------------------------------------------------------------------
 
 /// Draw the search results overlay as a centered popup.
-fn draw_search_results_overlay(frame: &mut Frame, state: &AppState, tui_state: &TuiState) {
+fn draw_search_results_overlay(frame: &mut Frame, tui_state: &TuiState) {
     let results = match &tui_state.search_results {
         Some(r) => r,
         None => return,
     };
-    let hs = &state.styles.help;
+    let hs = &tui_state.styles.help;
     let area = frame.area();
 
     // Size the overlay.
@@ -494,12 +494,12 @@ fn draw_search_results_overlay(frame: &mut Frame, state: &AppState, tui_state: &
 // ---------------------------------------------------------------------------
 
 /// Draw the definition results overlay as a centered popup.
-fn draw_definition_results_overlay(frame: &mut Frame, state: &AppState, tui_state: &TuiState) {
+fn draw_definition_results_overlay(frame: &mut Frame, tui_state: &TuiState) {
     let results = match &tui_state.definition_results {
         Some(r) => r,
         None => return,
     };
-    let hs = &state.styles.help;
+    let hs = &tui_state.styles.help;
     let area = frame.area();
 
     let total = results.definitions.len();

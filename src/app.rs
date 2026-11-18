@@ -3,7 +3,6 @@
 use crossterm::event::{self, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
-use crate::config::StyleConfig;
 use crate::core::diff;
 use crate::core::interaction::CoreInteractionEngine;
 use crate::core::review;
@@ -36,11 +35,9 @@ pub struct JumpLocation {
 // Application state
 // ---------------------------------------------------------------------------
 
-/// Central application state. Every UI decision reads from here, and input
-/// events mutate it (sometimes by sending requests to the server).
+/// Central application state for review data and domain interaction.
+/// Input events mutate it, sometimes by sending requests to the server.
 pub struct AppState {
-    /// Visual styling configuration (loaded from config.toml).
-    pub styles: StyleConfig,
     /// Resolved context from the server (repo root, worktree, refs).
     pub context: ConnectionContext,
     /// All files changed in base..HEAD, with their review status and diffs.
@@ -129,7 +126,6 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(
-        styles: StyleConfig,
         diff_algorithm: crate::config::DiffAlgorithm,
         context: ConnectionContext,
         mut files: Vec<FileEntry>,
@@ -137,7 +133,6 @@ impl AppState {
         review::sort_files(&mut files);
 
         Self {
-            styles,
             context,
             files,
             // Index 0 is the first unreviewed file (due to sort order).
@@ -687,7 +682,6 @@ mod tests {
 
     fn test_state() -> AppState {
         AppState::new(
-            StyleConfig::default(),
             crate::config::DiffAlgorithm::Myers,
             test_context(),
             vec![test_file("src/lib.rs")],
