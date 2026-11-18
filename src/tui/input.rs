@@ -3,6 +3,8 @@
 //! Key events are normalized into core input where possible, with local
 //! prompt editing retained by the TUI adapter.
 
+use std::time::Duration;
+
 use crossterm::event::{
     KeyCode, KeyEvent as CrosstermKeyEvent, KeyEventKind as CrosstermKeyEventKind, KeyModifiers,
 };
@@ -15,6 +17,9 @@ use crate::core::{
     InputEvent, InputModifiers, InteractionContext, Key as CoreKey, KeyEvent as CoreKeyEvent,
     KeyEventKind as CoreKeyEventKind,
 };
+
+/// How long the "Press Ctrl-C again" prompt stays active.
+const CTRL_C_TIMEOUT: Duration = Duration::from_secs(3);
 
 fn input_event_from_key(key: CrosstermKeyEvent) -> Option<InputEvent> {
     Some(InputEvent::Key(CoreKeyEvent {
@@ -66,6 +71,7 @@ fn dispatch_core_input(
 fn interaction_context(state: &AppState, tui_state: &TuiState) -> InteractionContext {
     InteractionContext {
         help_visible: tui_state.show_help,
+        quit_confirmation_active: tui_state.quit_confirmation_active(CTRL_C_TIMEOUT),
         ..app_update::interaction_context(state)
     }
 }
@@ -122,7 +128,7 @@ pub fn handle_key_event(state: &mut AppState, tui_state: &mut TuiState, key: Cro
         return;
     }
 
-    state.status_message = None;
+    tui_state.clear_status_message();
 }
 
 /// Handle keystrokes while in command mode.
@@ -137,7 +143,8 @@ fn handle_command_input(state: &mut AppState, tui_state: &mut TuiState, key: Cro
             let cmd = tui_state.command_input.clone();
             if !submit_active_prompt(state, tui_state, cmd.clone()) {
                 tui_state.clear_prompt();
-                app_update::apply_unscoped_command_prompt(state, cmd);
+                let update = app_update::apply_unscoped_command_prompt(state, cmd);
+                tui_state.apply_status_update(update.status);
             }
         }
         KeyCode::Backspace => {
@@ -193,7 +200,8 @@ fn handle_diff_search_input(
             let query = tui_state.diff_search_input.clone();
             if !submit_active_prompt(state, tui_state, query.clone()) {
                 tui_state.clear_prompt();
-                app_update::apply_unscoped_diff_search_prompt(state, query);
+                let update = app_update::apply_unscoped_diff_search_prompt(state, query);
+                tui_state.apply_status_update(update.status);
             }
         }
         KeyCode::Backspace => {

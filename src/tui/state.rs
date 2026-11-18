@@ -1,8 +1,9 @@
 //! TUI-owned presentation state.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::render::diff_view::DiffCache;
+use crate::app_update::StatusUpdate;
 use crate::core::PromptId;
 use crate::core::TextAnchor;
 use crate::model::PaneFocus;
@@ -67,6 +68,8 @@ pub struct TuiState {
     pub dragging_border: bool,
     /// Whether the help overlay is visible.
     pub show_help: bool,
+    /// Transient status bar message (e.g. "Press Ctrl-C again to quit").
+    pub status_message: Option<(String, Instant)>,
     /// Current input mode (Normal vs Command).
     pub input_mode: InputMode,
     /// Command-mode input buffer (the text after `:`).
@@ -88,6 +91,46 @@ impl Default for InputMode {
 }
 
 impl TuiState {
+    pub fn set_status_message(&mut self, message: impl Into<String>) {
+        self.status_message = Some((message.into(), Instant::now()));
+    }
+
+    pub fn clear_status_message(&mut self) {
+        self.status_message = None;
+    }
+
+    pub fn apply_status_update(&mut self, update: Option<StatusUpdate>) {
+        match update {
+            Some(StatusUpdate::Set(message)) => {
+                self.set_status_message(message);
+            }
+            Some(StatusUpdate::Clear) => {
+                self.clear_status_message();
+            }
+            None => {}
+        }
+    }
+
+    pub fn has_status_message(&self) -> bool {
+        self.status_message.is_some()
+    }
+
+    pub fn expire_status_message(&mut self, timeout: Duration) {
+        if self
+            .status_message
+            .as_ref()
+            .is_some_and(|(_, when)| when.elapsed() > timeout)
+        {
+            self.clear_status_message();
+        }
+    }
+
+    pub fn quit_confirmation_active(&self, timeout: Duration) -> bool {
+        self.status_message
+            .as_ref()
+            .is_some_and(|(message, when)| message.contains("Ctrl-C") && when.elapsed() < timeout)
+    }
+
     pub fn open_command_prompt(&mut self, id: PromptId, initial_value: String) {
         self.active_core_prompt = Some(id);
         self.input_mode = InputMode::Command;
@@ -141,6 +184,22 @@ mod tests {
         assert_eq!(state.command_cursor, 0);
         assert!(state.diff_search_input.is_empty());
         assert_eq!(state.diff_search_cursor, 0);
+    }
+
+    #[test]
+    fn status_updates_are_tui_owned() {
+        let mut state = TuiState::default();
+
+        state.apply_status_update(Some(StatusUpdate::Set(
+            "Press Ctrl-C again to quit".to_string(),
+        )));
+
+        assert!(state.has_status_message());
+        assert!(state.quit_confirmation_active(Duration::from_secs(3)));
+
+        state.apply_status_update(Some(StatusUpdate::Clear));
+
+        assert!(!state.has_status_message());
     }
 
     #[test]

@@ -136,7 +136,7 @@ impl Tui {
 
             // Wait for the next terminal event, with a timeout so that
             // transient status messages get cleared by re-rendering.
-            let ev = if self.state.status_message.is_some() {
+            let ev = if self.tui_state.has_status_message() {
                 match tokio::time::timeout(Duration::from_secs(1), event_rx.recv()).await {
                     Ok(Some(ev)) => ev,
                     Ok(None) => break,  // channel closed
@@ -406,8 +406,8 @@ impl Tui {
             Ok(action_result) => self.apply_review_result(&action_result),
             Err(e) => {
                 let verb = if is_reviewed { "unmark" } else { "mark" };
-                self.state.status_message =
-                    Some((format!("Failed to {verb} reviewed: {e}"), Instant::now()));
+                self.tui_state
+                    .set_status_message(format!("Failed to {verb} reviewed: {e}"));
             }
         }
     }
@@ -416,7 +416,7 @@ impl Tui {
     async fn process_pending_command(&mut self, cmd: Command) {
         match cmd {
             Command::SearchAll { pattern } => {
-                self.state.status_message = Some(("Searching...".to_string(), Instant::now()));
+                self.tui_state.set_status_message("Searching...");
                 // Force a re-render so the user sees the searching message.
                 let state = &mut self.state;
                 let tui_state = &mut self.tui_state;
@@ -427,8 +427,8 @@ impl Tui {
                 match self.client.search_codebase(&pattern, "all").await {
                     Ok(result) => match core_search::search_outcome(&pattern, false, result) {
                         core_search::SearchOutcome::NoMatches => {
-                            self.state.status_message =
-                                Some((format!("No matches for /{pattern}/"), Instant::now()));
+                            self.tui_state
+                                .set_status_message(format!("No matches for /{pattern}/"));
                         }
                         core_search::SearchOutcome::ShowResults {
                             query,
@@ -442,18 +442,17 @@ impl Tui {
                                 selected: 0,
                                 scroll: 0,
                             });
-                            self.state.status_message = None;
+                            self.tui_state.clear_status_message();
                         }
                     },
                     Err(e) => {
-                        self.state.status_message =
-                            Some((format!("Search error: {e}"), Instant::now()));
+                        self.tui_state
+                            .set_status_message(format!("Search error: {e}"));
                     }
                 }
             }
             Command::SearchDiff { pattern } => {
-                self.state.status_message =
-                    Some(("Searching diff files...".to_string(), Instant::now()));
+                self.tui_state.set_status_message("Searching diff files...");
                 let state = &mut self.state;
                 let tui_state = &mut self.tui_state;
                 let _ = self
@@ -463,10 +462,8 @@ impl Tui {
                 match self.client.search_codebase(&pattern, "diff").await {
                     Ok(result) => match core_search::search_outcome(&pattern, true, result) {
                         core_search::SearchOutcome::NoMatches => {
-                            self.state.status_message = Some((
-                                format!("No matches for /{pattern}/ in diff"),
-                                Instant::now(),
-                            ));
+                            self.tui_state
+                                .set_status_message(format!("No matches for /{pattern}/ in diff"));
                         }
                         core_search::SearchOutcome::ShowResults {
                             query,
@@ -480,18 +477,17 @@ impl Tui {
                                 selected: 0,
                                 scroll: 0,
                             });
-                            self.state.status_message = None;
+                            self.tui_state.clear_status_message();
                         }
                     },
                     Err(e) => {
-                        self.state.status_message =
-                            Some((format!("Search error: {e}"), Instant::now()));
+                        self.tui_state
+                            .set_status_message(format!("Search error: {e}"));
                     }
                 }
             }
             Command::FindDefinition { symbol } => {
-                self.state.status_message =
-                    Some(("Finding definition...".to_string(), Instant::now()));
+                self.tui_state.set_status_message("Finding definition...");
                 let state = &mut self.state;
                 let tui_state = &mut self.tui_state;
                 let _ = self
@@ -510,14 +506,17 @@ impl Tui {
                     Ok(result) => {
                         match core_search::definition_outcome(&symbol, result, &self.state.files) {
                             core_search::DefinitionOutcome::NoDefinitions => {
-                                self.state.status_message = Some((
-                                    format!("No definitions found for '{symbol}'"),
-                                    Instant::now(),
+                                self.tui_state.set_status_message(format!(
+                                    "No definitions found for '{symbol}'"
                                 ));
                             }
                             core_search::DefinitionOutcome::Navigate(target) => {
-                                self.state.status_message = None;
-                                navigate_to_location_from_tui(&mut self.state, target);
+                                self.tui_state.clear_status_message();
+                                navigate_to_location_from_tui(
+                                    &mut self.state,
+                                    &mut self.tui_state,
+                                    target,
+                                );
                             }
                             core_search::DefinitionOutcome::ShowResults {
                                 symbol,
@@ -528,13 +527,13 @@ impl Tui {
                                     definitions,
                                     selected: 0,
                                 });
-                                self.state.status_message = None;
+                                self.tui_state.clear_status_message();
                             }
                         }
                     }
                     Err(e) => {
-                        self.state.status_message =
-                            Some((format!("Definition error: {e}"), Instant::now()));
+                        self.tui_state
+                            .set_status_message(format!("Definition error: {e}"));
                     }
                 }
             }
@@ -542,18 +541,16 @@ impl Tui {
                 // view_file <path> <line>
                 // For now, show a status message since read-only view
                 // for non-diff files would require a separate content mode.
-                self.state.status_message = Some((
-                    format!("File not in diff: {path} {line_number}"),
-                    Instant::now(),
-                ));
+                self.tui_state
+                    .set_status_message(format!("File not in diff: {path} {line_number}"));
             }
             Command::Quit
             | Command::SetBlame(_)
             | Command::SetComments(_)
             | Command::SetWhitespaceIgnored(_)
             | Command::Unknown { .. } => {
-                self.state.status_message =
-                    Some(("Unsupported pending command".to_string(), Instant::now()));
+                self.tui_state
+                    .set_status_message("Unsupported pending command");
             }
         }
     }
@@ -618,8 +615,8 @@ impl Tui {
                 }
             }
             Err(e) => {
-                self.state.status_message =
-                    Some((format!("Failed to reload files: {e}"), Instant::now()));
+                self.tui_state
+                    .set_status_message(format!("Failed to reload files: {e}"));
             }
         }
     }
@@ -674,7 +671,8 @@ impl Tui {
             end: end_anchor,
             word_selected: true,
         });
-        self.state.status_message = Some((format!("Copied identifier: {word}"), Instant::now()));
+        self.tui_state
+            .set_status_message(format!("Copied identifier: {word}"));
         true
     }
 
@@ -684,7 +682,7 @@ impl Tui {
             if let Some(entry) = self.state.files.get(file_idx) {
                 let path = &entry.change.path;
                 copy_to_clipboard(path);
-                self.state.status_message = Some((format!("Copied: {path}"), Instant::now()));
+                self.tui_state.set_status_message(format!("Copied: {path}"));
             }
         }
     }
@@ -730,7 +728,11 @@ fn word_bounds_at_index(chars: &[char], click_idx: usize) -> Option<(usize, usiz
 
 /// Navigate to a resolved location target from the TUI runtime context without
 /// going through the key handler.
-fn navigate_to_location_from_tui(state: &mut AppState, target: core_search::LocationTarget) {
+fn navigate_to_location_from_tui(
+    state: &mut AppState,
+    tui_state: &mut TuiState,
+    target: core_search::LocationTarget,
+) {
     match target {
         core_search::LocationTarget::InDiff {
             file_index,
@@ -747,9 +749,8 @@ fn navigate_to_location_from_tui(state: &mut AppState, target: core_search::Loca
             line_number,
         } => {
             push_jump_stack_from_tui(state);
-            state.status_message = Some((
-                format!("Definition in file not in diff: {file_path}:{line_number}"),
-                Instant::now(),
+            tui_state.set_status_message(format!(
+                "Definition in file not in diff: {file_path}:{line_number}"
             ));
         }
     }
