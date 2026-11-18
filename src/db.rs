@@ -468,28 +468,19 @@ mod tests {
         (dir, db)
     }
 
-    fn new_comment(
-        base: &str,
-        head: &str,
-        file: &str,
-        lines: (i64, i64),
-        chars: (Option<i64>, Option<i64>),
-        anchor: &str,
-        ctx_before: &str,
-        ctx_after: &str,
-        body: &str,
-    ) -> NewComment {
+    /// Simple comment for tests that only care about scope + file + body.
+    fn simple_comment(file: &str, line: i64, anchor: &str, body: &str) -> NewComment {
         NewComment {
-            base_ref: base.to_string(),
-            head_ref: head.to_string(),
+            base_ref: "main".to_string(),
+            head_ref: "feat".to_string(),
             file_path: file.to_string(),
-            line_start: lines.0,
-            line_end: lines.1,
-            char_start: chars.0,
-            char_end: chars.1,
+            line_start: line,
+            line_end: line,
+            char_start: None,
+            char_end: None,
             anchor_text: anchor.to_string(),
-            context_before: ctx_before.to_string(),
-            context_after: ctx_after.to_string(),
+            context_before: String::new(),
+            context_after: String::new(),
             body: body.to_string(),
         }
     }
@@ -588,17 +579,19 @@ mod tests {
         let (_dir, db) = test_db();
 
         let comment = db
-            .create_comment(&new_comment(
-                "main",
-                "feat",
-                "src/lib.rs",
-                (10, 12),
-                (None, None),
-                "fn foo() {}",
-                "// before",
-                "// after",
-                "This should handle errors",
-            ))
+            .create_comment(&NewComment {
+                base_ref: "main".to_string(),
+                head_ref: "feat".to_string(),
+                file_path: "src/lib.rs".to_string(),
+                line_start: 10,
+                line_end: 12,
+                char_start: None,
+                char_end: None,
+                anchor_text: "fn foo() {}".to_string(),
+                context_before: "// before".to_string(),
+                context_after: "// after".to_string(),
+                body: "This should handle errors".to_string(),
+            })
             .unwrap();
 
         assert!(comment.id > 0);
@@ -618,19 +611,10 @@ mod tests {
     fn test_comment_char_selection() {
         let (_dir, db) = test_db();
 
-        let comment = db
-            .create_comment(&new_comment(
-                "main",
-                "feat",
-                "a.rs",
-                (5, 5),
-                (Some(10), Some(20)),
-                "some_var",
-                "",
-                "",
-                "Rename this",
-            ))
-            .unwrap();
+        let mut c = simple_comment("a.rs", 5, "some_var", "Rename this");
+        c.char_start = Some(10);
+        c.char_end = Some(20);
+        let comment = db.create_comment(&c).unwrap();
 
         let fetched = db.get_comment(comment.id).unwrap().unwrap();
         assert_eq!(fetched.char_start, Some(10));
@@ -641,43 +625,13 @@ mod tests {
     fn test_comment_list_filters() {
         let (_dir, db) = test_db();
 
-        db.create_comment(&new_comment(
-            "main",
-            "feat",
-            "a.rs",
-            (1, 1),
-            (None, None),
-            "x",
-            "",
-            "",
-            "comment 1",
-        ))
-        .unwrap();
-        db.create_comment(&new_comment(
-            "main",
-            "feat",
-            "b.rs",
-            (1, 1),
-            (None, None),
-            "y",
-            "",
-            "",
-            "comment 2",
-        ))
-        .unwrap();
+        db.create_comment(&simple_comment("a.rs", 1, "x", "comment 1"))
+            .unwrap();
+        db.create_comment(&simple_comment("b.rs", 1, "y", "comment 2"))
+            .unwrap();
 
         let c3 = db
-            .create_comment(&new_comment(
-                "main",
-                "feat",
-                "a.rs",
-                (5, 5),
-                (None, None),
-                "z",
-                "",
-                "",
-                "comment 3",
-            ))
+            .create_comment(&simple_comment("a.rs", 5, "z", "comment 3"))
             .unwrap();
         db.resolve_comment(c3.id).unwrap();
 
@@ -708,17 +662,7 @@ mod tests {
         let (_dir, db) = test_db();
 
         let comment = db
-            .create_comment(&new_comment(
-                "main",
-                "feat",
-                "a.rs",
-                (1, 1),
-                (None, None),
-                "x",
-                "",
-                "",
-                "original",
-            ))
+            .create_comment(&simple_comment("a.rs", 1, "x", "delete me"))
             .unwrap();
 
         let updated = db.update_comment(comment.id, "revised").unwrap();
@@ -734,17 +678,7 @@ mod tests {
         let (_dir, db) = test_db();
 
         let comment = db
-            .create_comment(&new_comment(
-                "main",
-                "feat",
-                "a.rs",
-                (1, 1),
-                (None, None),
-                "x",
-                "",
-                "",
-                "fix this",
-            ))
+            .create_comment(&simple_comment("a.rs", 1, "x", "fix this"))
             .unwrap();
         assert!(!comment.resolved);
 
@@ -762,17 +696,7 @@ mod tests {
         let (_dir, db) = test_db();
 
         let comment = db
-            .create_comment(&new_comment(
-                "main",
-                "feat",
-                "a.rs",
-                (1, 1),
-                (None, None),
-                "x",
-                "",
-                "",
-                "delete me",
-            ))
+            .create_comment(&simple_comment("a.rs", 1, "x", "delete me"))
             .unwrap();
 
         let deleted = db.delete_comment(comment.id).unwrap();
