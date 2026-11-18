@@ -2490,6 +2490,55 @@ mod tests {
     }
 
     #[test]
+    fn side_by_side_replacement_selection_captures_base_and_head_segments() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file_with_replacement_hunk("src/main.rs")],
+        );
+        app.state.render_variant = RenderVariant::SideBySide;
+        app.state.base_content = Some(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n\
+             line11\nline12\nline13\nline14\nbefore\nold\nafter\n"
+                .to_string(),
+        );
+        app.state.head_content = Some(
+            "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n\
+             line11\nline12\nline13\nline14\nbefore\nnew\nafter\n"
+                .to_string(),
+        );
+        app.state.pane_focus = PaneFocus::Diff;
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartLine),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Move(
+                    DiffCursorEffect::LineDown,
+                )),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+            ],
+        );
+
+        let capture = app
+            .state
+            .pending_comment_anchor
+            .as_ref()
+            .expect("side-by-side replacement selection should capture anchor data");
+        assert_eq!(capture.segments.len(), 2);
+        let base = segment_for_side(capture, CommentAnchorSide::Base)
+            .expect("side-by-side selection should capture a base segment");
+        let head = segment_for_side(capture, CommentAnchorSide::Head)
+            .expect("side-by-side selection should capture a head segment");
+        assert_eq!(base.line_start, 16);
+        assert_eq!(base.line_end, 16);
+        assert_eq!(base.anchor_text, "old");
+        assert_eq!(head.line_start, 16);
+        assert_eq!(head.line_end, 16);
+        assert_eq!(head.anchor_text, "new");
+    }
+
+    #[test]
     fn full_file_base_visual_selection_captures_base_segment() {
         let mut app = App::new(
             Config::default(),
@@ -2524,6 +2573,75 @@ mod tests {
         assert_eq!(base.line_end, 2);
         assert_eq!(base.anchor_text, "base two");
         assert_eq!(capture.anchor_text, "base two");
+    }
+
+    #[test]
+    fn full_file_head_visual_selection_captures_head_segment() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::HeadVersion;
+        app.state.base_content = Some("base one\nbase two\nbase three\n".to_string());
+        app.state.head_content = Some("head one\nhead two\nhead three\n".to_string());
+        app.state.pane_focus = PaneFocus::Diff;
+        app.state.diff_line_cursor = 1;
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartLine),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+            ],
+        );
+
+        let capture = app
+            .state
+            .pending_comment_anchor
+            .as_ref()
+            .expect("full-file head selection should capture anchor data");
+        assert_eq!(capture.segments.len(), 1);
+        assert!(segment_for_side(capture, CommentAnchorSide::Base).is_none());
+        let head = segment_for_side(capture, CommentAnchorSide::Head)
+            .expect("full-file head selection should capture a head segment");
+        assert_eq!(head.line_start, 2);
+        assert_eq!(head.line_end, 2);
+        assert_eq!(head.anchor_text, "head two");
+        assert_eq!(capture.anchor_text, "head two");
+    }
+
+    #[test]
+    fn hidden_comment_navigation_keeps_render_mode_and_reports_status() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![test_file("src/main.rs")],
+        );
+        let mut comment = stored_comment(8, "src/main.rs");
+        comment.line_start = 2;
+        comment.line_end = 2;
+        app.state.comments = vec![comment];
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::BaseVersion;
+        app.state.base_content = Some("base one\nbase two\n".to_string());
+        app.state.head_content = Some("head one\nhead two\n".to_string());
+
+        let output = app.apply_core_effects(
+            &RenderedViewport::new(vec!["base one", "base two"]),
+            vec![CoreEffect::NavigateUnresolvedComment(Direction::Next)],
+        );
+
+        assert_eq!(app.state.content_mode, ContentMode::FullFile);
+        assert_eq!(app.state.render_variant, RenderVariant::BaseVersion);
+        assert_eq!(app.state.selected_comment_id, Some(8));
+        assert_eq!(
+            output.status,
+            Some(StatusUpdate::Set(
+                "Comment is not visible in this view".to_string()
+            ))
+        );
     }
 
     #[test]
