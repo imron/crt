@@ -2,7 +2,7 @@
 
 ## Status
 
-Backlog.
+Complete.
 
 ## Overview
 
@@ -120,9 +120,9 @@ Add tests for:
 
 ## Acceptance Criteria
 
-- [ ] `AppState` owns `active_document`.
-- [ ] `DocumentKey` controls structural rebuilds.
-- [ ] Cursor movement does not rebuild structural document rows.
-- [ ] `AppModel` exposes the active document instead of rebuilding it.
-- [ ] Raw app state remains authoritative.
-- [ ] Existing user-visible behavior remains unchanged.
+- [x] `AppState` owns `active_document`.
+- [x] `DocumentKey` controls structural rebuilds.
+- [x] Cursor movement does not rebuild structural document rows.
+- [x] `AppModel` exposes the active document instead of rebuilding it.
+- [x] Raw app state remains authoritative.
+- [x] Existing user-visible behavior remains unchanged.

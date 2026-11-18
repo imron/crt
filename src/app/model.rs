@@ -948,13 +948,6 @@ pub struct DefinitionResultItem {
 
 impl AppModel {
     pub fn from_state(state: &AppState) -> Self {
-        Self::from_state_with_active_document(state, None)
-    }
-
-    pub fn from_state_with_active_document(
-        state: &AppState,
-        active_document: Option<ActiveDocument>,
-    ) -> Self {
         Self {
             revision: state.model_revision(),
             context: state.context.clone(),
@@ -965,7 +958,7 @@ impl AppModel {
             },
             file_list: file_list_model(state),
             diff: diff_panel_model(state),
-            active_document,
+            active_document: state.active_document.clone(),
             comments_panel: comments_panel_model(state),
             focus: state.pane_focus,
             search_results: search_results_model(state),
