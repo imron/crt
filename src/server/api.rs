@@ -111,6 +111,12 @@ pub async fn handle_init(
         }
     };
 
+    let diff_algorithm = init_params
+        .diff_algorithm
+        .as_deref()
+        .and_then(crate::config::DiffAlgorithm::parse)
+        .unwrap_or(crate::config::DiffAlgorithm::Patience);
+
     let ctx = ConnectionContext {
         repo_root: git_ctx.repo_root.clone(),
         worktree: worktree_path.clone(),
@@ -123,6 +129,7 @@ pub async fn handle_init(
         merge_base: merge_base.clone(),
         head: git_ctx.head.clone(),
         db_path,
+        diff_algorithm,
     };
 
     let result = protocol_context(&ctx);
@@ -213,25 +220,29 @@ async fn load_reviews_with_migration(
     }
 }
 
-fn summarize_diff(diff: &review_types::DiffContent) -> review_types::DiffSummary {
-    let mut additions = 0;
-    let mut deletions = 0;
-    for hunk in &diff.hunks {
-        for line in &hunk.lines {
-            match line.kind {
-                review_types::LineKind::Addition => additions += 1,
-                review_types::LineKind::Deletion => deletions += 1,
-                review_types::LineKind::Context => {}
-            }
-        }
-    }
-
-    review_types::DiffSummary {
-        hunks: diff.hunks.len(),
-        additions,
-        deletions,
-        is_binary: diff.is_binary,
-        diff_hash: diff.diff_hash.clone(),
+fn review_status_for_diff(
+    reviews: &std::collections::HashMap<String, crate::db::StoredReview>,
+    path: &str,
+    diff_hash: &str,
+) -> review_types::ReviewStatus {
+    match reviews.get(path) {
+        None => review_types::ReviewStatus::Unreviewed,
+        Some(review) if review.diff_hash == diff_hash => review_types::ReviewStatus::Reviewed {
+            at: review.reviewed_at.clone(),
+            reviewed_commit: if review.reviewed_commit.is_empty() {
+                None
+            } else {
+                Some(review.reviewed_commit.clone())
+            },
+        },
+        Some(review) => review_types::ReviewStatus::Changed {
+            at: review.reviewed_at.clone(),
+            reviewed_commit: if review.reviewed_commit.is_empty() {
+                None
+            } else {
+                Some(review.reviewed_commit.clone())
+            },
+        },
     }
 }
 
@@ -249,6 +260,7 @@ pub async fn handle_list_changed_files(
     let worktree = ctx.worktree.clone();
     let merge_base = ctx.merge_base.to_string();
     let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
+    let algorithm = ctx.diff_algorithm;
 
     // Git operations are blocking — run on the blocking thread pool.
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
@@ -258,39 +270,11 @@ pub async fn handle_list_changed_files(
         } else {
             git::DiffBase::Commit(&merge_base)
         };
-        let changes = repo.list_changed_files_workdir_for_base(base)?;
+        let file_diffs = repo.diff_all_files_workdir_for_base(base, algorithm, false, true)?;
 
-        let mut files = Vec::new();
-        for change in changes {
-            let diff = repo.diff_file_workdir_opts_for_base(
-                base,
-                &change.path,
-                crate::config::DiffAlgorithm::Patience,
-                false,
-            )?;
-
-            let status = match reviews.get(&change.path) {
-                None => review_types::ReviewStatus::Unreviewed,
-                Some(review) if review.diff_hash == diff.diff_hash => {
-                    review_types::ReviewStatus::Reviewed {
-                        at: review.reviewed_at.clone(),
-                        reviewed_commit: if review.reviewed_commit.is_empty() {
-                            None
-                        } else {
-                            Some(review.reviewed_commit.clone())
-                        },
-                    }
-                }
-                Some(review) => review_types::ReviewStatus::Changed {
-                    at: review.reviewed_at.clone(),
-                    reviewed_commit: if review.reviewed_commit.is_empty() {
-                        None
-                    } else {
-                        Some(review.reviewed_commit.clone())
-                    },
-                },
-            };
-
+        let mut files = Vec::with_capacity(file_diffs.len());
+        for (change, diff) in file_diffs {
+            let status = review_status_for_diff(&reviews, &change.path, &diff.diff_hash);
             files.push(review_types::FileEntry {
                 change,
                 status,
@@ -336,6 +320,7 @@ pub async fn handle_list_file_statuses(
     let worktree = ctx.worktree.clone();
     let merge_base = ctx.merge_base.to_string();
     let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
+    let algorithm = ctx.diff_algorithm;
 
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let repo = git::Repo::open(&worktree)?;
@@ -344,39 +329,12 @@ pub async fn handle_list_file_statuses(
         } else {
             git::DiffBase::Commit(&merge_base)
         };
-        let changes = repo.list_changed_files_workdir_for_base(base)?;
+        // Status list only needs hashes/stats — skip storing hunk line bodies.
+        let file_diffs = repo.summarize_all_files_workdir_for_base(base, algorithm, false)?;
 
-        let mut files = Vec::new();
-        for change in changes {
-            let diff = repo.diff_file_workdir_opts_for_base(
-                base,
-                &change.path,
-                crate::config::DiffAlgorithm::Patience,
-                false,
-            )?;
-            let status = match reviews.get(&change.path) {
-                None => review_types::ReviewStatus::Unreviewed,
-                Some(review) if review.diff_hash == diff.diff_hash => {
-                    review_types::ReviewStatus::Reviewed {
-                        at: review.reviewed_at.clone(),
-                        reviewed_commit: if review.reviewed_commit.is_empty() {
-                            None
-                        } else {
-                            Some(review.reviewed_commit.clone())
-                        },
-                    }
-                }
-                Some(review) => review_types::ReviewStatus::Changed {
-                    at: review.reviewed_at.clone(),
-                    reviewed_commit: if review.reviewed_commit.is_empty() {
-                        None
-                    } else {
-                        Some(review.reviewed_commit.clone())
-                    },
-                },
-            };
-
-            let diff = summarize_diff(&diff);
+        let mut files = Vec::with_capacity(file_diffs.len());
+        for (change, diff) in file_diffs {
+            let status = review_status_for_diff(&reviews, &change.path, &diff.diff_hash);
             files.push(review_types::FileStatusEntry {
                 change,
                 status,
@@ -600,6 +558,7 @@ pub async fn handle_get_file_diff(
     let worktree = ctx.worktree.clone();
     let merge_base = ctx.merge_base.to_string();
     let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
+    let algorithm = ctx.diff_algorithm;
     let file_path = diff_params.file_path;
 
     let git_result = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
@@ -609,12 +568,7 @@ pub async fn handle_get_file_diff(
         } else {
             git::DiffBase::Commit(&merge_base)
         };
-        let diff = repo.diff_file_workdir_opts_for_base(
-            base,
-            &file_path,
-            crate::config::DiffAlgorithm::Patience,
-            false,
-        )?;
+        let diff = repo.diff_file_workdir_opts_for_base(base, &file_path, algorithm, false)?;
         Ok(review_types::GetFileDiffResult { diff })
     })
     .await;
@@ -661,6 +615,7 @@ pub async fn handle_mark_reviewed(
     let worktree = ctx.worktree.clone();
     let merge_base = ctx.merge_base.to_string();
     let root = matches!(ctx.review_base, git::ReviewBase::Root { .. });
+    let algorithm = ctx.diff_algorithm;
     let head_ref = ctx.head_scope_key();
     let file_path = p.file_path.clone();
 
@@ -675,12 +630,7 @@ pub async fn handle_mark_reviewed(
             } else {
                 git::DiffBase::Commit(&mb)
             };
-            let diff = repo.diff_file_workdir_opts_for_base(
-                base,
-                &fp,
-                crate::config::DiffAlgorithm::Patience,
-                false,
-            )?;
+            let diff = repo.diff_file_workdir_opts_for_base(base, &fp, algorithm, false)?;
             let head_oid = repo.resolve_commit("HEAD")?;
             Ok((diff.diff_hash, head_oid))
         })
@@ -722,22 +672,24 @@ pub async fn handle_mark_reviewed(
         }
     };
 
-    // Broadcast notification.
-    let _ = notify_tx.send(Notification {
-        base_ref: merge_base,
-        head_ref,
-        kind: NotificationKind::ReviewChanged {
-            file_path: file_path.clone(),
-        },
-    });
-
     let result = review_types::ReviewActionResult {
-        file_path,
+        file_path: file_path.clone(),
         status: review_types::ReviewStatus::Reviewed {
             at: reviewed_at,
             reviewed_commit: Some(reviewed_commit),
         },
     };
+
+    // Broadcast notification with the new status so clients can patch
+    // locally without reloading every file diff.
+    let _ = notify_tx.send(Notification {
+        base_ref: merge_base,
+        head_ref,
+        kind: NotificationKind::ReviewChanged {
+            file_path: file_path.clone(),
+            status: Some(result.status.clone()),
+        },
+    });
 
     match serde_json::to_value(result) {
         Ok(v) => JsonRpcResponse::success(id.clone(), v),
@@ -785,19 +737,21 @@ pub async fn handle_unmark_reviewed(
         }
     }
 
-    // Broadcast notification.
+    let result = review_types::ReviewActionResult {
+        file_path: p.file_path.clone(),
+        status: review_types::ReviewStatus::Unreviewed,
+    };
+
+    // Broadcast notification with the new status so clients can patch
+    // locally without reloading every file diff.
     let _ = notify_tx.send(Notification {
         base_ref: merge_base,
         head_ref,
         kind: NotificationKind::ReviewChanged {
             file_path: p.file_path.clone(),
+            status: Some(result.status.clone()),
         },
     });
-
-    let result = review_types::ReviewActionResult {
-        file_path: p.file_path,
-        status: review_types::ReviewStatus::Unreviewed,
-    };
 
     match serde_json::to_value(result) {
         Ok(v) => JsonRpcResponse::success(id.clone(), v),
@@ -3248,6 +3202,7 @@ mod tests {
                 resolved_commit: git::CommitId::new("head-commit"),
             },
             db_path: PathBuf::from("/repo/.crt/reviews.db"),
+            diff_algorithm: crate::config::DiffAlgorithm::Patience,
         }
     }
 
@@ -3269,6 +3224,7 @@ mod tests {
                 commit: git::CommitId::new(head),
             },
             db_path: repo_path.join(".crt/reviews.db"),
+            diff_algorithm: crate::config::DiffAlgorithm::Patience,
         }
     }
 
@@ -3289,6 +3245,7 @@ mod tests {
             merge_base: git::CommitId::new(repo.resolve_commit("HEAD~1").expect("base commit")),
             head: repo_context.head,
             db_path: repo_context.repo_root.join(".crt/reviews.db"),
+            diff_algorithm: crate::config::DiffAlgorithm::Patience,
         };
         state.register_session(&ctx).await;
 

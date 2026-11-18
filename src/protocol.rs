@@ -162,7 +162,12 @@ pub struct Notification {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NotificationKind {
     /// A file's review status changed.
-    ReviewChanged { file_path: String },
+    ReviewChanged {
+        file_path: String,
+        /// New review status when known. Older servers may omit this field.
+        #[serde(default)]
+        status: Option<crate::review_types::ReviewStatus>,
+    },
     /// A comment was created, updated, resolved, or deleted.
     CommentChanged { comment_id: i64 },
     /// Reviews were cleared/reset.

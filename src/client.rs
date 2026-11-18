@@ -146,6 +146,7 @@ struct InitArgs {
     worktree: String,
     base_ref: String,
     root: bool,
+    diff_algorithm: Option<String>,
 }
 
 /// Async client connected to a crt server.
@@ -325,6 +326,19 @@ impl Client {
         base_ref: &str,
         root: bool,
     ) -> Result<InitResult> {
+        self.init_with_options(worktree, base_ref, root, None).await
+    }
+
+    /// Initialize a review session, optionally requesting a specific server-side
+    /// diff algorithm so review hashes match the client's display algorithm.
+    pub async fn init_with_options(
+        &self,
+        worktree: &str,
+        base_ref: &str,
+        root: bool,
+        diff_algorithm: Option<crate::config::DiffAlgorithm>,
+    ) -> Result<InitResult> {
+        let diff_algorithm = diff_algorithm.map(|algo| algo.label().to_string());
         let result = self
             .call(
                 RpcMethod::Init,
@@ -332,6 +346,7 @@ impl Client {
                     worktree: worktree.to_string(),
                     base_ref: base_ref.to_string(),
                     root,
+                    diff_algorithm: diff_algorithm.clone(),
                 },
             )
             .await?;
@@ -339,6 +354,7 @@ impl Client {
             worktree: worktree.to_string(),
             base_ref: base_ref.to_string(),
             root,
+            diff_algorithm,
         });
         Ok(result)
     }
@@ -350,6 +366,7 @@ impl Client {
                 worktree: init_args.worktree.clone(),
                 base_ref: init_args.base_ref.clone(),
                 root: init_args.root,
+                diff_algorithm: init_args.diff_algorithm.clone(),
             },
         )
         .await
