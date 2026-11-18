@@ -432,13 +432,14 @@ impl Client {
     pub async fn list_current_and_previous_unresolved_comments(
         &self,
         file_path: Option<&str>,
-        include_current_resolved: bool,
+        current_scope: CommentScope,
     ) -> Result<review_types::ListCommentsResult> {
-        let current_scope = if include_current_resolved {
-            CommentScope::CurrentWithResolved
-        } else {
-            CommentScope::CurrentUnresolved
-        };
+        if current_scope.include_previous_bases() {
+            bail!(
+                "current comment scope cannot include previous bases; \
+                 previous unresolved comments are appended separately"
+            );
+        }
         let mut result = self.list_comments(file_path, current_scope).await?;
         let previous_unresolved = self
             .list_comments(file_path, CommentScope::PreviousBasesUnresolved)

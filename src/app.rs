@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 
 use self::model::AppModel;
-use crate::client::{Client, ClientEvent, Notification};
+use crate::client::{Client, ClientEvent, CommentScope, Notification};
 use crate::config::Config;
 use crate::core::TextAnchor;
 use crate::core::command::Command;
@@ -207,7 +207,7 @@ impl App {
             }
         };
         let comments = match client
-            .list_current_and_previous_unresolved_comments(None, true)
+            .list_current_and_previous_unresolved_comments(None, CommentScope::CurrentWithResolved)
             .await
         {
             Ok(result) => result.comments,
@@ -296,7 +296,7 @@ impl App {
 
     pub async fn list_comments(&self) -> Result<crate::review_types::ListCommentsResult> {
         self.client()?
-            .list_current_and_previous_unresolved_comments(None, true)
+            .list_current_and_previous_unresolved_comments(None, CommentScope::CurrentWithResolved)
             .await
     }
 

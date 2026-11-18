@@ -867,7 +867,7 @@ async fn test_client_visible_comments_include_previous_base_unresolved_comments(
     assert!(exact_current.comments.is_empty());
 
     let visible = client
-        .list_current_and_previous_unresolved_comments(None, false)
+        .list_current_and_previous_unresolved_comments(None, CommentScope::CurrentUnresolved)
         .await
         .unwrap();
     assert_eq!(visible.comments.len(), 1);
