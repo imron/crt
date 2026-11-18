@@ -1,4 +1,5 @@
 use crate::app::AppState;
+use crate::core::text::char_to_byte_index;
 
 pub trait AppViewport {
     fn hunk_start_rows(&self) -> &[usize];
@@ -26,7 +27,7 @@ pub trait AppViewport {
             Some(line) => line.as_str(),
             None => return "",
         };
-        let start = self.diff_content_start_col().min(line.len());
+        let start = char_to_byte_index(line, self.diff_content_start_col()).unwrap_or(line.len());
         line[start..].trim_end()
     }
 

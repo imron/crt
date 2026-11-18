@@ -5,6 +5,7 @@ use crate::app::{AppState, JumpLocation};
 use crate::core::command::Command;
 use crate::core::navigation::{self as core_navigation, Direction, FileNavigationScope};
 use crate::core::search as core_search;
+use crate::core::text::suffix_from_char;
 use crate::review_types::{ContentMode, PaneFocus, RenderVariant, ReviewStatus};
 
 pub fn navigate_to_search_match(
@@ -192,20 +193,16 @@ fn content_for_word_extraction<'a>(
 ) -> Option<&'a str> {
     let line = view.diff_rendered_text().get(state.diff_line_cursor)?;
     let gutter = view.diff_gutter_cols();
-    let content = if gutter < line.len() {
-        &line[gutter..]
-    } else {
-        line.as_str()
-    };
-    let content = if content.len() >= 3 {
-        let prefix = &content[..3];
+    let content = suffix_from_char(line, gutter).unwrap_or("");
+    let content = if content.chars().count() >= 3 {
+        let prefix: String = content.chars().take(3).collect();
         if prefix == "+ "
             || prefix == "- "
             || prefix == "  "
             || prefix.starts_with(" + ")
             || prefix.starts_with(" - ")
         {
-            content[3..].trim_start()
+            suffix_from_char(content, 3).unwrap_or("").trim_start()
         } else {
             content.trim()
         }
@@ -409,5 +406,63 @@ mod tests {
             word_at_char_offset("let caf\u{e9}_value = 1", 6),
             Some("caf\u{e9}_value".to_string())
         );
+    }
+
+    #[test]
+    fn word_extraction_skips_multibyte_comment_marker_gutter() {
+        struct View {
+            lines: Vec<String>,
+        }
+
+        impl AppViewport for View {
+            fn hunk_start_rows(&self) -> &[usize] {
+                &[]
+            }
+
+            fn hunk_end_rows(&self) -> &[usize] {
+                &[]
+            }
+
+            fn hunk_first_change_rows(&self) -> &[usize] {
+                &[]
+            }
+
+            fn diff_gutter_cols(&self) -> usize {
+                8
+            }
+
+            fn diff_content_height(&self) -> usize {
+                self.lines.len()
+            }
+
+            fn diff_view_height(&self) -> usize {
+                self.lines.len()
+            }
+
+            fn diff_rendered_text(&self) -> &[String] {
+                &self.lines
+            }
+        }
+
+        let mut state = AppState::new(
+            crate::config::DiffAlgorithm::Myers,
+            crate::review_types::ConnectionContext {
+                repo_root: "/repo".to_string(),
+                worktree: "/repo".to_string(),
+                base_ref: "main".to_string(),
+                head_ref: "feature".to_string(),
+                merge_base: "abc123".to_string(),
+            },
+            Vec::new(),
+            40,
+        );
+        state.diff_line_cursor = 0;
+        state.diff_col_cursor = 0;
+
+        let view = View {
+            lines: vec![" 25  25┃   on specific lines.".to_string()],
+        };
+
+        assert_eq!(extract_word_at_cursor(&state, &view).as_deref(), Some("on"));
     }
 }

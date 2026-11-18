@@ -3,6 +3,7 @@ use super::output::AppOutput;
 use super::viewport::AppViewport;
 use crate::app::AppState;
 use crate::core::navigation::Direction;
+use crate::core::text::char_to_byte_index;
 
 pub fn apply_diff_search(
     state: &mut AppState,
@@ -119,7 +120,7 @@ fn recompute_diff_search_matches(state: &mut AppState, view: &impl AppViewport) 
         }
     };
     for (row, line) in view.diff_rendered_text().iter().enumerate() {
-        let search_start = view.diff_gutter_cols().min(line.len());
+        let search_start = char_to_byte_index(line, view.diff_gutter_cols()).unwrap_or(line.len());
         let content = &line[search_start..];
         for m in re.find_iter(content) {
             if m.start() == m.end() {
@@ -146,4 +147,74 @@ fn diff_search_jump_to_current(state: &mut AppState, view: &impl AppViewport) {
     let (row, _, _) = state.diff_search_matches[idx];
     state.diff_line_cursor = row;
     clamp_cursor_and_scroll(state, view);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct View {
+        lines: Vec<String>,
+    }
+
+    impl AppViewport for View {
+        fn hunk_start_rows(&self) -> &[usize] {
+            &[]
+        }
+
+        fn hunk_end_rows(&self) -> &[usize] {
+            &[]
+        }
+
+        fn hunk_first_change_rows(&self) -> &[usize] {
+            &[]
+        }
+
+        fn diff_gutter_cols(&self) -> usize {
+            8
+        }
+
+        fn diff_content_height(&self) -> usize {
+            self.lines.len()
+        }
+
+        fn diff_view_height(&self) -> usize {
+            self.lines.len()
+        }
+
+        fn diff_rendered_text(&self) -> &[String] {
+            &self.lines
+        }
+    }
+
+    fn state() -> AppState {
+        let mut state = AppState::new(
+            crate::config::DiffAlgorithm::Myers,
+            crate::review_types::ConnectionContext {
+                repo_root: "/repo".to_string(),
+                worktree: "/repo".to_string(),
+                base_ref: "main".to_string(),
+                head_ref: "feature".to_string(),
+                merge_base: "abc123".to_string(),
+            },
+            Vec::new(),
+            40,
+        );
+        state.diff_search_query = Some("specific".to_string());
+        state
+    }
+
+    #[test]
+    fn diff_search_skips_multibyte_comment_marker_gutter() {
+        let mut state = state();
+        let view = View {
+            lines: vec![" 25  25┃   on specific lines.".to_string()],
+        };
+
+        assert!(recompute_diff_search_matches(&mut state, &view).is_none());
+
+        assert_eq!(state.diff_search_matches.len(), 1);
+        let (_, start, end) = state.diff_search_matches[0];
+        assert_eq!(&view.lines[0][start..end], "specific");
+    }
 }

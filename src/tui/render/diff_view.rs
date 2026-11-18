@@ -25,6 +25,7 @@ use super::super::state::TuiState;
 use crate::app::VisualSelectionMode;
 use crate::app::model::{AppModel, TextRange, VisualSelection};
 use crate::config::StyleConfig;
+use crate::core::text::char_to_byte_index;
 use crate::review_types::PaneFocus;
 
 pub use self::cache::DiffCache;
@@ -323,7 +324,7 @@ fn render_search_highlights(
         .ok()?;
     let mut matches = Vec::new();
     for (row, line) in rendered_text.iter().enumerate() {
-        let search_start = gutter_cols.min(line.len());
+        let search_start = char_to_byte_index(line, gutter_cols).unwrap_or(line.len());
         let content = &line[search_start..];
         for m in re.find_iter(content) {
             if m.start() == m.end() {
