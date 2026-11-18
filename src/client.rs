@@ -278,14 +278,21 @@ impl Client {
     }
 
     // -----------------------------------------------------------------------
-    // Comments (stubs)
+    // Comments
     // -----------------------------------------------------------------------
+
+    pub async fn create_comment(
+        &self,
+        params: review_types::CreateCommentParams,
+    ) -> Result<review_types::CommentResult> {
+        self.call("create_comment", params).await
+    }
 
     pub async fn list_comments(
         &self,
         file_path: Option<&str>,
         include_resolved: bool,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<review_types::ListCommentsResult> {
         self.call(
             "list_comments",
             serde_json::json!({
@@ -296,18 +303,31 @@ impl Client {
         .await
     }
 
-    pub async fn get_comment(&self, id: i64) -> Result<serde_json::Value> {
+    pub async fn get_comment(&self, id: i64) -> Result<review_types::CommentResult> {
         self.call("get_comment", serde_json::json!({ "id": id }))
             .await
     }
 
-    pub async fn resolve_comment(&self, id: i64) -> Result<serde_json::Value> {
+    pub async fn update_comment(&self, id: i64, body: &str) -> Result<review_types::CommentResult> {
+        self.call(
+            "update_comment",
+            serde_json::json!({ "id": id, "body": body }),
+        )
+        .await
+    }
+
+    pub async fn resolve_comment(&self, id: i64) -> Result<review_types::CommentResult> {
         self.call("resolve_comment", serde_json::json!({ "id": id }))
             .await
     }
 
-    pub async fn unresolve_comment(&self, id: i64) -> Result<serde_json::Value> {
+    pub async fn unresolve_comment(&self, id: i64) -> Result<review_types::CommentResult> {
         self.call("unresolve_comment", serde_json::json!({ "id": id }))
+            .await
+    }
+
+    pub async fn delete_comment(&self, id: i64) -> Result<review_types::DeleteCommentResult> {
+        self.call("delete_comment", serde_json::json!({ "id": id }))
             .await
     }
 

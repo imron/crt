@@ -4,6 +4,7 @@
 //! handshake, tool discovery, schemas, and stdio transport; tool methods
 //! forward to the shared reconnecting crt client.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -40,6 +41,27 @@ pub struct SelectReviewSessionParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetFileDiffParams {
+    #[schemars(description = "Path to a changed file, relative to the review worktree")]
+    pub file_path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListReviewCommentsParams {
+    #[schemars(description = "Optional changed-file path to filter comments by")]
+    pub file_path: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Include resolved comments as well as unresolved comments")]
+    pub include_resolved: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CommentIdParams {
+    #[schemars(description = "Review comment id returned by list_review_comments")]
+    pub id: i64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FilePathParams {
     #[schemars(description = "Path to a changed file, relative to the review worktree")]
     pub file_path: String,
 }
@@ -140,6 +162,91 @@ impl CrtMcp {
     }
 
     #[tool(
+        description = "List review comments in the selected review scope. Call select_review_session first. By default only unresolved comments are returned; pass include_resolved=true to include resolved comments. Optionally pass file_path to return comments for one changed file."
+    )]
+    async fn list_review_comments(
+        &self,
+        Parameters(params): Parameters<ListReviewCommentsParams>,
+    ) -> String {
+        if let Err(e) = self.require_selected().await {
+            return format!("Error: {e:#}");
+        }
+        match self
+            .client
+            .list_comments(params.file_path.as_deref(), params.include_resolved)
+            .await
+        {
+            Ok(result) => to_json(&result),
+            Err(e) => format!("Error listing review comments: {e:#}"),
+        }
+    }
+
+    #[tool(
+        description = "Return full detail for one review comment in the selected review scope, including line range, character range, anchor text, surrounding context, resolved status, timestamps, and anchor status. Call select_review_session first."
+    )]
+    async fn get_comment_detail(&self, Parameters(params): Parameters<CommentIdParams>) -> String {
+        if let Err(e) = self.require_selected().await {
+            return format!("Error: {e:#}");
+        }
+        match self.client.get_comment(params.id).await {
+            Ok(result) => to_json(&result),
+            Err(e) => format!("Error getting review comment: {e:#}"),
+        }
+    }
+
+    #[tool(
+        description = "Mark one review comment resolved in the selected review scope. Use the id returned by list_review_comments. Call select_review_session first."
+    )]
+    async fn resolve_comment(&self, Parameters(params): Parameters<CommentIdParams>) -> String {
+        if let Err(e) = self.require_selected().await {
+            return format!("Error: {e:#}");
+        }
+        match self.client.resolve_comment(params.id).await {
+            Ok(result) => to_json(&result),
+            Err(e) => format!("Error resolving review comment: {e:#}"),
+        }
+    }
+
+    #[tool(
+        description = "Mark one resolved review comment unresolved in the selected review scope. Use the id returned by list_review_comments with include_resolved=true. Call select_review_session first."
+    )]
+    async fn unresolve_comment(&self, Parameters(params): Parameters<CommentIdParams>) -> String {
+        if let Err(e) = self.require_selected().await {
+            return format!("Error: {e:#}");
+        }
+        match self.client.unresolve_comment(params.id).await {
+            Ok(result) => to_json(&result),
+            Err(e) => format!("Error unresolving review comment: {e:#}"),
+        }
+    }
+
+    #[tool(
+        description = "Mark a changed file reviewed in the selected review scope. Use a file_path returned by list_changed_files. Call select_review_session first."
+    )]
+    async fn mark_file_reviewed(&self, Parameters(params): Parameters<FilePathParams>) -> String {
+        if let Err(e) = self.require_selected().await {
+            return format!("Error: {e:#}");
+        }
+        match self.client.mark_reviewed(&params.file_path).await {
+            Ok(result) => to_json(&result),
+            Err(e) => format!("Error marking file reviewed: {e:#}"),
+        }
+    }
+
+    #[tool(
+        description = "Clear a changed file's reviewed state in the selected review scope. Use a file_path returned by list_changed_files. Call select_review_session first."
+    )]
+    async fn unmark_file_reviewed(&self, Parameters(params): Parameters<FilePathParams>) -> String {
+        if let Err(e) = self.require_selected().await {
+            return format!("Error: {e:#}");
+        }
+        match self.client.unmark_reviewed(&params.file_path).await {
+            Ok(result) => to_json(&result),
+            Err(e) => format!("Error unmarking file reviewed: {e:#}"),
+        }
+    }
+
+    #[tool(
         description = "Search the selected review worktree or current diff for a regular expression."
     )]
     async fn search_codebase(
@@ -175,35 +282,61 @@ impl CrtMcp {
     }
 
     #[tool(
-        description = "Summarize the selected review scope with changed-file counts and per-file review status."
+        description = "Summarize the selected review scope with changed-file counts, review status, and review comment counts. Call select_review_session first."
     )]
     async fn list_review_summary(&self, Parameters(_params): Parameters<EmptyParams>) -> String {
         let context = match self.require_selected().await {
             Ok(context) => context,
             Err(e) => return format!("Error: {e:#}"),
         };
-        match self.client.list_changed_files().await {
-            Ok(files) => {
-                let value = serde_json::json!({
-                    "base_ref": context.base_ref,
-                    "head_ref": context.head_ref,
-                    "merge_base": context.merge_base,
-                    "total_files": files.files.len(),
-                    "reviewed_files": files.files.iter().filter(|entry| matches!(
-                        entry.status,
-                        crate::review_types::ReviewStatus::Reviewed { .. }
-                    )).count(),
-                    "unreviewed_files": files.files.iter().filter(|entry| matches!(
-                        entry.status,
-                        crate::review_types::ReviewStatus::Unreviewed
-                            | crate::review_types::ReviewStatus::Changed { .. }
-                    )).count(),
-                    "files": files.files,
+        let files = match self.client.list_changed_files().await {
+            Ok(files) => files,
+            Err(e) => return format!("Error summarizing review: {e:#}"),
+        };
+        let comments = match self.client.list_comments(None, true).await {
+            Ok(comments) => comments,
+            Err(e) => return format!("Error summarizing review comments: {e:#}"),
+        };
+        let mut per_file_comments = BTreeMap::<String, serde_json::Value>::new();
+        for comment in &comments.comments {
+            let entry = per_file_comments
+                .entry(comment.file_path.clone())
+                .or_insert_with(|| {
+                    serde_json::json!({
+                        "total": 0,
+                        "resolved": 0,
+                        "unresolved": 0,
+                    })
                 });
-                to_json(&value)
+            entry["total"] = serde_json::json!(entry["total"].as_u64().unwrap_or(0) + 1);
+            if comment.resolved {
+                entry["resolved"] = serde_json::json!(entry["resolved"].as_u64().unwrap_or(0) + 1);
+            } else {
+                entry["unresolved"] =
+                    serde_json::json!(entry["unresolved"].as_u64().unwrap_or(0) + 1);
             }
-            Err(e) => format!("Error summarizing review: {e:#}"),
         }
+        let value = serde_json::json!({
+            "base_ref": context.base_ref,
+            "head_ref": context.head_ref,
+            "merge_base": context.merge_base,
+            "total_files": files.files.len(),
+            "reviewed_files": files.files.iter().filter(|entry| matches!(
+                entry.status,
+                crate::review_types::ReviewStatus::Reviewed { .. }
+            )).count(),
+            "unreviewed_files": files.files.iter().filter(|entry| matches!(
+                entry.status,
+                crate::review_types::ReviewStatus::Unreviewed
+                    | crate::review_types::ReviewStatus::Changed { .. }
+            )).count(),
+            "total_comments": comments.comments.len(),
+            "resolved_comments": comments.comments.iter().filter(|comment| comment.resolved).count(),
+            "unresolved_comments": comments.comments.iter().filter(|comment| !comment.resolved).count(),
+            "comments_by_file": per_file_comments,
+            "files": files.files,
+        });
+        to_json(&value)
     }
 }
 
@@ -329,6 +462,7 @@ fn to_json(value: &impl Serialize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::UnixListener;
 
     #[test]
     fn select_session_can_use_index() {
@@ -358,6 +492,36 @@ mod tests {
         let err = select_session(&params, &sessions).unwrap_err();
 
         assert!(err.to_string().contains("Multiple active review sessions"));
+    }
+
+    #[tokio::test]
+    async fn tool_router_advertises_review_comment_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("server.sock");
+        let _listener = UnixListener::bind(&socket_path).unwrap();
+        let client = Client::connect(&socket_path).await.unwrap();
+        let mcp = CrtMcp::new(Arc::new(client), None);
+        let mut names = mcp.list_tool_names();
+        names.sort();
+
+        assert_eq!(
+            names,
+            vec![
+                "find_definition",
+                "get_comment_detail",
+                "get_file_diff",
+                "list_changed_files",
+                "list_review_comments",
+                "list_review_sessions",
+                "list_review_summary",
+                "mark_file_reviewed",
+                "resolve_comment",
+                "search_codebase",
+                "select_review_session",
+                "unmark_file_reviewed",
+                "unresolve_comment",
+            ]
+        );
     }
 
     fn session(repo_root: &str, base_ref: &str) -> ActiveReviewSession {
