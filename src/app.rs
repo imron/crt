@@ -145,13 +145,16 @@ pub enum FileListSectionFocus {
     UnresolvedComments,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SavedFilePosition {
     pub diff_scroll: usize,
     pub diff_line_cursor: usize,
     pub diff_col_cursor: usize,
     pub content_mode: ContentMode,
     pub render_variant: RenderVariant,
+    /// File content identity at save time. Restore is skipped when this no
+    /// longer matches the selected file's `content_id`.
+    pub content_id: String,
 }
 
 /// Active document projection plus state expressed in that document's row space.
@@ -748,32 +751,34 @@ impl App {
     /// already-loaded full diffs when the hash is unchanged.
     fn merge_file_statuses(&mut self, files: Vec<FileEntry>) {
         let selected_path = review::selected_path(&self.state.files, self.state.selected_file);
-        let previous_content_id = self
-            .state
-            .selected_file_entry()
-            .map(|entry| entry.diff.content_id.clone());
 
         let files = preserve_loaded_diffs(&self.state.files, files);
-        let file_set_changed = file_path_set_changed(&self.state.files, &files);
         self.state.files = files;
         review::sort_files(&mut self.state.files);
         self.state.selected_file =
             review::restore_selection_by_path(&self.state.files, selected_path.as_deref());
         self.state.file_list_section_focus = self.state.focus_for_file(self.state.selected_file);
 
-        let selected_content_id = self
-            .state
-            .selected_file_entry()
-            .map(|entry| entry.diff.content_id.clone());
+        let still_same_file = selected_path.as_deref().is_some_and(|path| {
+            self.state
+                .files
+                .get(self.state.selected_file)
+                .is_some_and(|entry| entry.change.path == path)
+        });
         let selected_needs_diff = self
             .state
             .selected_file_entry()
             .is_some_and(|entry| entry.diff.hunks.is_empty());
 
-        if file_set_changed || previous_content_id != selected_content_id || selected_needs_diff {
-            self.state.on_file_changed();
+        if still_same_file {
+            // Stay put if the open file mutated under us; reload bodies only.
+            if selected_needs_diff {
+                self.state.refresh_selected_file_content();
+            } else {
+                self.state.mark_model_changed();
+            }
         } else {
-            self.state.mark_model_changed();
+            self.state.on_file_changed();
         }
     }
 
@@ -1167,15 +1172,6 @@ fn preserve_loaded_diffs(previous: &[FileEntry], mut next: Vec<FileEntry>) -> Ve
     next
 }
 
-fn file_path_set_changed(previous: &[FileEntry], next: &[FileEntry]) -> bool {
-    if previous.len() != next.len() {
-        return true;
-    }
-    let prev: BTreeSet<&str> = previous.iter().map(|e| e.change.path.as_str()).collect();
-    let next: BTreeSet<&str> = next.iter().map(|e| e.change.path.as_str()).collect();
-    prev != next
-}
-
 fn upsert_comment(
     comments: &mut Vec<crate::review_types::Comment>,
     comment: crate::review_types::Comment,
@@ -1566,12 +1562,11 @@ impl AppState {
     }
 
     pub fn save_selected_file_position(&mut self) {
-        let Some(path) = self
-            .selected_file_entry()
-            .map(|entry| entry.change.path.clone())
-        else {
+        let Some(entry) = self.selected_file_entry() else {
             return;
         };
+        let path = entry.change.path.clone();
+        let content_id = entry.diff.content_id.clone();
         self.saved_file_positions.insert(
             path,
             SavedFilePosition {
@@ -1580,18 +1575,24 @@ impl AppState {
                 diff_col_cursor: self.diff_col_cursor,
                 content_mode: self.content_mode,
                 render_variant: self.render_variant,
+                content_id,
             },
         );
     }
 
     pub fn restore_selected_file_position(&mut self) {
-        let Some(position) = self
-            .selected_file_entry()
-            .and_then(|entry| self.saved_file_positions.get(&entry.change.path))
-            .copied()
-        else {
+        let Some(entry) = self.selected_file_entry() else {
             return;
         };
+        let Some(position) = self.saved_file_positions.get(&entry.change.path).cloned() else {
+            return;
+        };
+        let current_content_id = entry.diff.content_id.clone();
+
+        if position.content_id != current_content_id {
+            self.reset_view_for_changed_file();
+            return;
+        }
 
         self.content_mode = position.content_mode;
         self.render_variant = position.render_variant;
@@ -1601,6 +1602,25 @@ impl AppState {
         self.diff_scroll = position.diff_scroll;
         self.diff_line_cursor = position.diff_line_cursor;
         self.diff_col_cursor = position.diff_col_cursor;
+        self.rebuild_active_document();
+        self.mark_model_changed();
+    }
+
+    fn reset_view_for_changed_file(&mut self) {
+        self.content_mode = ContentMode::Diff;
+        if !matches!(
+            self.render_variant,
+            RenderVariant::Inline | RenderVariant::SideBySide
+        ) {
+            self.render_variant = RenderVariant::Inline;
+        }
+        self.place_cursor_at_first_hunk();
+        if self.current_view_needs_base_content() {
+            self.load_base_content_raw();
+        } else {
+            self.base_content = None;
+        }
+        self.rebuild_active_document();
         self.mark_model_changed();
     }
 
@@ -1765,6 +1785,33 @@ impl AppState {
             .unwrap_or(0);
     }
 
+    /// Reload the selected file's bodies without moving cursor or view mode.
+    /// Used when the open file mutates under us.
+    pub fn refresh_selected_file_content(&mut self) {
+        self.refresh_current_file_diff_raw();
+        self.load_head_content_raw();
+        self.load_blame_raw();
+        if self.current_view_needs_base_content() {
+            self.load_base_content_raw();
+        } else {
+            self.base_content = None;
+        }
+        self.invalidate_diff_search_matches();
+        self.rebuild_active_document();
+        self.mark_model_changed();
+    }
+
+    fn place_cursor_at_first_hunk(&mut self) {
+        let first_hunk_row = self
+            .selected_file_entry()
+            .and_then(|e| e.diff.hunks.first())
+            .map(|h| (h.new_start as usize).saturating_sub(1))
+            .unwrap_or(0);
+        self.diff_line_cursor = first_hunk_row;
+        self.diff_col_cursor = 0;
+        self.diff_scroll = first_hunk_row;
+    }
+
     /// Called after `selected_file` changes. Resets diff state and loads
     /// the appropriate file content from the working tree.
     pub fn on_file_changed(&mut self) {
@@ -1780,15 +1827,7 @@ impl AppState {
             self.base_content = None;
         }
 
-        // Place cursor and scroll at the first hunk.
-        let first_hunk_row = self
-            .selected_file_entry()
-            .and_then(|e| e.diff.hunks.first())
-            .map(|h| (h.new_start as usize).saturating_sub(1))
-            .unwrap_or(0);
-        self.diff_line_cursor = first_hunk_row;
-        self.diff_col_cursor = 0;
-        self.diff_scroll = first_hunk_row;
+        self.place_cursor_at_first_hunk();
         self.visual_selection = None;
         self.pending_comment_anchor = None;
         self.selected_comment_id = None;
@@ -2017,6 +2056,11 @@ mod tests {
 
     fn test_file(path: &str) -> FileEntry {
         test_file_with_status(path, ReviewStatus::Unreviewed)
+    }
+
+    fn with_content_id(mut entry: FileEntry, content_id: &str) -> FileEntry {
+        entry.diff.content_id = content_id.to_string();
+        entry
     }
 
     fn test_file_with_status(path: &str, status: ReviewStatus) -> FileEntry {
@@ -2937,6 +2981,144 @@ mod tests {
         assert_eq!(app.state.files[app.state.selected_file].change.path, "b.rs");
         assert_eq!(app.state.diff_line_cursor, 7);
         assert_eq!(app.state.diff_col_cursor, 2);
+        assert_eq!(app.state.diff_scroll, 5);
+    }
+
+    #[test]
+    fn file_navigation_restores_view_when_content_id_unchanged() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![
+                with_content_id(test_file_with_hunk("a.rs"), "v1:a:1"),
+                with_content_id(test_file_with_hunk("b.rs"), "v1:b:1"),
+            ],
+        );
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::HeadVersion;
+        app.state.diff_line_cursor = 42;
+        app.state.diff_col_cursor = 3;
+        app.state.diff_scroll = 40;
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::NavigateFile(Direction::Next)],
+        );
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::NavigateFile(Direction::Prev)],
+        );
+
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "a.rs");
+        assert_eq!(app.state.content_mode, ContentMode::FullFile);
+        assert_eq!(app.state.render_variant, RenderVariant::HeadVersion);
+        assert_eq!(app.state.diff_line_cursor, 42);
+        assert_eq!(app.state.diff_col_cursor, 3);
+        assert_eq!(app.state.diff_scroll, 40);
+    }
+
+    #[test]
+    fn file_navigation_resets_changed_file_to_diff_first_hunk() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![
+                with_content_id(test_file_with_hunk("a.rs"), "v1:a:1"),
+                with_content_id(test_file_with_hunk("b.rs"), "v1:b:1"),
+            ],
+        );
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::HeadVersion;
+        app.state.diff_line_cursor = 42;
+        app.state.diff_scroll = 40;
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::NavigateFile(Direction::Next)],
+        );
+        app.state.content_mode = ContentMode::Diff;
+        app.state.render_variant = RenderVariant::SideBySide;
+
+        if let Some(entry) = app
+            .state
+            .files
+            .iter_mut()
+            .find(|entry| entry.change.path == "a.rs")
+        {
+            entry.diff.content_id = "v1:a:2".to_string();
+        }
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::NavigateFile(Direction::Prev)],
+        );
+
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "a.rs");
+        assert_eq!(app.state.content_mode, ContentMode::Diff);
+        assert_eq!(app.state.render_variant, RenderVariant::SideBySide);
+        assert_eq!(app.state.diff_line_cursor, 9);
+        assert_eq!(app.state.diff_col_cursor, 0);
+        assert_eq!(app.state.diff_scroll, 9);
+    }
+
+    #[test]
+    fn file_navigation_uses_inline_diff_when_returning_to_changed_file_from_full_file() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![
+                with_content_id(test_file_with_hunk("a.rs"), "v1:a:1"),
+                with_content_id(test_file_with_hunk("b.rs"), "v1:b:1"),
+            ],
+        );
+        app.state.diff_line_cursor = 42;
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::NavigateFile(Direction::Next)],
+        );
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::HeadVersion;
+
+        if let Some(entry) = app
+            .state
+            .files
+            .iter_mut()
+            .find(|entry| entry.change.path == "a.rs")
+        {
+            entry.diff.content_id = "v1:a:2".to_string();
+        }
+
+        app.apply_core_effects(
+            &EmptyViewport,
+            vec![CoreEffect::NavigateFile(Direction::Prev)],
+        );
+
+        assert_eq!(app.state.content_mode, ContentMode::Diff);
+        assert_eq!(app.state.render_variant, RenderVariant::Inline);
+        assert_eq!(app.state.diff_line_cursor, 9);
+    }
+
+    #[test]
+    fn merge_file_statuses_keeps_cursor_when_open_file_content_changes() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![with_content_id(test_file_with_hunk("a.rs"), "v1:a:1")],
+        );
+        app.state.content_mode = ContentMode::FullFile;
+        app.state.render_variant = RenderVariant::HeadVersion;
+        app.state.diff_line_cursor = 7;
+        app.state.diff_col_cursor = 3;
+        app.state.diff_scroll = 5;
+
+        app.merge_file_statuses(vec![with_content_id(test_file("a.rs"), "v1:a:2")]);
+
+        assert_eq!(app.state.files[app.state.selected_file].change.path, "a.rs");
+        assert_eq!(app.state.content_mode, ContentMode::FullFile);
+        assert_eq!(app.state.render_variant, RenderVariant::HeadVersion);
+        assert_eq!(app.state.diff_line_cursor, 7);
+        assert_eq!(app.state.diff_col_cursor, 3);
         assert_eq!(app.state.diff_scroll, 5);
     }
 
