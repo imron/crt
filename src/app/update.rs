@@ -211,9 +211,7 @@ pub(super) fn apply_core_effects(
             CoreEffect::ToggleDiffBase => {
                 toggle_diff_base(state, &mut update);
             }
-            CoreEffect::Render(_)
-            | CoreEffect::ConnectionState(_)
-            | CoreEffect::TransientError(_) => {}
+            CoreEffect::ConnectionState(_) | CoreEffect::TransientError(_) => {}
         }
     }
     update

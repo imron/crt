@@ -74,42 +74,19 @@ work clarified the target architecture. The current direction is:
 - TUI/GUI adapters own native hit maps from terminal cells or GUI pixels back
   to semantic app targets.
 
-This supersedes treating `RenderModel` as the final shared UI boundary.
+This supersedes the earlier `RenderModel` idea as the final shared UI
+boundary.
 
-## Superseded RenderModel Scaffold
+## Retired RenderModel Scaffold
 
-Defined in:
+Stage 20 originally added paired processed render scaffolding:
 
-- `src/core/render.rs`
+- `RenderModel`: what to draw,
+- `InteractionMap`: what rendered regions mean for interaction,
+- pane world model structs for semantic coordinates.
 
-Stage 20 added paired processed render scaffolding:
-
-- `RenderModel`: what to draw.
-- `InteractionMap`: what rendered regions mean for interaction.
-
-Update policy:
-
-- `RenderUpdate::Snapshot` for init/reconnect/resync.
-- `RenderUpdate::Delta` for steady-state incremental updates.
-
-These types remain useful historical scaffolding, but new work should build
-toward `AppModel` plus backend-owned hit maps.
-
-## Pane World Models
-
-Defined in:
-
-- `src/core/world.rs`
-
-Pane semantic models:
-
-- `FileListPaneWorld`
-- `DiffPaneWorld`
-- `OverlayPaneWorld`
-- `PaneWorldModel` enum wrapper
-
-These are the precursor to the shared `AppModel` and should be folded into
-that model as the migration progresses.
+Those scaffolding types have been removed from active code. New work should use
+`AppModel` plus backend-owned hit maps.
 
 ## Pointer Mapping Rules
 
@@ -184,7 +161,6 @@ Implemented files:
 - `src/core/input.rs`
 - `src/core/prompt.rs`
 - `src/core/render.rs`
-- `src/core/world.rs`
 - `src/core/interaction.rs`
 - `src/core/services.rs`
 

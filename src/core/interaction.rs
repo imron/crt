@@ -4,8 +4,7 @@ use super::command::{self, CommandParse};
 use super::input::{AppTarget, InputEvent, Key, KeyEventKind, MouseButton, MouseEventKind};
 use super::navigation::Direction;
 use super::prompt::{PromptId, PromptKind, PromptRequest};
-use super::render::PaneId;
-use super::render::{RenderUpdate, StatusMessage};
+use super::render::{PaneId, StatusMessage};
 
 /// Core output effect stream.
 pub type CoreEffects = Vec<CoreEffect>;
@@ -36,7 +35,6 @@ pub enum CoreEffect {
     CycleViewMode,
     CycleDiffAlgorithm,
     ToggleDiffBase,
-    Render(RenderUpdate),
     Status(StatusMessage),
     ConnectionState(ConnectionState),
     TransientError(String),

@@ -1,8 +1,8 @@
 //! Core interaction contracts for thin clients.
 //!
-//! This module defines UI-neutral input, prompt, render, and service contracts.
+//! This module defines UI-neutral input, prompt, status, and service contracts.
 //! UI adapters (TUI/GUI) translate native events into these types and render
-//! from these models without embedding business logic.
+//! from AppModel without embedding business logic.
 
 pub mod command;
 pub mod diff;
@@ -14,7 +14,6 @@ pub mod render;
 pub mod review;
 pub mod search;
 pub mod services;
-pub mod world;
 
 pub use input::{
     AppTarget, InputEvent, InputModifiers, Key, KeyEvent, KeyEventKind, MouseButton, MouseEvent,
@@ -25,11 +24,4 @@ pub use interaction::{
     DiffCursorEffect, DiffSearchEffect, InteractionContext, PaneEffect, SearchResultsEffect,
 };
 pub use prompt::{PromptId, PromptKind, PromptRequest};
-pub use render::{
-    InteractionMap, InteractionRegion, InteractionTarget, PaneId, PaneInteractionMap,
-    PaneRenderModel, RegionBounds, RenderLine, RenderModel, RenderSpan, RenderUpdate,
-    StatusMessage, StyleToken,
-};
-pub use world::{
-    DiffLineAnchor, DiffPaneWorld, FileListPaneWorld, OverlayPaneWorld, PaneWorldModel,
-};
+pub use render::{PaneId, StatusMessage};

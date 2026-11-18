@@ -14,7 +14,7 @@
 
 Correct the architecture docs so `AppModel` is the shared renderable app state,
 and the old Stage 20 `RenderModel`/`InteractionMap` wording is treated as
-contract scaffolding that has been superseded.
+contract scaffolding that has been superseded and retired.
 
 ## Requirements
 
@@ -29,8 +29,8 @@ contract scaffolding that has been superseded.
    - prompt handshake,
    - semantic pointer targets.
 
-3. Mark `core::render::RenderModel` as scaffolding, not the active target
-   interface for renderer-agnostic state.
+3. Mark the old `core::render::RenderModel` scaffold as retired, not the
+   active target interface for renderer-agnostic state.
 
 4. Update stale docs that still describe `src/keys.rs`, `src/ui`, or
    `src/app.rs` as the TUI event/render owner.

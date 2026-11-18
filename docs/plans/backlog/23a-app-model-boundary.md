@@ -67,8 +67,9 @@ toolkit widgets.
 ## Progress
 
 - Corrected architecture docs so `AppModel` is the current shared UI model,
-  while Stage 20 `RenderModel`/`InteractionMap` types are documented as
-  scaffolding superseded by the AppModel migration.
+  while Stage 20 `RenderModel`/`InteractionMap` types were documented as
+  scaffolding superseded by the AppModel migration and later removed from
+  active code.
 - Added the initial `AppModel` scaffold as a pure app-owned projection without
   changing TUI rendering or input behavior.
 - Removed terminal render state from `AppState`: pane geometry, rendered text,
