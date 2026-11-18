@@ -61,13 +61,28 @@ Flow:
 
 This keeps prompt UX local while prompt semantics remain core-owned.
 
-## Processed Render Contract
+## Current AppModel Direction
+
+Stage 20 introduced render/input scaffolding before the later App boundary
+work clarified the target architecture. The current direction is:
+
+- `App` owns a UI-agnostic `AppModel`.
+- `AppModel` describes the conceptual review UI: file-list sections, files,
+  review states, current diff, hunks, semantic highlights, focus, prompts,
+  overlays, status, and semantic selections.
+- TUI/GUI adapters render the same `AppModel` with backend-specific layout.
+- TUI/GUI adapters own native hit maps from terminal cells or GUI pixels back
+  to semantic app targets.
+
+This supersedes treating `RenderModel` as the final shared UI boundary.
+
+## Superseded RenderModel Scaffold
 
 Defined in:
 
 - `src/core/render.rs`
 
-Core emits paired processed outputs:
+Stage 20 added paired processed render scaffolding:
 
 - `RenderModel`: what to draw.
 - `InteractionMap`: what rendered regions mean for interaction.
@@ -76,6 +91,9 @@ Update policy:
 
 - `RenderUpdate::Snapshot` for init/reconnect/resync.
 - `RenderUpdate::Delta` for steady-state incremental updates.
+
+These types remain useful historical scaffolding, but new work should build
+toward `AppModel` plus backend-owned hit maps.
 
 ## Pane World Models
 
@@ -90,22 +108,22 @@ Pane semantic models:
 - `OverlayPaneWorld`
 - `PaneWorldModel` enum wrapper
 
-These are canonical interaction spaces used by both rendering and input
-mapping.
+These are the precursor to the shared `AppModel` and should be folded into
+that model as the migration progresses.
 
 ## Pointer Mapping Rules
 
 ### TUI Adapter
 
 1. Convert terminal row/column to pane-local coordinates.
-2. Resolve hit using `InteractionMap` region bounds/ids.
+2. Resolve hit using a TUI-owned terminal-cell hit map.
 3. Emit `MouseEvent` with `semantic_hit` (and optional `local_pos`).
 4. For text-precise actions, set `text_anchor` (`line`, `column`).
 
 ### GUI Adapter
 
 1. Convert pixel coordinates to pane-local coordinates.
-2. Resolve hit using `InteractionMap` region bounds/ids.
+2. Resolve hit using a GUI-owned pixel/widget hit map.
 3. Emit the same semantic `MouseEvent` shape as TUI.
 4. For text-precise actions, set `text_anchor` (`line`, `column`).
 
@@ -133,8 +151,7 @@ Core-owned:
 
 - input semantics and mode interpretation,
 - keymap/command behavior,
-- pane worlds,
-- render model and interaction map,
+- `AppModel` and app-domain semantic targets,
 - business/domain rules.
 
 UI-owned:
@@ -142,35 +159,22 @@ UI-owned:
 - terminal/window toolkit specifics,
 - native event capture,
 - prompt widget editing UX,
-- rendering the core-provided model,
+- rendering `AppModel`,
 - coordinate conversion to semantic hits.
 
 ## Hotspot Mapping Table
 
 | Current hotspot | Target core API/module |
 | --- | --- |
-| `src/keys.rs:handle_key_event` | `CoreInteractionEngine::handle_input` |
-| `src/keys.rs:handle_command_input` | Prompt handshake (`prompt.rs` + `interaction.rs`) |
-| `src/keys.rs:handle_diff_search_input` | Prompt handshake + search semantics in core interaction/services |
-| `src/keys.rs:execute_command` | Core command interpretation (interaction + services) |
-| `src/keys.rs:navigate_to_search_match` | Navigation service + pane worlds |
-| `src/keys.rs:navigate_to_definition` | Navigation service + pane worlds |
-| `src/keys.rs:request_go_to_definition` | Core input semantics + search service |
-| `src/keys.rs:cycle_view_mode` | Diff/navigation services |
-| `src/keys.rs:jump_to_next_hunk` | Navigation service |
-| `src/keys.rs:jump_to_prev_hunk` | Navigation service |
-| `src/keys.rs:navigate_file` | Review/navigation services |
-| `src/app.rs:process_pending_command` | Core interaction + search/review services |
-| `src/app.rs:process_review_toggle` | Review service |
-| `src/app.rs:apply_review_result` | Review service/state reducer |
-| `src/app.rs:reload_file_list` | Review/diff services + snapshot/delta policy |
-| `src/app.rs:load_head_content` | Diff service |
-| `src/app.rs:load_base_content` | Diff service |
-| `src/app.rs:load_blame` | Diff service |
-| `src/app.rs:refresh_current_file_diff` | Diff service |
-| `src/app.rs:reload_current_diff` | Diff service |
-| `src/app.rs:handle_mouse_event` | UI adapter mapping -> `InputEvent::Mouse` |
-| `src/ui/*` render data prep coupling | `RenderModel` + `InteractionMap` producers |
+| `src/tui/input.rs` key normalization | App/Core input handling |
+| `src/tui/input.rs` prompt submit/cancel | Prompt handshake (`prompt.rs` + `interaction.rs`) |
+| `src/app_update.rs` command/search/navigation reducers | `App` methods over `AppModel` |
+| `src/tui/runtime.rs` pending async command execution | App-requested external work handled by runtime |
+| `src/tui/runtime.rs` review toggle RPC flow | Review service + app-owned result application |
+| `src/tui/runtime.rs` file-list reload | Review/diff services + snapshot policy |
+| `src/app.rs` diff/content/blame helpers | Diff service plus app-owned model projection |
+| `src/tui/input.rs` mouse normalization | UI adapter hit map -> semantic app input |
+| `src/tui/render/*` render data prep coupling | TUI rendering from `AppModel` plus TUI-owned hit maps |
 
 ## Stage 20 Artifacts
 
@@ -184,5 +188,6 @@ Implemented files:
 - `src/core/interaction.rs`
 - `src/core/services.rs`
 
-This completes Stage 20 contract scaffolding and documentation. Subsequent
-stages migrate runtime behavior into these contracts.
+This completes Stage 20 contract scaffolding and documentation. Stage 23a and
+its follow-up plans supersede the render boundary with the `AppModel`
+architecture.

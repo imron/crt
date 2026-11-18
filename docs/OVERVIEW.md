@@ -316,7 +316,7 @@ the right. Either pane can be hidden to give the other full width.
 │                                ││+    let repo = Repository::open(..);│
 ├─ Reviewed (3) ─────────────────┤│+    let app = App::new(args, repo); │
 │ ✓ src/model.rs                 ││+    app.run()?;                     │
-│ ✓ src/keys.rs                  ││  }                                  │
+│ ✓ src/tui/input.rs             ││  }                                  │
 │ ✓ Cargo.toml                   ││                                     │
 └────────────────────────────────┘└──────────────────────────────────────┘
 ```
@@ -473,26 +473,41 @@ head_ref)` — no need to pass them on every call.
 
 ```
 src/
-  main.rs           -- CLI parsing (clap), connection/embedded server startup
+  main.rs           -- thin binary entrypoint
+  lib.rs            -- CLI parsing, connection/embedded server startup
   server/
     mod.rs          -- Server core, socket listener, connection handling
     api.rs          -- JSON-RPC method implementations
     notify.rs       -- Push notifications to connected clients
   client.rs         -- Client connection (Unix socket), request/response
-  app.rs            -- TUI application state, event loop, input dispatch
-  ui/
-    mod.rs          -- Top-level render function, layout management
-    file_list.rs    -- File list widget (split unreviewed/reviewed sections)
-    diff_view.rs    -- Diff/file rendering (inline, side-by-side, full file)
-    comments.rs     -- Comment display (inline blocks, gutter, panel)
+  app.rs            -- App-owned state, configuration, and model projection
+  app_update.rs     -- Transitional app reducer helpers (to be folded into App)
+  tui/
+    mod.rs          -- Terminal UI adapter boundary
+    runtime.rs      -- TUI event loop and terminal/runtime effects
+    input.rs        -- Crossterm event normalization to app/core input
+    effects.rs      -- TUI-side application of presentation effects
+    state.rs        -- TUI-owned presentation and terminal state
+    render/         -- Ratatui rendering and TUI-owned render caches
+  core/
+    interaction.rs  -- UI-neutral input interpretation
+    input.rs        -- UI-neutral input event types
+    command.rs      -- Command parsing and prompt semantics
+    review.rs       -- Review workflow rules
+    diff.rs         -- Diff/content/blame services
+    navigation.rs   -- Navigation and cursor rules
+    search.rs       -- Search/definition result shaping
   git.rs            -- Git operations via git2 (diffs, blobs, worktree resolution)
   db.rs             -- SQLite operations (reviews, comments, anchoring)
   model.rs          -- Core data types
-  keys.rs           -- Input handling and key dispatch
   search.rs         -- Codebase search (:gr) and go-to-definition (Ctrl-])
   mcp.rs            -- MCP adapter (stdio ↔ server JSON-RPC bridge)
   markers.rs        -- Apply/clear review markers in worktree files
 ```
+
+The current AppModel migration target is for `App` to expose a shared
+UI-agnostic `AppModel`. TUI and future GUI adapters render that same model with
+backend-specific layout and own their native hit maps.
 
 ## Dependencies
 

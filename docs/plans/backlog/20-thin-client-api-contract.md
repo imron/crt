@@ -17,7 +17,7 @@ input/render adapters over shared logic.
 
 ## Why
 
-`src/app.rs` and `src/keys.rs` currently mix UI concerns with domain rules.
+`src/app.rs` and the former key/input layer mixed UI concerns with domain rules.
 Without a clear contract, extraction work becomes ad hoc and GUI support will
 duplicate behavior.
 
@@ -55,9 +55,10 @@ This stage adopts a stricter model:
    - UI returns `PromptSubmit { id, value }` or `PromptCancel { id }`,
    - core validates/parses/executes semantics.
 
-4. Define processed render contract as paired outputs:
-   - `RenderModel`: what to draw,
-   - `InteractionMap`: what rendered regions/rows/spans mean for input mapping.
+4. Define initial processed render scaffolding. This was later superseded by
+   Stage 23a's `AppModel` direction:
+   - `AppModel`: shared conceptual review UI state,
+   - backend-owned hit maps: terminal cells or GUI pixels to semantic targets.
 
 5. Define pane world models in core (e.g. file list, diff, overlays) that are
    the canonical semantic coordinate space for interaction behavior.
@@ -65,12 +66,12 @@ This stage adopts a stricter model:
 6. Define pointer/mouse mapping contract:
    - UI adapters map native coordinates (terminal rows/cols or GUI pixels)
      into pane-local coordinates,
-   - UI adapters resolve pane-local hits using `InteractionMap`,
+   - UI adapters resolve pane-local hits using backend-owned hit maps,
    - UI sends semantic input events/hits to core (not raw screen units).
 
 7. Define ownership split:
-   - core-owned state: session/domain state, mode machine, keymap, command
-     interpretation, business rules,
+   - core/app-owned state: session/domain state, mode machine, keymap,
+     command interpretation, business rules, and `AppModel`,
    - UI-owned state: terminal/window mechanics and pure presentation details
      (pane geometry, widget-local cursor drawing, etc.).
 
@@ -103,9 +104,9 @@ This stage adopts a stricter model:
   contract.
 - Use this stage to decide where current `AppState` fields belong.
 - Preserve process-coupled embedded lifecycle assumptions from Stage 19.
-- Keep coarse and fine-grained interactions unified through pane world models:
+- Keep coarse and fine-grained interactions unified through app model semantics:
   pane-level actions (focus/resize/scroll) and text-precise actions
-  (cursor/selection/anchors) both map through `InteractionMap` semantics.
+  (cursor/selection/anchors) both map through semantic targets.
 
 ## Design Rationale
 
@@ -113,8 +114,8 @@ This stage adopts a stricter model:
 - Core-owned interpretation prevents behavior drift between interfaces.
 - Prompt handshake keeps UX flexible (UI) while preserving semantic ownership
   (core).
-- `RenderModel + InteractionMap` keeps rendering and input mapping aligned
-  across TUI and GUI.
+- Stage 20's `RenderModel + InteractionMap` scaffold was later superseded by
+  `AppModel` plus backend-owned hit maps.
 - Snapshot-plus-delta model balances correctness and performance:
   - snapshots are safest for reconnect/resync,
   - deltas avoid heavy redraw/state copy costs during normal interaction.
@@ -133,15 +134,15 @@ This stage adopts a stricter model:
 - [x] Core interaction API is documented and committed in code as interfaces/types.
 - [x] A complete `InputEvent` list exists for current TUI actions.
 - [x] Prompt handshake contract is documented and represented in code types.
-- [x] `RenderModel + InteractionMap` contract is documented and represented in
-      code types.
+- [x] Initial `RenderModel + InteractionMap` scaffolding is documented and
+      represented in code types. Stage 23a supersedes this as the final shared
+      UI boundary.
 - [x] Pane world models are defined for each interactive pane class.
 - [x] Pointer mapping rules (native -> pane-local -> semantic hit) are
       documented for both TUI and GUI adapters.
 - [x] Snapshot-vs-delta policy is documented with reconnect/resync rules.
 - [x] Ownership split (core vs client state) is explicitly documented.
-- [x] Mapping from `src/app.rs` and `src/keys.rs` hotspots to target core APIs
-      is complete.
+- [x] Mapping from app/input hotspots to target core APIs is complete.
 - [x] No unresolved ambiguity remains about where extracted logic should live.
 
 ## Resolved Decisions
@@ -149,7 +150,7 @@ This stage adopts a stricter model:
 - UI sends low-level input events; core interprets semantics.
 - UI prompt widgets capture text; core requests prompts and interprets results.
 - Core interaction uses a single input entrypoint for UI adapters.
-- Processed rendering is formalized as `RenderModel + InteractionMap`, with
-  pane world models as the semantic interaction space.
-- Render contract uses snapshots for resync and targeted deltas for steady
-  updates.
+- Processed rendering was initially scaffolded as `RenderModel +
+  InteractionMap`; Stage 23a supersedes that with `AppModel` as shared
+  conceptual app state and backend-owned hit maps.
+- Snapshot/resync policy remains relevant for reconnect and state reloads.
