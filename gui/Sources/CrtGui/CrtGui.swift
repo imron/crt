@@ -19,7 +19,7 @@ public func crtGuiRun(
     let app = NSApplication.shared
     app.setActivationPolicy(.regular)
     if let image = nsImage(from: icon, size: iconSize) {
-        app.applicationIconImage = squarePaddedIcon(from: image)
+        app.applicationIconImage = image
     }
     let snapshot = decodeSnapshot(data, size)
     let store = GuiStore(snapshot: snapshot)
@@ -82,30 +82,6 @@ private func nsImage(from data: UnsafePointer<UInt8>, size: Int) -> NSImage? {
     }
     let bytes = Data(bytes: data, count: size)
     return NSImage(data: bytes)
-}
-
-/// Dock tiles are square. Fit the source in a square canvas so macOS
-/// cannot stretch a landscape PNG.
-private func squarePaddedIcon(from image: NSImage) -> NSImage {
-    let src: NSSize
-    if let rep = image.representations.first, rep.pixelsWide > 0, rep.pixelsHigh > 0 {
-        src = NSSize(width: CGFloat(rep.pixelsWide), height: CGFloat(rep.pixelsHigh))
-    } else {
-        src = image.size
-    }
-    let side = max(src.width, src.height)
-    let fitted = NSRect(
-        x: (side - src.width) / 2,
-        y: (side - src.height) / 2,
-        width: src.width,
-        height: src.height
-    )
-    return NSImage(size: NSSize(width: side, height: side), flipped: false) { _ in
-        NSColor.clear.setFill()
-        NSRect(origin: .zero, size: NSSize(width: side, height: side)).fill()
-        image.draw(in: fitted, from: .zero, operation: .sourceOver, fraction: 1)
-        return true
-    }
 }
 
 private func decodeSnapshot(_ data: UnsafePointer<UInt8>, _ size: Int) -> GuiSnapshot {

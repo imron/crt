@@ -86,6 +86,45 @@ fn build_gui() {
         "cargo:rustc-link-arg=-Wl,-sectcreate,__TEXT,__info_plist,{}",
         plist.display()
     );
+
+    generate_app_icon(&manifest_dir, &out_dir);
+}
+
+fn generate_app_icon(manifest_dir: &Path, out_dir: &Path) {
+    let src = manifest_dir.join("docs/crt.png");
+    println!("cargo:rerun-if-changed={}", src.display());
+    let square = out_dir.join("crt-icon-square.png");
+    let icon = out_dir.join("crt-icon.png");
+    let src_s = src.to_str().expect("icon source path is not valid UTF-8");
+    let square_s = square
+        .to_str()
+        .expect("icon square path is not valid UTF-8");
+    let icon_s = icon.to_str().expect("icon path is not valid UTF-8");
+
+    let pad = Command::new("sips")
+        .args([
+            "--padColor",
+            "000000",
+            "--padToHeightWidth",
+            "1448",
+            "1448",
+            src_s,
+            "--out",
+            square_s,
+        ])
+        .status()
+        .expect("failed to run sips to pad app icon");
+    if !pad.success() {
+        panic!("sips pad of docs/crt.png failed with status {pad}");
+    }
+
+    let resize = Command::new("sips")
+        .args(["-z", "1024", "1024", square_s, "--out", icon_s])
+        .status()
+        .expect("failed to run sips to resize app icon");
+    if !resize.success() {
+        panic!("sips resize of app icon failed with status {resize}");
+    }
 }
 
 fn swift_arch() -> String {

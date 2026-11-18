@@ -18,7 +18,7 @@ unsafe extern "C" {
     fn crt_gui_apply_snapshot(data: *const u8, size: usize);
 }
 
-const APP_ICON_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/crt.png"));
+const APP_ICON_PNG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/crt-icon.png"));
 
 // App is !Send (Rc document rows). Keep it on the GUI/main thread.
 thread_local! {
