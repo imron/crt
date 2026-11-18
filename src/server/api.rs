@@ -1698,7 +1698,11 @@ async fn reanchor_comment_for_range(
         return Ok(comment);
     }
 
-    if range_preferred_blob_matches(ctx, range, &comment).await? {
+    // Retry orphaned comments even when the file blob is unchanged so a
+    // later matcher improvement can recover them.
+    if !has_orphaned_anchor_segment(&comment)
+        && range_preferred_blob_matches(ctx, range, &comment).await?
+    {
         return Ok(comment);
     }
 
@@ -1731,6 +1735,13 @@ async fn range_preferred_blob_matches(
         return Ok(comment.file_blob_sha.is_empty());
     };
     Ok(content.file_path == segment.file_path && content.file_blob_sha == comment.file_blob_sha)
+}
+
+fn has_orphaned_anchor_segment(comment: &StoredComment) -> bool {
+    comment.anchor.aggregate_status == review_types::AnchorAggregateStatus::Orphaned
+        || comment.anchor.segments.iter().any(|segment| {
+            segment.placement_status == review_types::AnchorPlacementStatus::Orphaned
+        })
 }
 
 fn preferred_anchor_segment(
@@ -2214,11 +2225,19 @@ fn anchor_lines(anchor_text: &str) -> Vec<&str> {
     }
 }
 
+fn line_matches(left: &str, right: &str) -> bool {
+    left.trim() == right.trim()
+}
+
 fn matches_sequence(lines: &[&str], index: usize, needle: &[&str]) -> bool {
     let Some(end) = index.checked_add(needle.len()) else {
         return false;
     };
-    end <= lines.len() && &lines[index..end] == needle
+    end <= lines.len()
+        && lines[index..end]
+            .iter()
+            .zip(needle.iter())
+            .all(|(line, needle_line)| line_matches(line, needle_line))
 }
 
 fn find_sequence_nearest(lines: &[&str], needle: &[&str], hint: usize) -> Option<usize> {
@@ -2329,7 +2348,7 @@ fn reduced_line_match_candidate(
         first_match.get_or_insert(line_index);
         last_match = Some(line_index);
         matched_lines += 1;
-        if count_line_occurrences(lines, needle[match_index]) == 1 {
+        if count_trimmed_line_occurrences(lines, needle[match_index]) == 1 {
             unique_matched_lines += 1;
         }
         needle_index = match_index + 1;
@@ -2364,7 +2383,7 @@ fn next_matching_selected_line(needle: &[&str], start: usize, line: &str) -> Opt
         .find_map(|(index, needle_line)| {
             if needle_line.trim().is_empty() {
                 None
-            } else if *needle_line == line {
+            } else if line_matches(needle_line, line) {
                 Some(index)
             } else {
                 None
@@ -2372,8 +2391,11 @@ fn next_matching_selected_line(needle: &[&str], start: usize, line: &str) -> Opt
         })
 }
 
-fn count_line_occurrences(lines: &[&str], needle: &str) -> usize {
-    lines.iter().filter(|line| **line == needle).count()
+fn count_trimmed_line_occurrences(lines: &[&str], needle: &str) -> usize {
+    lines
+        .iter()
+        .filter(|line| line_matches(line, needle))
+        .count()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4623,6 +4645,36 @@ mod tests {
     }
 
     #[test]
+    fn orphaned_comments_are_retried_even_when_file_blob_is_unchanged() {
+        let mut comment = stored_comment(2, "    target");
+        assert!(!has_orphaned_anchor_segment(&comment));
+
+        comment.anchor.aggregate_status = review_types::AnchorAggregateStatus::Orphaned;
+        comment.anchor.segments[0].placement_status = review_types::AnchorPlacementStatus::Orphaned;
+        comment.anchor.segments[0].match_method = review_types::AnchorMatchMethod::NotFound;
+        assert!(has_orphaned_anchor_segment(&comment));
+    }
+
+    #[test]
+    fn exact_match_ignores_leading_whitespace() {
+        let comment = stored_comment(2, "    target");
+        let anchor = resolve_anchor(
+            &comment,
+            "before\n        target\nafter\n",
+            "new".to_string(),
+            None,
+        );
+
+        assert_eq!(anchor_status(&anchor), review_types::AnchorStatus::Anchored);
+        assert_eq!(head_segment(&anchor).line_start, 2);
+        assert_eq!(head_segment(&anchor).anchor_text, "        target");
+        assert_eq!(
+            head_segment(&anchor).match_method,
+            review_types::AnchorMatchMethod::ExactAtLine
+        );
+    }
+
+    #[test]
     fn compound_reanchor_preserves_base_and_head_segments() {
         let mut comment = stored_comment(2, "head target");
         comment.anchor = review_types::CommentAnchor {
@@ -5046,6 +5098,57 @@ mod tests {
     }
 
     #[test]
+    fn shifted_match_ignores_indent_on_moved_block() {
+        let comment = compound_comment_with_segments(vec![multiline_anchor_segment(
+            2,
+            4,
+            "    if !mutable_store::schema_exists(tx, &op.name)? {\n        return Err(Error::Fail(Fail::UnknownSchema(op.name.clone())));\n    }",
+            "}\n\nfn drop_schema(tx: &mut Tx<'_>, op: &SchemaDrop) -> Result<(), Error> {",
+            "    if mutable_store::inbound_link_count(tx, &op.name)? > 0 {\n        return Err(Error::Fail(Fail::SchemaHasInboundLinks(op.name.clone())));\n    }",
+        )]);
+        let content = "\
+fn retire(db: &mut Db, op: SchemaRetire) -> Result<(), Error> {
+    db.transaction(|tx| {
+        if mutable_store::retire(tx, &op.name)? == 0 {
+            return Err(Error::Fail(Fail::UnknownSchema(op.name.clone())));
+        }
+        Ok(())
+    })
+}
+
+fn drop_schema(db: &mut Db, op: SchemaDrop) -> Result<(), Error> {
+    db.transaction(|tx| {
+        if !mutable_store::schema_exists(tx, &op.name)? {
+            return Err(Error::Fail(Fail::UnknownSchema(op.name.clone())));
+        }
+        if mutable_store::inbound_link_count(tx, &op.name)? > 0 {
+            return Err(Error::Fail(Fail::SchemaHasInboundLinks(op.name.clone())));
+        }
+        mutable_store::drop_schema(tx, &op.name)
+    })
+}
+";
+
+        let anchor = resolve_anchor(&comment, content, "new".to_string(), None);
+        let head = head_segment(&anchor);
+
+        assert_eq!(
+            anchor.aggregate_status,
+            review_types::AnchorAggregateStatus::Anchored
+        );
+        assert_eq!(head.line_start, 12);
+        assert_eq!(head.line_end, 14);
+        assert_eq!(
+            head.match_method,
+            review_types::AnchorMatchMethod::ExactElsewhere
+        );
+        assert_eq!(
+            head.anchor_text,
+            "        if !mutable_store::schema_exists(tx, &op.name)? {\n            return Err(Error::Fail(Fail::UnknownSchema(op.name.clone())));\n        }"
+        );
+    }
+
+    #[test]
     fn resolves_approximate_anchor_from_context() {
         let comment = stored_comment(2, "target");
         let anchor = resolve_anchor(
@@ -5061,6 +5164,57 @@ mod tests {
         );
         assert_eq!(head_segment(&anchor).line_start, 3);
         assert_eq!(head_segment(&anchor).anchor_text, "replacement");
+    }
+
+    #[test]
+    fn context_match_ignores_leading_whitespace() {
+        let comment = compound_comment_with_segments(vec![anchor_segment(
+            review_types::CommentAnchorSide::Head,
+            2,
+            "old target",
+            "    fn foo() {",
+            "    done();",
+        )]);
+        let content = "\
+intro
+        fn foo() {
+    replacement
+        done();
+outro
+";
+
+        let anchor = resolve_anchor(&comment, content, "new".to_string(), None);
+        let head = head_segment(&anchor);
+
+        assert_eq!(
+            anchor_status(&anchor),
+            review_types::AnchorStatus::Approximate
+        );
+        assert_eq!(head.line_start, 3);
+        assert_eq!(head.anchor_text, "    replacement");
+        assert_eq!(head.match_method, review_types::AnchorMatchMethod::Context);
+    }
+
+    #[test]
+    fn reduced_selection_match_ignores_leading_whitespace() {
+        let comment = stored_comment(5, "    keep one\nold middle\n    keep two");
+        let anchor = resolve_anchor(
+            &comment,
+            "intro\nother\n        keep one\nnew middle\n        keep two\noutro\n",
+            "new".to_string(),
+            None,
+        );
+
+        assert_eq!(
+            anchor_status(&anchor),
+            review_types::AnchorStatus::Approximate
+        );
+        assert_eq!(head_segment(&anchor).line_start, 3);
+        assert_eq!(head_segment(&anchor).line_end, 5);
+        assert_eq!(
+            head_segment(&anchor).anchor_text,
+            "        keep one\nnew middle\n        keep two"
+        );
     }
 
     #[test]
