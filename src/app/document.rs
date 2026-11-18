@@ -22,6 +22,7 @@ impl ActiveDocument {
         comments: &[Comment],
         selected_comment_id: Option<i64>,
         cursor: Option<RowIndex>,
+        selection: Option<VisibleSelection>,
         search_current: Option<DocumentPosition>,
         search_query: Option<&str>,
     ) {
@@ -30,6 +31,7 @@ impl ActiveDocument {
             comments,
             selected_comment_id,
             cursor,
+            selection,
             search_current,
             search_query,
         );
@@ -121,6 +123,7 @@ impl DiffDocument {
         comments: &[Comment],
         selected_comment_id: Option<i64>,
         cursor: Option<RowIndex>,
+        selection: Option<VisibleSelection>,
         search_current: Option<DocumentPosition>,
         search_query: Option<&str>,
     ) {
@@ -133,6 +136,7 @@ impl DiffDocument {
                     comments,
                     selected_comment_id,
                     cursor,
+                    selection,
                     search_current,
                     search_query,
                 );
@@ -143,6 +147,7 @@ impl DiffDocument {
                     comments,
                     selected_comment_id,
                     cursor,
+                    selection,
                     search_current,
                     search_query,
                 );
@@ -258,6 +263,7 @@ impl SideBySideDocument {
         comments: &[Comment],
         selected_comment_id: Option<i64>,
         cursor: Option<RowIndex>,
+        selection: Option<VisibleSelection>,
         search_current: Option<DocumentPosition>,
         search_query: Option<&str>,
     ) {
@@ -269,6 +275,7 @@ impl SideBySideDocument {
             comments,
             selected_comment_id,
             cursor,
+            selection.clone(),
             search_current,
             search_query,
         );
@@ -279,6 +286,7 @@ impl SideBySideDocument {
             comments,
             selected_comment_id,
             cursor,
+            selection,
             search_current,
             search_query,
         );
@@ -615,8 +623,32 @@ pub struct DocumentOverlays {
 
 impl DocumentOverlays {
     fn render_runs_for<'a>(&'a self, row: RowIndex, content: &'a ContentRow) -> Vec<TextRun<'a>> {
-        self.search
-            .render_runs_for(row, content.text.as_str(), &content.changed_spans)
+        let selection_spans = self.selection_spans_for(row, content.text.as_str());
+        self.search.render_runs_for(
+            row,
+            content.text.as_str(),
+            &content.changed_spans,
+            &selection_spans,
+        )
+    }
+
+    fn selection_spans_for(&self, row: RowIndex, text: &str) -> Vec<ColumnSpan> {
+        let Some(selection) = self.selection else {
+            return Vec::new();
+        };
+        let text_len = text.len();
+        let Some(span) = selection.normalized_span_for(row, text) else {
+            return Vec::new();
+        };
+        let start = span.start.0.min(text_len);
+        let end = span.end.0.min(text_len);
+        if start >= end {
+            return Vec::new();
+        }
+        vec![ColumnSpan {
+            start: ColumnIndex(start),
+            end: ColumnIndex(end),
+        }]
     }
 }
 
@@ -626,7 +658,7 @@ pub struct DocumentCursor {
     pub column: ColumnIndex,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisibleSelection {
     Line(RowSpan),
     Text {
@@ -639,6 +671,44 @@ pub enum VisibleSelection {
 pub struct DocumentPosition {
     pub row: RowIndex,
     pub column: ColumnIndex,
+}
+
+impl VisibleSelection {
+    fn normalized_span_for(self, row: RowIndex, text: &str) -> Option<ColumnSpan> {
+        match self {
+            Self::Line(span) => span.contains(row).then_some(ColumnSpan {
+                start: ColumnIndex(0),
+                end: ColumnIndex(text.len()),
+            }),
+            Self::Text { start, end } => {
+                let (start, end) = ordered_document_positions(start, end);
+                if row < start.row || row > end.row {
+                    return None;
+                }
+                let start_column = if row == start.row { start.column.0 } else { 0 };
+                let end_column = if row == end.row {
+                    end.column.0.saturating_add(1)
+                } else {
+                    text.chars().count()
+                };
+                Some(ColumnSpan {
+                    start: ColumnIndex(char_column_to_byte_index(text, start_column)),
+                    end: ColumnIndex(char_column_to_byte_index(text, end_column)),
+                })
+            }
+        }
+    }
+}
+
+fn ordered_document_positions(
+    start: DocumentPosition,
+    end: DocumentPosition,
+) -> (DocumentPosition, DocumentPosition) {
+    if (end.row, end.column) < (start.row, start.column) {
+        (end, start)
+    } else {
+        (start, end)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -983,8 +1053,9 @@ impl SearchOverlay {
         row: RowIndex,
         text: &'a str,
         changed_spans: &'a [ColumnSpan],
+        selection_spans: &[ColumnSpan],
     ) -> Vec<TextRun<'a>> {
-        if self.query.is_none() && changed_spans.is_empty() {
+        if self.query.is_none() && changed_spans.is_empty() && selection_spans.is_empty() {
             return vec![TextRun {
                 text: Cow::Borrowed(text),
                 kind: TextRunKind::Plain,
@@ -1004,11 +1075,16 @@ impl SearchOverlay {
                 })
                 .map(|search_match| search_match.columns)
         });
-        let mut boundaries =
-            Vec::with_capacity(2 + changed_spans.len() * 2 + search_spans.len() * 2);
+        let mut boundaries = Vec::with_capacity(
+            2 + changed_spans.len() * 2 + search_spans.len() * 2 + selection_spans.len() * 2,
+        );
         boundaries.push(0);
         boundaries.push(text.len());
-        for span in changed_spans.iter().chain(search_spans.iter()) {
+        for span in changed_spans
+            .iter()
+            .chain(search_spans.iter())
+            .chain(selection_spans.iter())
+        {
             boundaries.push(span.start.0.min(text.len()));
             boundaries.push(span.end.0.min(text.len()));
         }
@@ -1018,6 +1094,7 @@ impl SearchOverlay {
         let mut runs = Vec::with_capacity(boundaries.len().saturating_sub(1));
         let mut search_index = 0;
         let mut changed_index = 0;
+        let mut selection_index = 0;
         for window in boundaries.windows(2) {
             let start = window[0];
             let end = window[1];
@@ -1026,7 +1103,10 @@ impl SearchOverlay {
             }
             advance_span_index(&search_spans, &mut search_index, start);
             advance_span_index(changed_spans, &mut changed_index, start);
-            let kind = if current_search_span.is_some_and(|span| span.contains(start)) {
+            advance_span_index(selection_spans, &mut selection_index, start);
+            let kind = if span_at(selection_spans, selection_index, start) {
+                TextRunKind::Selection
+            } else if current_search_span.is_some_and(|span| span.contains(start)) {
                 TextRunKind::CurrentSearchMatch
             } else if span_at(&search_spans, search_index, start) {
                 TextRunKind::SearchMatch
@@ -1061,6 +1141,13 @@ fn span_at(spans: &[ColumnSpan], index: usize, offset: usize) -> bool {
     spans
         .get(index)
         .is_some_and(|span| offset >= span.start.0 && offset < span.end.0)
+}
+
+fn char_column_to_byte_index(text: &str, column: usize) -> usize {
+    text.char_indices()
+        .map(|(byte_index, _)| byte_index)
+        .nth(column)
+        .unwrap_or(text.len())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1109,6 +1196,7 @@ pub enum TextRunKind {
     Changed,
     SearchMatch,
     CurrentSearchMatch,
+    Selection,
 }
 
 #[derive(Debug, Clone)]
@@ -1159,6 +1247,7 @@ pub fn build_unified_document(input: &DiffDocumentInput<'_>) -> Document {
         input.cursor,
         None,
         None,
+        None,
     );
     document
 }
@@ -1177,6 +1266,7 @@ pub fn build_head_document(input: &DiffDocumentInput<'_>) -> Document {
         input.comments,
         input.selected_comment_id,
         input.cursor,
+        None,
         None,
         None,
     );
@@ -1199,6 +1289,7 @@ pub fn build_base_document(input: &DiffDocumentInput<'_>) -> Document {
         input.cursor,
         None,
         None,
+        None,
     );
     document
 }
@@ -1217,6 +1308,7 @@ pub fn build_side_by_side_document(
         input.cursor,
         None,
         None,
+        None,
     );
     refresh_document_overlays(
         &mut head,
@@ -1225,6 +1317,7 @@ pub fn build_side_by_side_document(
         input.comments,
         input.selected_comment_id,
         input.cursor,
+        None,
         None,
         None,
     );
@@ -1238,6 +1331,7 @@ fn refresh_document_overlays(
     comments: &[Comment],
     selected_comment_id: Option<i64>,
     cursor: Option<RowIndex>,
+    selection: Option<VisibleSelection>,
     search_current: Option<DocumentPosition>,
     search_query: Option<&str>,
 ) {
@@ -1249,6 +1343,7 @@ fn refresh_document_overlays(
         selected_comment_id,
         cursor,
     );
+    document.overlays.selection = selection;
     if let Some(query) = search_query {
         document.search_with_current(query.to_string(), search_current);
     } else {
@@ -4153,6 +4248,130 @@ mod tests {
         assert_eq!(rendered.runs[0].text, Cow::Borrowed("needle"));
         assert_eq!(rendered.runs[1].kind, TextRunKind::Plain);
         assert_eq!(rendered.runs[1].text, Cow::Borrowed(" tail"));
+    }
+
+    #[test]
+    fn visual_line_selection_marks_entire_content_rows() {
+        let mut document = Document::new(
+            vec![
+                DocumentRow::Content(ContentRow {
+                    gutter: Gutter {
+                        text: "1".to_string(),
+                    },
+                    kind: LineKind::Context,
+                    text: "before".to_string(),
+                    blame: None,
+                    source: SourceLocation::single(CommentAnchorSide::Head, 1),
+                    changed_spans: Vec::new(),
+                }),
+                DocumentRow::Content(ContentRow {
+                    gutter: Gutter {
+                        text: "2".to_string(),
+                    },
+                    kind: LineKind::Context,
+                    text: "selected".to_string(),
+                    blame: None,
+                    source: SourceLocation::single(CommentAnchorSide::Head, 2),
+                    changed_spans: Vec::new(),
+                }),
+            ],
+            Vec::new(),
+        );
+        document.overlays_mut().selection = Some(VisibleSelection::Line(RowSpan {
+            start: RowIndex(1),
+            end: RowIndex(1),
+        }));
+
+        let RenderLine::Content(before) = document.line(RowIndex(0)).expect("before line") else {
+            panic!("expected content render line");
+        };
+        let RenderLine::Content(selected) = document.line(RowIndex(1)).expect("selected line")
+        else {
+            panic!("expected content render line");
+        };
+
+        assert_eq!(before.runs[0].kind, TextRunKind::Plain);
+        assert_eq!(selected.runs[0].kind, TextRunKind::Selection);
+        assert_eq!(selected.runs[0].text, Cow::Borrowed("selected"));
+    }
+
+    #[test]
+    fn visual_text_selection_marks_selected_columns_and_overrides_search() {
+        let mut document = Document::new(
+            vec![DocumentRow::Content(ContentRow {
+                gutter: Gutter {
+                    text: "1".to_string(),
+                },
+                kind: LineKind::Context,
+                text: "needle hay".to_string(),
+                blame: None,
+                source: SourceLocation::single(CommentAnchorSide::Head, 1),
+                changed_spans: Vec::new(),
+            })],
+            Vec::new(),
+        );
+        document.search("needle");
+        document.overlays_mut().selection = Some(VisibleSelection::Text {
+            start: DocumentPosition {
+                row: RowIndex(0),
+                column: ColumnIndex(2),
+            },
+            end: DocumentPosition {
+                row: RowIndex(0),
+                column: ColumnIndex(4),
+            },
+        });
+
+        let RenderLine::Content(rendered) = document.line(RowIndex(0)).expect("render line") else {
+            panic!("expected content render line");
+        };
+
+        assert_eq!(rendered.runs[0].text, Cow::Borrowed("ne"));
+        assert_eq!(rendered.runs[0].kind, TextRunKind::SearchMatch);
+        assert_eq!(rendered.runs[1].text, Cow::Borrowed("edl"));
+        assert_eq!(rendered.runs[1].kind, TextRunKind::Selection);
+        assert_eq!(rendered.runs[2].text, Cow::Borrowed("e"));
+        assert_eq!(rendered.runs[2].kind, TextRunKind::SearchMatch);
+        assert_eq!(rendered.runs[3].text, Cow::Borrowed(" hay"));
+        assert_eq!(rendered.runs[3].kind, TextRunKind::Plain);
+    }
+
+    #[test]
+    fn visual_text_selection_uses_character_columns_for_multibyte_text() {
+        let mut document = Document::new(
+            vec![DocumentRow::Content(ContentRow {
+                gutter: Gutter {
+                    text: "1".to_string(),
+                },
+                kind: LineKind::Context,
+                text: "aé日z".to_string(),
+                blame: None,
+                source: SourceLocation::single(CommentAnchorSide::Head, 1),
+                changed_spans: Vec::new(),
+            })],
+            Vec::new(),
+        );
+        document.overlays_mut().selection = Some(VisibleSelection::Text {
+            start: DocumentPosition {
+                row: RowIndex(0),
+                column: ColumnIndex(1),
+            },
+            end: DocumentPosition {
+                row: RowIndex(0),
+                column: ColumnIndex(2),
+            },
+        });
+
+        let RenderLine::Content(rendered) = document.line(RowIndex(0)).expect("render line") else {
+            panic!("expected content render line");
+        };
+
+        assert_eq!(rendered.runs[0].text, Cow::Borrowed("a"));
+        assert_eq!(rendered.runs[0].kind, TextRunKind::Plain);
+        assert_eq!(rendered.runs[1].text, Cow::Borrowed("é日"));
+        assert_eq!(rendered.runs[1].kind, TextRunKind::Selection);
+        assert_eq!(rendered.runs[2].text, Cow::Borrowed("z"));
+        assert_eq!(rendered.runs[2].kind, TextRunKind::Plain);
     }
 
     #[test]
