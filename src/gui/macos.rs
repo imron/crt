@@ -76,7 +76,17 @@ enum GuiAction {
     SelectFile { path: String },
 }
 
-pub fn run_gui(base: Option<&str>, root: bool, reset: bool, standalone: bool) -> Result<()> {
+pub fn run_gui(
+    base: Option<&str>,
+    root: bool,
+    reset: bool,
+    standalone: bool,
+    foreground: bool,
+) -> Result<()> {
+    if !foreground && !reset && detach_from_terminal()?.is_parent() {
+        return Ok(());
+    }
+
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
     match rt.block_on(app::App::start_review(base, root, reset, standalone))? {
         app::ReviewStartup::Reset(summary) => {
@@ -109,6 +119,45 @@ pub fn run_gui(base: Option<&str>, root: bool, reset: bool, standalone: bool) ->
             Ok(())
         }
     }
+}
+
+enum ForkRole {
+    Parent,
+    Child,
+}
+
+impl ForkRole {
+    fn is_parent(self) -> bool {
+        matches!(self, Self::Parent)
+    }
+}
+
+fn detach_from_terminal() -> Result<ForkRole> {
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(std::io::Error::last_os_error()).context("Failed to fork GUI process");
+    }
+    if pid > 0 {
+        return Ok(ForkRole::Parent);
+    }
+
+    if unsafe { libc::setsid() } < 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("Failed to create a new session for the GUI");
+    }
+    unsafe {
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
+    }
+
+    let null = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR) };
+    if null >= 0 {
+        unsafe {
+            libc::dup2(null, libc::STDIN_FILENO);
+            libc::close(null);
+        }
+    }
+
+    Ok(ForkRole::Child)
 }
 
 fn store_session(app: app::App) {

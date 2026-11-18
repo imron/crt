@@ -79,6 +79,10 @@ enum Command {
         /// Run with a private embedded server socket
         #[arg(long)]
         standalone: bool,
+
+        /// Keep the terminal attached until the window closes
+        #[arg(long)]
+        foreground: bool,
     },
 
     /// Write review comment markers into worktree source files
@@ -121,13 +125,14 @@ pub fn run_with_cli(cli: Cli) -> Result<()> {
             root,
             reset,
             standalone,
+            foreground,
         }) => {
             if cli.base.is_some() || cli.root || cli.reset || cli.standalone {
                 anyhow::bail!(
                     "`crt gui` does not accept a global base ref, --root, --reset, or --standalone"
                 );
             }
-            cmd_gui(base, root, reset, standalone)
+            cmd_gui(base, root, reset, standalone, foreground)
         }
         Some(Command::ApplyComments { .. }) => {
             println!("crt apply-comments: not yet implemented");
@@ -181,7 +186,13 @@ fn cmd_review(base: Option<String>, root: bool, reset: bool, standalone: bool) -
 }
 
 /// `crt gui` — native GUI (macOS).
-fn cmd_gui(base: Option<String>, root: bool, reset: bool, standalone: bool) -> Result<()> {
+fn cmd_gui(
+    base: Option<String>,
+    root: bool,
+    reset: bool,
+    standalone: bool,
+    foreground: bool,
+) -> Result<()> {
     if root && base.is_some() {
         anyhow::bail!("--root cannot be combined with a base ref");
     }
@@ -191,7 +202,7 @@ fn cmd_gui(base: Option<String>, root: bool, reset: bool, standalone: bool) -> R
              Usage: crt gui <BASE>\n       crt gui --root\n\nExample: crt gui main"
         );
     }
-    gui::run_gui(base.as_deref(), root, reset, standalone)
+    gui::run_gui(base.as_deref(), root, reset, standalone, foreground)
 }
 
 /// `crt mcp-server` — start MCP adapter over stdio.
@@ -290,6 +301,7 @@ mod tests {
                 root: false,
                 reset: false,
                 standalone: false,
+                foreground: false,
             }) if base == "main" => {}
             other => panic!("expected gui main, got {other:?}"),
         }
@@ -305,6 +317,7 @@ mod tests {
                 root: true,
                 reset: false,
                 standalone: false,
+                foreground: false,
             }) => {}
             other => panic!("expected gui --root, got {other:?}"),
         }
@@ -352,5 +365,19 @@ mod tests {
             err.to_string().contains("--root"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn gui_parses_foreground() {
+        let cli = Cli::parse_from(["crt", "gui", "--foreground", "main"]);
+
+        match cli.command {
+            Some(Command::Gui {
+                base: Some(base),
+                foreground: true,
+                ..
+            }) if base == "main" => {}
+            other => panic!("expected gui --foreground main, got {other:?}"),
+        }
     }
 }
