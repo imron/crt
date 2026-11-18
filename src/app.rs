@@ -154,7 +154,7 @@ impl App {
         app.client = Some(client);
         app.config_path = config_path;
         app.state.on_file_changed();
-        app.bump_model_revision();
+        app.mark_model_changed();
         Ok(app)
     }
 
@@ -172,7 +172,7 @@ impl App {
         }
         self.config.layout.file_list_width = width;
         self.state.file_list_width = width;
-        self.bump_model_revision();
+        self.mark_model_changed();
         self.save_layout_config();
     }
 
@@ -181,10 +181,6 @@ impl App {
     }
 
     pub fn mark_model_changed(&mut self) {
-        self.bump_model_revision();
-    }
-
-    fn bump_model_revision(&mut self) {
         self.model_revision = self.model_revision.wrapping_add(1);
     }
 
@@ -315,7 +311,7 @@ impl App {
     ) -> AppOutput {
         let mut output = update::apply_core_effects(&mut self.state, viewport, effects);
         if output.model_changed {
-            self.bump_model_revision();
+            self.mark_model_changed();
         }
         if output.take_pending_review_toggle() {
             self.pending_work.push_back(AppWork::ToggleSelectedReview);
@@ -336,7 +332,7 @@ impl App {
     ) -> AppOutput {
         let output = update::navigate_to_search_match(&mut self.state, viewport, search_match);
         if output.model_changed {
-            self.bump_model_revision();
+            self.mark_model_changed();
         }
         output
     }
@@ -348,7 +344,7 @@ impl App {
     ) -> AppOutput {
         let output = update::navigate_to_definition(&mut self.state, viewport, definition);
         if output.model_changed {
-            self.bump_model_revision();
+            self.mark_model_changed();
         }
         output
     }
@@ -367,7 +363,7 @@ impl App {
         match result {
             Ok(action_result) => {
                 self.apply_review_result(&action_result);
-                self.bump_model_revision();
+                self.mark_model_changed();
                 None
             }
             Err(e) => {
@@ -381,7 +377,7 @@ impl App {
         match self.list_changed_files().await {
             Ok(result) => {
                 self.replace_file_snapshot(result.files);
-                self.bump_model_revision();
+                self.mark_model_changed();
                 None
             }
             Err(e) => Some(StatusUpdate::Set(format!("Failed to reload files: {e}"))),
@@ -468,7 +464,7 @@ impl App {
                         matches,
                         selected: 0,
                     });
-                    self.bump_model_revision();
+                    self.mark_model_changed();
                     Some(StatusUpdate::Clear)
                 }
             },
@@ -499,7 +495,7 @@ impl App {
                             definitions,
                             selected: 0,
                         });
-                        self.bump_model_revision();
+                        self.mark_model_changed();
                         Some(StatusUpdate::Clear)
                     }
                 }
@@ -528,7 +524,7 @@ impl App {
                 self.state.selected_file = file_index;
                 self.state.on_file_changed();
                 self.state.diff_line_cursor = (line_number as usize).saturating_sub(1);
-                self.bump_model_revision();
+                self.mark_model_changed();
                 Some(StatusUpdate::Clear)
             }
             core_search::LocationTarget::External {
