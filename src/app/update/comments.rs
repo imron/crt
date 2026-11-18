@@ -1,6 +1,6 @@
 use super::cursor::clamp_cursor_and_scroll;
 use super::output::AppOutput;
-use super::viewport::AppViewport;
+use super::viewport::{AppViewport, active_diff_content_height};
 use crate::app::document::{RowIndex, RowSpan};
 use crate::app::model::CommentProjection;
 use crate::app::{AppState, FileListSectionFocus};
@@ -134,7 +134,6 @@ fn navigate_adjacent_comment(state: &mut AppState, view: &impl AppViewport, dire
         state.show_comments_panel = true;
         state.mark_model_changed();
     }
-    state.ensure_active_document();
     let row = RowIndex(state.diff_line_cursor);
     let Some(comment_id) = state
         .active_document
@@ -148,7 +147,6 @@ fn navigate_adjacent_comment(state: &mut AppState, view: &impl AppViewport, dire
 }
 
 fn select_adjacent(state: &mut AppState, direction: Direction) {
-    state.ensure_active_document();
     state.selected_comment_id = state
         .active_document
         .as_ref()
@@ -207,7 +205,6 @@ fn navigate_to_comment(state: &mut AppState, view: &impl AppViewport, comment: &
     };
     state.select_file(file_index, focus, false);
     state.selected_comment_id = Some(comment.id);
-    state.ensure_active_document();
     let Some(span) = comment_display_span(state, comment) else {
         state.mark_model_changed();
         return false;
@@ -256,14 +253,6 @@ fn scroll_to_comment(
     };
 
     state.diff_scroll = scroll;
-}
-
-fn active_diff_content_height(state: &AppState, view: &impl AppViewport) -> usize {
-    state
-        .active_document
-        .as_ref()
-        .map(|document| document.diff.len())
-        .unwrap_or_else(|| view.diff_content_height())
 }
 
 pub fn ensure_selected_comment(state: &mut AppState) {

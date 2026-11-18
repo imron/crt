@@ -1,6 +1,14 @@
 use crate::app::AppState;
 use crate::core::text::char_to_byte_index;
 
+pub fn active_diff_content_height(state: &AppState, view: &impl AppViewport) -> usize {
+    state
+        .active_document
+        .as_ref()
+        .map(|document| document.diff.len())
+        .unwrap_or_else(|| view.diff_content_height())
+}
+
 pub trait AppViewport {
     fn hunk_start_rows(&self) -> &[usize];
     fn hunk_end_rows(&self) -> &[usize];
