@@ -1,6 +1,6 @@
 # Stage 23i: App-Owned Review and Snapshot Workflows
 
-## Status: Backlog
+## Status: Completed
 
 ## Order
 
@@ -14,7 +14,7 @@
 
 Move app keybinding interpretation, review toggling, file-list reload,
 selection restoration, and notification-driven snapshot policy out of the TUI
-runtime and into the app session.
+runtime and into `App`.
 
 ## Why
 
@@ -43,6 +43,43 @@ the current mode/context, choose service calls, and mutate the app model.
 - In scope: notification classification and reload policy.
 - In scope: preserving app state across reloads.
 - Out of scope: transport-loss recovery and bind-race failover.
+
+## Keybinding Audit
+
+App-owned interpretation:
+
+- Normal-mode app commands are interpreted by core/app input handling: `q`,
+  `Ctrl-C`, `:`, `/`, `?`, `r`, `Ctrl-N`, `Ctrl-P`, `[`, `]`, `Ctrl-]`,
+  `Ctrl-T`, `Tab`, `1`, `2`, `i`, `s`, `d`, `m`, diff search `n`/`N`/`Esc`,
+  and overlay navigation/accept/cancel keys.
+- Diff cursor movement is interpreted by core/app input handling, including
+  line/page/half-page movement, scroll wheel movement, top/bottom/view
+  positioning, character movement, line start/end, and word movement.
+- Semantic pointer clicks are normalized by the TUI but interpreted by
+  core/app input handling as app targets such as file selection and diff cursor
+  movement.
+- Focus gained is forwarded as native input and the app decides to queue a file
+  snapshot refresh.
+
+TUI-owned mechanics:
+
+- Prompt buffer editing remains TUI-local: character insertion, cursor motion,
+  backspace/delete, submit, and cancel are converted into prompt submit/cancel
+  app input events.
+- Terminal-only operations remain TUI-local: alternate-screen setup/restore,
+  actual process suspension after the app requests it, mouse drag tracking,
+  border resizing, clipboard emission, and double-click word/path copying.
+- TUI presentation state remains TUI-local for this stage: help/search/
+  definition overlay visibility and pane visibility/layout are still rendered
+  and tracked by the TUI, although their keybinding interpretation comes from
+  core/app input handling.
+
+Ambiguous or deferred:
+
+- Search and definition service execution still live in the TUI runtime after
+  this stage and are covered by Stage 23j.
+- Remaining TUI presentation cleanup, including pane/layout presentation
+  state, is covered by Stage 23k and the later AppModel plans.
 
 ## Requirements
 
@@ -91,29 +128,30 @@ the current mode/context, choose service calls, and mutate the app model.
 
 ## Deliverables
 
-- App session methods for key-driven review workflow, snapshot reload, and
+- `App` methods for key-driven review workflow, snapshot reload, and
   notification handling.
 - TUI runtime forwards normalized input and delegates review/refresh workflows
-  to the app session.
+  to `App`.
 - `TuiState` no longer stores review/snapshot workflow flags.
-- Service-level tests for review toggle and reload state restoration.
+- App-level tests for review toggle queuing, review result application, reload
+  state restoration, and notification reload policy.
 
 ## Acceptance Criteria
 
-- [ ] `src/tui/runtime.rs` no longer calls `mark_reviewed()` or
+- [x] `src/tui/runtime.rs` no longer calls `mark_reviewed()` or
       `unmark_reviewed()` directly.
-- [ ] The implementation audits all existing keybindings and records which are
+- [x] The implementation audits all existing keybindings and records which are
       app-owned versus TUI-owned.
-- [ ] TUI code does not decide that `r` or any other app binding maps to a
+- [x] TUI code does not decide that `r` or any other app binding maps to a
       specific app action.
-- [ ] App-owned input/keybinding code decides whether review toggle is active
+- [x] App-owned input/keybinding code decides whether review toggle is active
       for the current app mode/context.
-- [ ] `src/tui/runtime.rs` no longer mutates `app.state.files` directly after
+- [x] `src/tui/runtime.rs` no longer mutates `app.state.files` directly after
       a reload.
-- [ ] Notification-to-reload policy is not implemented in TUI code.
-- [ ] Review result application is covered by app/service tests.
-- [ ] Existing review workflows remain functionally equivalent.
-- [ ] `cargo test` passes.
+- [x] Notification-to-reload policy is not implemented in TUI code.
+- [x] Review result application is covered by app/service tests.
+- [x] Existing review workflows remain functionally equivalent.
+- [x] `cargo test` passes.
 
 ## Notes
 
