@@ -460,7 +460,7 @@ fn draw_comment_input(frame: &mut Frame, tui_state: &mut TuiState, styles: &Styl
             .borders(Borders::ALL)
             .border_style(Style::default().fg(*hs.border_fg))
             .title(" Comment ")
-            .title_bottom(" Ctrl-S submit / Ctrl-Shift-E editor / Esc cancel "),
+            .title_bottom(" Ctrl-Space submit / Ctrl-Shift-E editor / Esc cancel "),
     )
     .scroll((saturating_u16(tui_state.comment_scroll), 0))
     .style(Style::default().fg(*hs.text_fg).bg(*hs.bg));
