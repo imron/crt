@@ -238,12 +238,7 @@ impl App {
         } else {
             let base = base.context("A base ref is required unless --root is specified")?;
             client
-                .init_with_options(
-                    &cwd.to_string_lossy(),
-                    base,
-                    false,
-                    Some(diff_algorithm),
-                )
+                .init_with_options(&cwd.to_string_lossy(), base, false, Some(diff_algorithm))
                 .await?
         };
 
@@ -782,7 +777,10 @@ impl App {
         }
     }
 
-    fn apply_review_change_notifications(&mut self, notifications: &[crate::protocol::Notification]) {
+    fn apply_review_change_notifications(
+        &mut self,
+        notifications: &[crate::protocol::Notification],
+    ) {
         let selected_path = review::selected_path(&self.state.files, self.state.selected_file);
         let mut patched = false;
         for notification in notifications {
