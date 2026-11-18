@@ -196,14 +196,17 @@ struct GuiSnapshot: Decodable {
     }
 }
 
+private let appDisplayName = "Code Review Tool"
+
 private func makeMainMenu() -> NSMenu {
     let mainMenu = NSMenu()
     let appItem = NSMenuItem()
+    appItem.title = appDisplayName
     mainMenu.addItem(appItem)
 
-    let appMenu = NSMenu(title: "crt")
+    let appMenu = NSMenu(title: appDisplayName)
     appMenu.addItem(
-        withTitle: "Quit crt",
+        withTitle: "Quit \(appDisplayName)",
         action: #selector(NSApplication.terminate(_:)),
         keyEquivalent: "q"
     )

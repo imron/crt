@@ -79,6 +79,13 @@ fn build_gui() {
     println!("cargo:rustc-link-lib=framework=Combine");
     println!("cargo:rustc-link-lib=c++");
     println!("cargo:rustc-link-lib=objc");
+
+    let plist = gui_dir.join("Info.plist");
+    println!("cargo:rerun-if-changed={}", plist.display());
+    println!(
+        "cargo:rustc-link-arg=-Wl,-sectcreate,__TEXT,__info_plist,{}",
+        plist.display()
+    );
 }
 
 fn swift_arch() -> String {

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Code Review Tool</string>
+	<key>CFBundleDisplayName</key>
+	<string>Code Review Tool</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.crt.gui</string>
+	<key>CFBundleExecutable</key>
+	<string>crt</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleVersion</key>
+	<string>0.1.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+</dict>
+</plist>
