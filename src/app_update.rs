@@ -148,19 +148,7 @@ pub fn apply_core_effects(state: &mut AppState, effects: Vec<CoreEffect>) -> App
             CoreEffect::PopJumpStack => {
                 pop_jump_stack(state, &mut update);
             }
-            CoreEffect::TogglePaneFocus => {
-                toggle_pane_focus(state);
-                update.clear_status();
-            }
-            CoreEffect::TogglePaneVisibility(PaneId::FileList) => {
-                toggle_pane_visibility(state, PaneFocus::FileList);
-                update.clear_status();
-            }
-            CoreEffect::TogglePaneVisibility(PaneId::Diff) => {
-                toggle_pane_visibility(state, PaneFocus::Diff);
-                update.clear_status();
-            }
-            CoreEffect::TogglePaneVisibility(_) => {}
+            CoreEffect::TogglePaneFocus | CoreEffect::TogglePaneVisibility(_) => {}
             CoreEffect::ToggleInlineDiff => {
                 toggle_inline_diff(state, &mut update);
             }
@@ -451,11 +439,7 @@ fn apply_diff_cursor_effect(state: &mut AppState, effect: DiffCursorEffect) {
 
 fn apply_pane_effect(state: &mut AppState, effect: PaneEffect) {
     match effect {
-        PaneEffect::ActivateFileListSelection => {
-            if state.show_diff_pane {
-                state.pane_focus = PaneFocus::Diff;
-            }
-        }
+        PaneEffect::ActivateFileListSelection => {}
         PaneEffect::ActivateDiffSelection => {
             if let Some(entry) = state.selected_file_entry() {
                 if matches!(entry.status, ReviewStatus::Reviewed { .. })
@@ -531,15 +515,6 @@ fn push_jump_stack(state: &mut AppState) {
         content_mode: state.content_mode,
         render_variant: state.render_variant,
     });
-}
-
-fn toggle_pane_focus(state: &mut AppState) {
-    if state.show_file_list && state.show_diff_pane {
-        state.pane_focus = match state.pane_focus {
-            PaneFocus::FileList => PaneFocus::Diff,
-            PaneFocus::Diff => PaneFocus::FileList,
-        };
-    }
 }
 
 fn toggle_inline_diff(state: &mut AppState, update: &mut AppUpdate) {
@@ -673,32 +648,6 @@ fn word_at_char_offset(content: &str, column: usize) -> Option<String> {
 
 fn is_identifier_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
-}
-
-/// Toggle visibility of a pane. At least one pane must remain visible.
-fn toggle_pane_visibility(state: &mut AppState, pane: PaneFocus) {
-    match pane {
-        PaneFocus::FileList => {
-            if state.show_file_list {
-                if state.show_diff_pane {
-                    state.show_file_list = false;
-                    state.pane_focus = PaneFocus::Diff;
-                }
-            } else {
-                state.show_file_list = true;
-            }
-        }
-        PaneFocus::Diff => {
-            if state.show_diff_pane {
-                if state.show_file_list {
-                    state.show_diff_pane = false;
-                    state.pane_focus = PaneFocus::FileList;
-                }
-            } else {
-                state.show_diff_pane = true;
-            }
-        }
-    }
 }
 
 fn on_file_changed(state: &mut AppState) {

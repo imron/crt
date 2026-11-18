@@ -228,7 +228,7 @@ impl Tui {
 
     /// Check if a mouse column is on the border between file list and diff panes.
     fn is_on_pane_border(&self, col: u16, row: u16) -> bool {
-        if !self.state.show_file_list || !self.state.show_diff_pane {
+        if !self.tui_state.show_file_list || !self.tui_state.show_diff_pane {
             return false;
         }
         let border_col = self.state.file_list_area.right().saturating_sub(1);
@@ -250,7 +250,11 @@ impl Tui {
 
     /// Handle mouse events: selection, scroll wheel, border drag.
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
-        let input_event = self.state.input_event_from_mouse(&mouse);
+        let input_event = self.state.input_event_from_mouse(
+            &mouse,
+            self.tui_state.show_file_list,
+            self.tui_state.show_diff_pane,
+        );
         let semantic_content_hit = input_event.as_ref().and_then(mouse_content_hit);
         let pending_core_effects = input_event
             .map(|event| {
