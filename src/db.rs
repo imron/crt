@@ -442,8 +442,8 @@ impl Database {
         self.conn
             .execute(
                 "INSERT INTO comments
-                    (merge_base, head_ref, file_path, body, resolved, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5)",
+                    (merge_base, head_ref, file_path, body, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
                 params![new.merge_base, new.head_ref, new.file_path, new.body, now,],
             )
             .context("Failed to create comment")?;
@@ -535,7 +535,8 @@ impl Database {
                 (None, false) => (
                     format!(
                         "{COMMENT_SELECT}
-                         WHERE c.merge_base = ?1 AND c.head_ref = ?2 AND c.resolved = 0
+                         WHERE c.merge_base = ?1 AND c.head_ref = ?2
+                           AND NOT {COMMENT_RESOLVED_EXPR}
                          ORDER BY c.file_path, a.line_start"
                     ),
                     vec![
@@ -559,7 +560,7 @@ impl Database {
                     format!(
                         "{COMMENT_SELECT}
                          WHERE c.merge_base = ?1 AND c.head_ref = ?2 AND c.file_path = ?3
-                           AND c.resolved = 0
+                           AND NOT {COMMENT_RESOLVED_EXPR}
                          ORDER BY a.line_start"
                     ),
                     vec![
@@ -619,21 +620,26 @@ impl Database {
     }
 
     /// Resolve a comment.
-    pub fn resolve_comment(&self, id: i64) -> Result<bool> {
+    pub fn resolve_comment(&self, event: &NewCommentResolutionEvent) -> Result<bool> {
         let now = now_iso8601();
         let count = self
             .conn
             .execute(
-                "UPDATE comments SET resolved = 1, updated_at = ?1 WHERE id = ?2",
-                params![now, id],
+                "UPDATE comments SET updated_at = ?1 WHERE id = ?2",
+                params![now, event.comment_id],
             )
             .context("Failed to resolve comment")?;
+        if count > 0 {
+            self.insert_comment_resolution_at(event, &now)?;
+        }
         Ok(count > 0)
     }
 
-    /// Record a resolution event for a comment.
-    pub fn record_comment_resolution(&self, event: &NewCommentResolutionEvent) -> Result<()> {
-        let now = now_iso8601();
+    fn insert_comment_resolution_at(
+        &self,
+        event: &NewCommentResolutionEvent,
+        resolved_at: &str,
+    ) -> Result<()> {
         self.conn
             .execute(
                 "INSERT INTO comment_resolution_events
@@ -644,7 +650,7 @@ impl Database {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     event.comment_id,
-                    now,
+                    resolved_at,
                     event.resolved_commit,
                     event.resolved_head_ref,
                     event.resolved_merge_base,
@@ -669,10 +675,18 @@ impl Database {
         let count = self
             .conn
             .execute(
-                "UPDATE comments SET resolved = 0, updated_at = ?1 WHERE id = ?2",
+                "UPDATE comments SET updated_at = ?1 WHERE id = ?2",
                 params![now, id],
             )
             .context("Failed to unresolve comment")?;
+        if count > 0 {
+            self.conn
+                .execute(
+                    "DELETE FROM comment_resolution_events WHERE comment_id = ?1",
+                    params![id],
+                )
+                .context("Failed to delete comment resolution events")?;
+        }
         Ok(count > 0)
     }
 
@@ -710,10 +724,22 @@ const COMMENT_SELECT: &str = "
     SELECT c.id, c.merge_base, c.head_ref, c.file_path,
            a.line_start, a.line_end, a.char_start, a.char_end,
            a.anchor_text, a.context_before, a.context_after,
-           c.body, c.resolved, c.created_at, c.updated_at,
+           c.body,
+           CASE WHEN EXISTS (
+               SELECT 1
+               FROM comment_resolution_events event
+               WHERE event.comment_id = c.id
+           ) THEN 1 ELSE 0 END AS resolved,
+           c.created_at, c.updated_at,
            a.file_blob_sha, a.status
     FROM comments c
     JOIN v_current_anchors a ON a.comment_id = c.id";
+
+const COMMENT_RESOLVED_EXPR: &str = "EXISTS (
+    SELECT 1
+    FROM comment_resolution_events event
+    WHERE event.comment_id = c.id
+)";
 
 fn anchor_status_to_db(status: AnchorStatus) -> &'static str {
     match status {
@@ -801,6 +827,24 @@ mod tests {
         }
     }
 
+    fn resolution_event(comment: &StoredComment) -> NewCommentResolutionEvent {
+        NewCommentResolutionEvent {
+            comment_id: comment.id,
+            resolved_commit: "resolved-commit".to_string(),
+            resolved_head_ref: comment.head_ref.clone(),
+            resolved_merge_base: comment.merge_base.clone(),
+            file_path: comment.file_path.clone(),
+            line_start: comment.line_start,
+            line_end: comment.line_end,
+            char_start: comment.char_start,
+            char_end: comment.char_end,
+            anchor_text: comment.anchor_text.clone(),
+            context_before: comment.context_before.clone(),
+            context_after: comment.context_after.clone(),
+            anchor_status: comment.anchor_status,
+        }
+    }
+
     #[test]
     fn test_schema_created() {
         let (dir, _db) = test_db();
@@ -851,7 +895,7 @@ mod tests {
                      created_at, updated_at)
                 VALUES
                     (42, 'main', 'feat', 'src/lib.rs', 7, 8, 1, 4,
-                     'old anchor', 'before', 'after', 'body text', 0,
+                     'old anchor', 'before', 'after', 'body text', 1,
                      '2026-06-27T12:00:00+10:00',
                      '2026-06-27T12:01:00+10:00');
                 ",
@@ -872,6 +916,17 @@ mod tests {
         assert_eq!(fetched.context_after, "after");
         assert_eq!(fetched.file_blob_sha, "");
         assert_eq!(fetched.anchor_status, AnchorStatus::Anchored);
+        assert!(fetched.resolved);
+
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM comment_resolution_events WHERE comment_id = 42",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]
@@ -1105,7 +1160,7 @@ mod tests {
         let c3 = db
             .create_comment(&simple_comment("a.rs", 5, "z", "comment 3"))
             .unwrap();
-        db.resolve_comment(c3.id).unwrap();
+        db.resolve_comment(&resolution_event(&c3)).unwrap();
 
         // All unresolved
         let comments = db.list_comments("main", "feat", None, false).unwrap();
@@ -1154,7 +1209,7 @@ mod tests {
             .unwrap();
         assert!(!comment.resolved);
 
-        db.resolve_comment(comment.id).unwrap();
+        db.resolve_comment(&resolution_event(&comment)).unwrap();
         let fetched = db.get_comment(comment.id).unwrap().unwrap();
         assert!(fetched.resolved);
 
