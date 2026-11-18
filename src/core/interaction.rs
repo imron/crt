@@ -295,7 +295,7 @@ impl CoreInteractionEngine {
                         Some(PaneId::Diff) | Some(PaneId::FileList)
                     )
                     && !context.visual_selection_active
-                    && key.key == Key::Char('c')
+                    && matches!(key.key, Key::Char('c') | Key::Char(' '))
                     && key_has_no_modifier(key.modifiers)
                 {
                     let id = self.next_prompt(PromptKind::Comment);
@@ -1583,6 +1583,36 @@ mod tests {
     }
 
     #[test]
+    fn diff_space_key_without_selection_captures_current_line_and_requests_prompt() {
+        let mut engine = CoreInteractionEngine::new();
+        let context = InteractionContext {
+            focused_pane: Some(PaneId::Diff),
+            diff_pane_visible: true,
+            ..InteractionContext::default()
+        };
+
+        let effects = engine.handle_input(
+            key_event(Key::Char(' '), InputModifiers::default()),
+            &context,
+        );
+
+        assert_eq!(
+            effects,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::StartLine),
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+                CoreEffect::RequestPrompt(PromptRequest {
+                    id: PromptId(1),
+                    kind: PromptKind::Comment,
+                    title: "Comment".to_string(),
+                    placeholder: Some("Write a comment".to_string()),
+                    initial_value: String::new(),
+                })
+            ]
+        );
+    }
+
+    #[test]
     fn diff_comment_key_accepts_file_list_focus() {
         let mut engine = CoreInteractionEngine::new();
         let context = InteractionContext {
@@ -1644,6 +1674,10 @@ mod tests {
         let escape =
             engine.handle_input(key_event(Key::Escape, InputModifiers::default()), &context);
         let enter = engine.handle_input(key_event(Key::Enter, InputModifiers::default()), &context);
+        let space = engine.handle_input(
+            key_event(Key::Char(' '), InputModifiers::default()),
+            &context,
+        );
 
         assert_eq!(
             down,
@@ -1661,6 +1695,19 @@ mod tests {
                 CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
                 CoreEffect::RequestPrompt(PromptRequest {
                     id: PromptId(1),
+                    kind: PromptKind::Comment,
+                    title: "Comment".to_string(),
+                    placeholder: Some("Write a comment".to_string()),
+                    initial_value: String::new(),
+                })
+            ]
+        );
+        assert_eq!(
+            space,
+            vec![
+                CoreEffect::VisualSelection(VisualSelectionEffect::Commit),
+                CoreEffect::RequestPrompt(PromptRequest {
+                    id: PromptId(2),
                     kind: PromptKind::Comment,
                     title: "Comment".to_string(),
                     placeholder: Some("Write a comment".to_string()),
