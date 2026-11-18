@@ -631,7 +631,7 @@ impl Tui {
                 .sections
                 .iter()
                 .flat_map(|section| section.rows.iter())
-                .find(|row| row.file_index == file_idx)
+                .find(|row| row.file_index == Some(file_idx))
                 .map(|row| row.path.as_str());
             if let Some(path) = path {
                 copy_to_clipboard(path);

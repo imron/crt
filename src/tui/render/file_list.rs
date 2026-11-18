@@ -68,7 +68,7 @@ pub fn draw(
             };
             lines.push(line);
             rendered_text.push(text);
-            row_to_file.push(Some(row.file_index));
+            row_to_file.push(row.file_index);
             row_to_comment.push(row.comment_id);
         }
     }

@@ -59,7 +59,7 @@ pub struct FileListSection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileListRow {
     pub kind: FileListRowKind,
-    pub file_index: usize,
+    pub file_index: Option<usize>,
     pub file_id: String,
     pub path: String,
     pub old_path: Option<String>,
@@ -606,7 +606,7 @@ fn file_row_model(
         .unwrap_or(0);
     FileListRow {
         kind: FileListRowKind::File,
-        file_index: index,
+        file_index: Some(index),
         file_id: entry.change.path.clone(),
         path: entry.change.path.clone(),
         old_path: entry.change.old_path.clone(),
@@ -638,6 +638,11 @@ fn unresolved_comment_rows(
     unresolved_counts: &std::collections::HashMap<&str, usize>,
 ) -> Vec<FileListRow> {
     let mut rows = Vec::new();
+    let current_file_paths: std::collections::HashSet<&str> = state
+        .files
+        .iter()
+        .map(|entry| entry.change.path.as_str())
+        .collect();
     for (index, entry) in state.files.iter().enumerate() {
         let mut comments: Vec<_> = state
             .comments
@@ -666,7 +671,53 @@ fn unresolved_comment_rows(
             ));
         }
     }
+    let mut external_paths: Vec<&str> = unresolved_counts
+        .keys()
+        .copied()
+        .filter(|path| !current_file_paths.contains(*path))
+        .collect();
+    external_paths.sort_unstable();
+    for path in external_paths {
+        let mut comments: Vec<_> = state
+            .comments
+            .iter()
+            .filter(|comment| !comment.resolved && comment.file_path == path)
+            .collect();
+        comments.sort_by_key(|comment| (comment.line_start, comment.line_end, comment.id));
+        rows.push(external_file_row_model(path, state, unresolved_counts));
+        for comment in comments {
+            rows.push(external_comment_row_model(
+                path,
+                state,
+                comment,
+                unresolved_counts,
+            ));
+        }
+    }
     rows
+}
+
+fn external_file_row_model(
+    path: &str,
+    state: &AppState,
+    unresolved_counts: &std::collections::HashMap<&str, usize>,
+) -> FileListRow {
+    let count = unresolved_counts.get(path).copied().unwrap_or(0);
+    FileListRow {
+        kind: FileListRowKind::File,
+        file_index: None,
+        file_id: path.to_string(),
+        path: path.to_string(),
+        old_path: None,
+        change_kind: crate::review_types::ChangeKind::Modified,
+        review_status: ReviewStatus::Unreviewed,
+        selected: state.file_list_section_focus == FileListSectionFocus::UnresolvedComments
+            && state.selected_comment_id.is_none(),
+        unresolved_comment_count: count,
+        comment_id: None,
+        comment_line_start: None,
+        comment_preview: None,
+    }
 }
 
 fn comment_row_model(
@@ -682,12 +733,36 @@ fn comment_row_model(
         .unwrap_or(0);
     FileListRow {
         kind: FileListRowKind::Comment,
-        file_index: index,
+        file_index: Some(index),
         file_id: entry.change.path.clone(),
         path: entry.change.path.clone(),
         old_path: None,
         change_kind: entry.change.kind,
         review_status: ReviewStatus::from(&entry.status),
+        selected: state.file_list_section_focus == FileListSectionFocus::UnresolvedComments
+            && state.selected_comment_id == Some(comment.id),
+        unresolved_comment_count: count,
+        comment_id: Some(comment.id),
+        comment_line_start: Some(comment.line_start),
+        comment_preview: Some(comment_preview(&comment.body)),
+    }
+}
+
+fn external_comment_row_model(
+    path: &str,
+    state: &AppState,
+    comment: &crate::review_types::Comment,
+    unresolved_counts: &std::collections::HashMap<&str, usize>,
+) -> FileListRow {
+    let count = unresolved_counts.get(path).copied().unwrap_or(0);
+    FileListRow {
+        kind: FileListRowKind::Comment,
+        file_index: None,
+        file_id: path.to_string(),
+        path: path.to_string(),
+        old_path: None,
+        change_kind: crate::review_types::ChangeKind::Modified,
+        review_status: ReviewStatus::Unreviewed,
         selected: state.file_list_section_focus == FileListSectionFocus::UnresolvedComments
             && state.selected_comment_id == Some(comment.id),
         unresolved_comment_count: count,
@@ -849,9 +924,19 @@ fn comments_panel_model(state: &AppState) -> CommentsPanel {
             })
         })
     };
+    let selected_comment_out_of_range = state.selected_comment_id.and_then(|id| {
+        state
+            .comments
+            .iter()
+            .find(|comment| Some(comment.file_path.as_str()) != selected_path && comment.id == id)
+    });
     let comments = detail_id
         .and_then(|id| state.comments.iter().find(|comment| comment.id == id))
-        .filter(|comment| selected_path.is_none_or(|path| comment.file_path == path))
+        .filter(|comment| {
+            selected_path.is_none_or(|path| comment.file_path == path)
+                || Some(comment.id) == state.selected_comment_id
+        })
+        .or(selected_comment_out_of_range)
         .map(|comment| {
             let current = selected_path.is_some_and(|path| comment.file_path == path)
                 && current_line
@@ -1333,7 +1418,7 @@ mod tests {
             vec!["a.rs", "b.rs"]
         );
         assert!(model.file_list.sections[0].rows[1].selected);
-        assert_eq!(model.file_list.sections[0].rows[1].file_index, 1);
+        assert_eq!(model.file_list.sections[0].rows[1].file_index, Some(1));
         assert!(matches!(
             model.file_list.sections[0].rows[1].review_status,
             ReviewStatus::Changed { .. }
@@ -1404,6 +1489,37 @@ mod tests {
             rows[2].comment_preview.as_deref(),
             Some("First line of the comment")
         );
+    }
+
+    #[test]
+    fn model_projects_unresolved_comments_for_files_outside_current_diff() {
+        let mut app = App::new(
+            Config::default(),
+            test_context(),
+            vec![file(
+                "a.rs",
+                review_types::ReviewStatus::Unreviewed,
+                Vec::new(),
+            )],
+        );
+        let mut comment = stored_comment(8, "mcp.rs", false);
+        comment.line_start = 22;
+        comment.body = "Previous session feedback".to_string();
+        app.state.comments = vec![comment];
+        app.state.file_list_section_focus = FileListSectionFocus::UnresolvedComments;
+        app.state.selected_comment_id = Some(8);
+
+        let model = app.model();
+        let rows = &model.file_list.sections[2].rows;
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].kind, FileListRowKind::File);
+        assert_eq!(rows[0].path, "mcp.rs");
+        assert_eq!(rows[0].file_index, None);
+        assert_eq!(rows[1].kind, FileListRowKind::Comment);
+        assert_eq!(rows[1].comment_id, Some(8));
+        assert_eq!(rows[1].file_index, None);
+        assert!(rows[1].selected);
     }
 
     #[test]

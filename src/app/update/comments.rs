@@ -111,6 +111,14 @@ pub fn navigate_to_comment_id(state: &mut AppState, view: &impl AppViewport, com
     navigate_to_comment(state, view, &comment);
 }
 
+pub fn select_out_of_range_comment(state: &mut AppState, comment_id: i64) {
+    state.selected_comment_id = Some(comment_id);
+    state.show_comments_panel = true;
+    state.pane_focus = PaneFocus::Comments;
+    state.pending_delete_comment_id = None;
+    state.mark_model_changed();
+}
+
 fn navigate_adjacent_comment(state: &mut AppState, view: &impl AppViewport, direction: Direction) {
     if !state.show_comments_panel {
         state.show_comments_panel = true;
@@ -190,18 +198,20 @@ fn request_delete_current(state: &mut AppState, update: &mut AppOutput) {
 }
 
 fn navigate_to_comment(state: &mut AppState, view: &impl AppViewport, comment: &Comment) {
-    if let Some(file_index) = state
+    let Some(file_index) = state
         .files
         .iter()
         .position(|entry| entry.change.path == comment.file_path)
-    {
-        let focus = if state.file_list_section_focus == FileListSectionFocus::UnresolvedComments {
-            FileListSectionFocus::UnresolvedComments
-        } else {
-            state.focus_for_file(file_index)
-        };
-        state.select_file(file_index, focus, false);
-    }
+    else {
+        select_out_of_range_comment(state, comment.id);
+        return;
+    };
+    let focus = if state.file_list_section_focus == FileListSectionFocus::UnresolvedComments {
+        FileListSectionFocus::UnresolvedComments
+    } else {
+        state.focus_for_file(file_index)
+    };
+    state.select_file(file_index, focus, false);
     state.selected_comment_id = Some(comment.id);
     state.pane_focus = PaneFocus::Diff;
     let start_row = display_row_for_head_line(state, comment_line(comment.line_start));
